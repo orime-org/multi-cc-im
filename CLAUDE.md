@@ -67,7 +67,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 
 # 技术栈（计划）
 
-Node.js 22+ | TypeScript 5.x strict | pnpm workspace monorepo | tsup | Vitest | better-sqlite3 | **iLink 协议库（DD 中，未选定）** | pino + pino-roll | zod
+Node.js 22+ | TypeScript 5.x strict | pnpm workspace monorepo | tsup | Vitest | better-sqlite3 | iLink 协议（vendored 自 `Tencent/openclaw-weixin` v2.1.7）| pino + pino-roll | zod
 
 # 架构（4 维度 adapter + 1 分析层）
 
@@ -84,7 +84,7 @@ v1 各 1 份；接口先抽全，新加 adapter 直接插入即可
 
 | Adapter | v1 实现 | 后续候选 | 集成模式 |
 |---|---|---|---|
-| IM | wechat (iLink) — **协议库 DD 中** | telegram / slack / 飞书 / discord | 长轮询/WS/Webhook 各异 |
+| IM | wechat (iLink, vendored `Tencent/openclaw-weixin` v2.1.7) | telegram / slack / 飞书 / discord | 长轮询/WS/Webhook 各异 |
 | Term | wezterm cli | tmux / zellij / ghostty | 子命令 wrapper |
 | CLI | claude-code（hook 路线 — 待实测） | codex / gemini / aider | hook 模式（v1） vs spawn 模式（v2） |
 | Storage | sqlite | postgres | 接口固定 |
@@ -109,7 +109,7 @@ im-wechat    term-wezterm    cli-claude-code    storage-sqlite
 packages/
 ├── shared/         # IMAdapter / TermAdapter / CLIAdapter / StorageAdapter 接口 + 类型
 ├── core/           # router · session map · message bus · @ 解析器
-├── im-wechat/      # iLink 客户端（DD 中：可能 vendor in / npm depend / from scratch）+ IMAdapter 实现
+├── im-wechat/      # iLink 客户端（vendored 自 `Tencent/openclaw-weixin` v2.1.7 → lib/ilink/）+ IMAdapter 实现
 ├── term-wezterm/   # wezterm cli wrapper + 实现 TermAdapter
 ├── cli-claude-code/# hook + transcript jsonl parser + 实现 CLIAdapter
 ├── storage-sqlite/ # events / sessions / usage 表 + 迁移
@@ -127,7 +127,7 @@ docs/
 
 | 维度 | 当前假设 | 验证状态 |
 |---|---|---|
-| 协议层实现 | （DD 中）候选含 photon-hq / @tencent-weixin/openclaw-weixin / Dcatfly/weixin_bot_plugin / cc-weixin 内嵌 / from scratch | ⚠️ DD 进行中 |
+| 协议层实现 | Vendor 抽取 `Tencent/openclaw-weixin` v2.1.7 协议子目录（`src/{api,auth,cdn,messaging,media,util,storage,config}/`）→ `packages/im-wechat/lib/ilink/`；删除 runtime.ts、重写 monitor.ts 去除 OpenClaw 依赖 | ✓ DD 完成 — 见 [DD 报告](docs/superpowers/specs/2026-04-26-ilink-library-dd.md) |
 | 出站机制 | cc Stop / UserPromptSubmit / PostToolUse hook → HTTP POST `localhost:9999/event/*` | ⚠️ hook 行为需实测；具体 hook 集合需文档核 + 实测 |
 | 入站机制 | bridge 收微信 → 解析 `@session` 路由 → `wezterm cli send-text --pane-id N` | ⚠️ send-text 注入语义 + 转义规则需实测 |
 | Idle 唤醒 | Stop hook 返回 `{decision:"block", reason:"<新 prompt>"}` 把消息注入 | ⚠️ 真实模型行为需实测（cc 是否真把 reason 当作下一轮用户输入） |
@@ -300,7 +300,7 @@ CREATE INDEX idx_events_project ON events(project);
 
 # 参考资料
 
-- iLink 协议候选 DD：见 `docs/superpowers/specs/<date>-ilink-library-dd.md`（待写）
+- iLink 协议候选 DD（**已完成**）：[`docs/superpowers/specs/2026-04-26-ilink-library-dd.md`](docs/superpowers/specs/2026-04-26-ilink-library-dd.md) — 锁定 `Tencent/openclaw-weixin` v2.1.7 抽取 vendor
 - iLink 协议接口文档（社区逆向）：`hao-ji-xing/openclaw-weixin/weixin-bot-api.md`（仓库已通过 gh repo view 验证存在）
 - Claude Code Hook 文档：https://docs.anthropic.com/en/docs/claude-code/hooks（待据此实测每个 hook 行为）
 - WezTerm CLI 文档：https://wezterm.org/cli/cli/index.html
