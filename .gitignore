@@ -1,0 +1,5 @@
+# Claude Code local hook runtime (logs, caches, transient state)
+.remember/
+
+# Playwright MCP browser session artifacts (snapshots, console logs)
+.playwright-mcp/
