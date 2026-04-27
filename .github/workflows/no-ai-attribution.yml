@@ -1,0 +1,116 @@
+name: No AI Attribution
+
+# 兜底层 — 即使 fork 后没装全局 ~/.claude/settings.json 的 attribution 配置，
+# CI 也拦住带 AI 署名的 commit / PR title / PR body。
+# 见 CLAUDE.md「关键规范」「禁止 AI 作者署名」条。
+#
+# 安全：所有 user-controlled 输入（PR title / body）必须用 env: 注入再读，
+# 禁止 ${{ github.event.* }} 直接拼到 run: 字符串里（command injection 防御）。
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  check:
+    name: No AI attribution in commits / PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine commit range
+        id: range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="$BASE_SHA..$PR_HEAD_SHA"
+          else
+            if [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              RANGE="$PUSH_HEAD"
+            else
+              RANGE="$PUSH_BEFORE..$PUSH_HEAD"
+            fi
+          fi
+          echo "range=$RANGE" >> "$GITHUB_OUTPUT"
+          echo "Will check commit range: $RANGE"
+
+      - name: Check commit messages
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          set -euo pipefail
+          # 精准 pattern：行首匹配避免 CLAUDE.md / docs/ 等文档里描述性提及被误报
+          # （已通过 11 个本地单元测试，含 5 真阳性 + 6 真阴性）
+          PATTERNS=(
+            '^Co-Authored-By:.*(Claude|Cursor|Copilot|ChatGPT|GPT-|Aider|Devin)'
+            '^🤖 Generated'
+            '^Generated with .*(Claude Code|Cursor|GitHub Copilot|Aider)'
+          )
+          FAIL=0
+          for pattern in "${PATTERNS[@]}"; do
+            HITS="$(git log --format='%B' "$RANGE" | grep -iE "$pattern" || true)"
+            if [ -n "$HITS" ]; then
+              echo "::error::AI attribution detected in commit message — pattern: $pattern"
+              echo "$HITS"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "============================================================================"
+            echo "FAIL: 此项目禁止 AI 作者署名（CLAUDE.md「关键规范」「禁止 AI 作者署名」条）"
+            echo ""
+            echo "修法:"
+            echo "  1. git rebase -i <base-commit>"
+            echo "  2. 删除 Co-Authored-By trailer / 🤖 Generated 行 / Generated with footer"
+            echo "  3. force-push 自己的分支（不要对 main 强推）"
+            echo ""
+            echo "未来防止:"
+            echo "  在 ~/.claude/settings.json 加: \"attribution\": { \"commit\": \"\", \"pr\": \"\" }"
+            echo "  这是 Claude Code 的官方 attribution 禁用开关，client 端不再自动添加"
+            echo "============================================================================"
+            exit 1
+          fi
+          echo "✓ commit messages clean"
+
+      - name: Check PR title and body
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          # 跟 commit message 用同一组 patterns，行为一致
+          PATTERNS=(
+            '^Co-Authored-By:.*(Claude|Cursor|Copilot|ChatGPT|GPT-|Aider|Devin)'
+            '^🤖 Generated'
+            '^Generated with .*(Claude Code|Cursor|GitHub Copilot|Aider)'
+          )
+          BLOB="${PR_TITLE:-}"$'\n'"${PR_BODY:-}"
+          FAIL=0
+          for pattern in "${PATTERNS[@]}"; do
+            if printf '%s' "$BLOB" | grep -iE "$pattern" >/dev/null; then
+              echo "::error::AI attribution detected in PR title or body — pattern: $pattern"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "FAIL: PR 标题或描述含 AI 作者署名（CLAUDE.md「关键规范」）"
+            echo "Fix: 直接在 GitHub UI 编辑 PR 标题/描述移除署名相关字段"
+            exit 1
+          fi
+          echo "✓ PR title/body clean"
