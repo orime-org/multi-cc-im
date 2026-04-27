@@ -1,6 +1,6 @@
 # 项目简介
 
-`multi-cc-wechat` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
+`multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
 > **当前状态**：v0 设计阶段。仓库内除基础设施（`.gitignore` / `CLAUDE.md` / 全局 settings / project memory）外尚无业务代码。  
 > 已锁定：**核心约束 / 编码行为准则 / DD 流程 / 工程价值观**。  

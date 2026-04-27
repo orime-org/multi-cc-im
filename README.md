@@ -1,1 +1,1 @@
-# cc-wechat
+# multi-cc-im

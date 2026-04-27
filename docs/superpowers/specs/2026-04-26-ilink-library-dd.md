@@ -1,6 +1,6 @@
 # iLink 协议库选型 DD 报告
 
-**Topic**: multi-cc-wechat 项目 IM adapter 层的微信 iLink 协议实现选型  
+**Topic**: multi-cc-im 项目 IM adapter 层的微信 iLink 协议实现选型  
 **Date**: 2026-04-26  
 **Status**: ✅ 已锁定  
 **结论**: **抽取 vendor `Tencent/openclaw-weixin` v2.1.7 的协议层代码**
