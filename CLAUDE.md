@@ -88,6 +88,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **不修改 cc 自己的 jsonl** | `~/.claude/projects/**/*.jsonl` 只读；任何写入都是 bug |
 | **凭据进 keychain** | `bot_token` 落盘前必须经 `keytar` / `secret-tool`；明文出现在文件或日志 = bug |
 | **重大决策必走 DD** | 见上节；未 DD 就实施 = 当场撤回 |
+| **TDD 红→绿→蓝节奏** | 先写会失败的测试 codify 目标行为 → 最少代码让测试通过 → 重构 + ≥80% 覆盖。实施中发现 DD 假设错（测试无论如何写不通）→ 停下重做 DD，不在错假设上打补丁。详见 [`docs/dev.md`](docs/dev.md)「TDD 写代码节奏」节 |
 
 # 禁止清单
 
