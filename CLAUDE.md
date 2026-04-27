@@ -171,7 +171,7 @@ pnpm bridge:wechat-login   # 扫码登录 iLink，存 bot_token 到 OS keychain
 # 数据存储
 
 ```
-~/.cc-wechat/
+~/.multi-cc-im/
 ├── config.toml           # session friendly_name 映射 / 路由偏好 / 价格表
 ├── data/
 │   ├── events.db         # SQLite: events · sessions · usage
