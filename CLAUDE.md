@@ -58,6 +58,8 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 维度 | 状态 | 详情 |
 |---|---|---|
 | 协议层（iLink vendored 抽取）| ✓ | [DD: iLink 选型](docs/superpowers/specs/2026-04-26-ilink-library-dd.md) |
+| Adapter 接口（IM/Term/CLI 事件流）| ✓ | TS-first hybrid（callback inject + extends-based 编译时 capability + type guard narrow）；[DD: adapter 接口](docs/superpowers/specs/2026-04-29-adapter-interface-dd.md) |
+| Storage adapter 接口（CRUD）+ SQLite vs Postgres | ? | 单独 DD（事件流 vs CRUD 形态不同）|
 | 出站 / 入站 / Idle 唤醒 / Session 标识 / Storage / pane-id | ✓ | [DD: hook+wezterm 实测](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md) |
 | ACL（owner-only） | ✓ | 协议层自带过滤 |
 | 多机（仅一台） | ✓ | 协议层硬约束（getupdates cursor 全局共享） |
