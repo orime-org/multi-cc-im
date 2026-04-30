@@ -67,7 +67,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 价格表来源 | ? | 单独 DD（含 service_tier × cache TTL 多维定价）|
 | 语音（iLink `voice_text`） | ⚠️ | 跟协议层 DD 联动 |
 | 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
-| pane 活性验证策略（避免注入到 zsh shell） | ? | v1 实施前单独 DD |
+| pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
 
 # 关键规范（MANDATORY）
 
