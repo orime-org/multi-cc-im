@@ -4,7 +4,9 @@
 
 ## 技术栈（计划）
 
-Node.js 22+ | TypeScript 5.x strict | pnpm workspace monorepo | tsup | Vitest | better-sqlite3 | iLink 协议（vendored 自 `Tencent/openclaw-weixin` v2.1.7）| pino + pino-roll | zod
+Node.js 22+ | TypeScript 5.x strict | pnpm workspace monorepo | tsup | Vitest | iLink 协议（vendored 自 `Tencent/openclaw-weixin` v2.1.7）| pino + pino-roll | zod | toml lib（smol-toml or @iarna/toml）
+
+> v1 不引 SQL DB（持久化用文件 + atomic write）。详见 [Storage DD 报告](superpowers/specs/2026-04-29-storage-strategy-dd.md)。
 
 ## 架构（4 维度 adapter + 1 分析层）
 
@@ -14,7 +16,7 @@ Node.js 22+ | TypeScript 5.x strict | pnpm workspace monorepo | tsup | Vitest | 
 └──┬─────────┬──────────┬──────────┬─────────────┘
    │         │          │          │
   IM       Term       CLI       Storage      Analytics
-(wechat) (wezterm)(claude-code)(sqlite)    (/usage /cost)
+(wechat) (wezterm)(claude-code)(files)     (/usage /cost)
 
 v1 各 1 份；接口先抽全，新加 adapter 直接插入即可
 ```
@@ -24,14 +26,14 @@ v1 各 1 份；接口先抽全，新加 adapter 直接插入即可
 | IM | wechat (iLink, vendored `Tencent/openclaw-weixin` v2.1.7) | telegram / slack / 飞书 / discord | 长轮询/WS/Webhook 各异 |
 | Term | wezterm cli | tmux / zellij / ghostty | 子命令 wrapper |
 | CLI | claude-code（hook 路线） | codex / gemini / aider | hook 模式（v1） vs spawn 模式（v2） |
-| Storage | sqlite | postgres | 接口固定 |
+| Storage | files (toml + JSONL + atomic write) | SQLite cache（仅当 /usage 出现性能瓶颈时）| 小 capability interfaces |
 
 ## 包依赖方向
 
 ```
 shared（接口类型，零依赖）
    ↑                ↑               ↑               ↑
-im-wechat    term-wezterm    cli-claude-code    storage-sqlite
+im-wechat    term-wezterm    cli-claude-code    storage-files
                             ↑                          
                           core ──────► analytics
                             ↑
@@ -49,8 +51,8 @@ packages/
 ├── im-wechat/      # iLink 客户端（vendored 自 `Tencent/openclaw-weixin` v2.1.7 → lib/ilink/）+ IMAdapter 实现
 ├── term-wezterm/   # wezterm cli wrapper + 实现 TermAdapter
 ├── cli-claude-code/# hook + transcript jsonl parser + 实现 CLIAdapter
-├── storage-sqlite/ # events / sessions / usage 表 + 迁移
-└── analytics/      # /usage /cost 命令族 + 定时报告
+├── storage-files/  # toml config + JSONL queue + atomic write（详见 Storage DD）
+└── analytics/      # /usage /cost 命令族（按需 tail jsonl 计算）+ 定时报告
 apps/
 └── bridge/         # 装配 adapters 的主进程，pino 日志
 scripts/            # SessionStart.sh / Stop.sh / UserPromptSubmit.sh hook
@@ -63,52 +65,50 @@ docs/
 
 ## 数据存储
 
+详见 [Storage DD 报告](superpowers/specs/2026-04-29-storage-strategy-dd.md)。**v1 不用 SQL DB**。
+
 ```
 ~/.multi-cc-im/
-├── config.toml           # session friendly_name 映射 / 路由偏好 / 价格表 / wezterm 路径缓存
-├── data/
-│   ├── events.db         # SQLite: events · sessions · usage
-│   └── inbox/<sid>/      # 微信进来的图片/文件落盘（cc Read 用）
+├── config.toml                     # 用户配置（startup 加载 + zod 校验）：
+│                                   #   - [friendly_names]: session_id → 易记名
+│                                   #   - [acl]: owner-only 列表
+│                                   #   - [wezterm] / [claude] 等 path: 启动探测缓存
+│                                   #   - [pricing]: 价格表（待 DD）
+├── state/                          # bridge 运行时状态（atomic write 保证一致性）
+│   ├── cursor.txt                  # iLink getupdates cursor（单 string，重启续接）
+│   ├── pending-msg.jsonl           # 待派发 wechat msg buffer（append-only + offset pointer）
+│   └── pending-offset.txt          # pending-msg.jsonl 的 last-acked offset
+├── inbox/<sid>/                    # 微信图片/文件落盘（cc Read 用，不入 state）
 └── logs/
-    └── bridge-YYYY-MM-DD.log  # pino-roll 日轮转
+    └── bridge-YYYY-MM-DD.log       # pino-roll 日轮转
 ```
+
+**关键设计**:
+- `config.toml`: 用户可读可手改；启动 zod parse + atomic write 保护并发改动
+- `state/cursor.txt`: 单 string，每次 cursor advance 走 atomic write
+- `state/pending-msg.jsonl`: append-only JSONL；启动 replay 已 enqueue 但未 ack 的；offset pointer 走 `state/pending-offset.txt`；file size > N MB 时 periodic compaction
+- 不存 cc transcript 副本（cc 自己的 `~/.claude/projects/<slug>/<sid>.jsonl` 是 source of truth）
+- 不存 events / sessions / usage 表（/usage /cost 按需 tail jsonl 计算）
 
 凭据（`bot_token` / `WECHAT_PROFILE` / 任何敏感 token）走 OS keychain（macOS Keychain / Linux secret-tool / Windows credential manager），**不写 `config.toml`、不写日志、不写环境变量**。
 
-## SQLite Schema（events 表）
+## /usage /cost 计算（on-demand）
 
-字段以 hook+wezterm 实测报告（`docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md`）为依据：
+按需 tail 已知 session 的 jsonl 文件计算 aggregate。jsonl schema 见 [hook+wezterm DD H4 节](superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)。
 
-```sql
-CREATE TABLE events (
-  id INTEGER PRIMARY KEY,
-  ts TIMESTAMP NOT NULL,
-  session_id TEXT NOT NULL,
-  project TEXT NOT NULL,                    -- cwd（用 CLAUDE_PROJECT_DIR / stdin.cwd，已 realpath）
-  cli TEXT NOT NULL,                        -- 'claude-code' / 'codex' / ...
-  role TEXT NOT NULL,                       -- user | assistant | tool_use | tool_result | system
-  model TEXT,
-  tokens_in INT,
-  tokens_out INT,
-  tokens_cache_read INT,
-  tokens_cache_5m_create INT,               -- ephemeral_5m_input_tokens（cache TTL 5m，价格档1）
-  tokens_cache_1h_create INT,               -- ephemeral_1h_input_tokens（cache TTL 1h，价格档2）
-  service_tier TEXT,                        -- standard | priority（实测：jsonl message.usage.service_tier）
-  parent_uuid TEXT,                         -- jsonl conversation tree 关联字段
-  is_sidechain INTEGER NOT NULL DEFAULT 0,  -- 0=主线 / 1=subagent 子线（v1 仅消费 0）
-  iterations_json TEXT,                     -- 多次 API 调用累积（assistant.usage.iterations[]）
-  tool_name TEXT,
-  tool_input_json TEXT,                     -- PreToolUse stdin.tool_input 完整结构
-  tool_response_json TEXT,                  -- PostToolUse stdin.tool_response（stdout/stderr/duration_ms）
-  content_blob BLOB,                        -- gzip 压缩的原文（可关）
-  cost_usd REAL                             -- 派生，价格表按 (service_tier × cache TTL) 分档算
-);
-CREATE INDEX idx_events_ts ON events(ts);
-CREATE INDEX idx_events_session ON events(session_id);
-CREATE INDEX idx_events_project ON events(project);
+关键字段（来自 `assistant.message.usage`）:
+
+```
+input_tokens / output_tokens / cache_read_input_tokens
+cache_creation.ephemeral_5m_input_tokens     // cache TTL 5m，价格档 1
+cache_creation.ephemeral_1h_input_tokens     // cache TTL 1h，价格档 2
+service_tier                                 // standard | priority，价格不同
+iterations[]                                 // 多次 API 调用累积，正确 sum
 ```
 
-> `cost_usd` 计算公式 + 价格表来源仍待 DD（CLAUDE.md「关键设计假设」表「价格表」行 `?`）。
+`cost_usd` 计算公式 + 价格表来源待 DD（CLAUDE.md「关键设计假设」表「价格表来源」行 ?）。
+
+> 性能：单机几十 MB jsonl tail 在毫秒级（hook+wezterm DD 实测 156KB jsonl 解析在毫秒级）。如果未来真慢，加 SQLite query cache（不影响 source of truth）—— 但 v1 不引。
 
 ## 外部 CLI 工具路径策略
 
