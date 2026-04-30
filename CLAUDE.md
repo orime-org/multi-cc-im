@@ -64,7 +64,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | ACL（owner-only） | ✓ | 协议层自带过滤 |
 | 多机（仅一台） | ✓ | 协议层硬约束（getupdates cursor 全局共享） |
 | 路由语法（`@a` 前缀 / 模糊匹配 / 多播 / 粘性默认） | ? | 用户最终 sign-off |
-| 价格表来源 | ? | 单独 DD（含 service_tier × cache TTL 多维定价）|
+| 价格表来源 | ✓ | vendor LiteLLM Claude 子集（`packages/analytics/data/prices.json` ~4KB）+ `scripts/sync-prices.sh` 周期同步 + `config.toml [pricing]` user override；[DD: 价格表来源](docs/superpowers/specs/2026-04-30-pricing-table-dd.md) |
 | 语音（iLink `voice_text`） | ⚠️ | 跟协议层 DD 联动 |
 | 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
 | pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
