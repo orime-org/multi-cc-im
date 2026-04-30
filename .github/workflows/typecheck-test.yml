@@ -1,0 +1,59 @@
+name: Typecheck and Test
+
+# 验证 PR / push 通过 typecheck + vitest（含 ≥80% 覆盖率门槛）。
+# 跟 no-ai-attribution 一起作为 main branch protection 的 required check。
+#
+# 安全：所有 user-controlled 输入必须用 env: 注入再读，禁止 ${{ github.event.* }}
+# 直接拼到 run: 字符串里。本 workflow 不读取任何 user-controlled 字段，无注入面。
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Enable corepack (auto-pnpm via packageManager field)
+        run: corepack enable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test with coverage
+        run: pnpm test:coverage

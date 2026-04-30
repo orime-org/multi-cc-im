@@ -3,3 +3,19 @@
 
 # Playwright MCP browser session artifacts (snapshots, console logs)
 .playwright-mcp/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# TypeScript build outputs
+dist/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

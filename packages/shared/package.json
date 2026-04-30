@@ -1,0 +1,19 @@
+{
+  "name": "@multi-cc-im/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapter/im": "./src/adapter/im.ts",
+    "./adapter/term": "./src/adapter/term.ts",
+    "./adapter/cli": "./src/adapter/cli.ts",
+    "./adapter/storage": "./src/adapter/storage.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
