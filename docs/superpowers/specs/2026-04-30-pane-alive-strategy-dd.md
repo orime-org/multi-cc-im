@@ -3,7 +3,7 @@
 **Topic**: multi-cc-im 在 send-text 注入到 wezterm pane 之前，如何确认 pane 里 Claude Code TUI 还活着 —— 避免发到用户的 zsh shell（`/exit` 后 pane 还在但内部已是 shell）
 **Scope**: `packages/term-wezterm/` 实现 `PaneAlive` capability 的 `isPaneAlive(paneId)` 具体策略。接口已锁定（[adapter 接口 DD](2026-04-29-adapter-interface-dd.md)），见 [`packages/shared/src/adapter/term.ts`](../../../packages/shared/src/adapter/term.ts) `PaneAlive extends Adapter` 定义。
 **Date**: 2026-04-30
-**Status**: ⏳ 候选评估完成，等待用户拍板（第 5 步）
+**Status**: ✅ 已锁定
 
 > 本报告按 CLAUDE.md「重大决策 DD 流程」5 步走完。此 DD 触发的启发式：「影响项目安全模型（路由前不验证活性 → 注入用户 shell）」+「跨包接口（term-wezterm 实现影响 core router 路由前置条件）」。
 
@@ -310,16 +310,19 @@ async function isAlive(sid: SessionId): Promise<boolean> {
 
 ## 第 5 步：用户决定
 
-<待用户拍板>
+**用户拍板**: 接受推荐 g（多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底）
+**锁定时间**: 2026-04-30
+**依据**: 本 DD 报告 + 推荐 g 的 7 条决定性证据（每条可追溯到对比矩阵）+ 排除 a/b/c/d/e/f 的"最强单条论据"清单（第 4 步末尾）。
 
-**用户决定**:
-**锁定时间**:
-**依据**:
+3 项未解决研究问题（v1 实施前必做实测，不在本 DD 范围）:
+1. cc abnormal exit (SIGKILL/segfault/OS shutdown) 是否触发 SessionEnd —— 需 `kill -9 <cc-pid>` 实测确认
+2. IDLE_TIMEOUT_MS 默认值 —— 建议 30 min，需用户在 v1 实施时 sign-off
+3. send-text 跟 isPaneAlive 之间 0.1s 量级 race 窗口完全消除需要 cc 提供"输入端口"原子接口（v1 不在范围）
 
-后续动作（用户决定 g 后）:
-1. 写入 CLAUDE.md「关键设计假设」表「pane 活性验证策略」行从 ? 改 ✓，附本 DD 链接
+后续动作:
+1. 写入 CLAUDE.md「关键设计假设」表「pane 活性验证策略」行 ? → ✓（本 PR 同步）
 2. 按下方实施清单实施 `packages/term-wezterm/src/pane-alive.ts`
-3. TDD 节奏（CLAUDE.md「TDD 红→绿→蓝」）：先写假阳率为 0 的 vitest 用例 codify 三信号互补行为 → 实现状态机 → 重构 + ≥80% 覆盖
+3. TDD 节奏：先写假阳率为 0 的 vitest 用例 codify 三信号互补行为 → 实现状态机 → 重构 + ≥80% 覆盖
 
 ---
 
