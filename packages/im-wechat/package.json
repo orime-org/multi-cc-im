@@ -1,0 +1,23 @@
+{
+  "name": "@multi-cc-im/im-wechat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.lib.json"
+  },
+  "dependencies": {
+    "@multi-cc-im/shared": "workspace:*",
+    "proper-lockfile": "^4.1.2",
+    "qrcode-terminal": "^0.12.0",
+    "silk-wasm": "^3.7.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/qrcode-terminal": "^0.12.2"
+  }
+}
