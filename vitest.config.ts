@@ -15,6 +15,7 @@ export default defineConfig({
         'packages/*/src/adapter/im.ts',
         'packages/*/src/adapter/term.ts',
         'packages/*/src/adapter/cli.ts',
+        'packages/im-wechat/src/openclaw-shim/reply-runtime.ts',
       ],
       thresholds: {
         lines: 80,
