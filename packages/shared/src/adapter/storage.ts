@@ -27,6 +27,31 @@ export interface CursorStore {
 }
 
 // ============================================================================
+// CredentialStore: per-IM 0600 JSON file for bot tokens & similar secrets
+// ============================================================================
+
+/**
+ * Persists IM-specific credentials (e.g. wechat `bot_token`) at a 0600 JSON
+ * file. Per [DD: credentials 持久化策略](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+ * we don't use OS keychain — stays consistent with Tencent OpenClaw vendor
+ * upstream, the wechat ecosystem default, and avoids the WSL / DPAPI 同用户进程
+ * gotchas.
+ *
+ * One store instance = one IM's credentials file (e.g.
+ * `~/.multi-cc-im/credentials/wechat.json`). The credentials shape `T` is
+ * IM-specific; concrete adapters declare their schema (zod) and pass it to
+ * `createCredentialStore`.
+ */
+export interface CredentialStore<T> {
+  /** Returns persisted credentials, or `null` on first run / after delete. */
+  load(): Promise<T | null>;
+  /** Atomically replace the credentials file (mode 0600 via atomicWrite). */
+  save(credentials: T): Promise<void>;
+  /** Remove the credentials file (logout). Idempotent — no-op if absent. */
+  delete(): Promise<void>;
+}
+
+// ============================================================================
 // ConfigStore: TOML-backed user config
 // ============================================================================
 

@@ -5,6 +5,7 @@ import type {
   Attachment,
   AttachmentKind,
   ConfigStore,
+  CredentialStore,
   CursorStore,
   IMAdapter,
   IMFileSender,
@@ -14,6 +15,7 @@ import type {
   IMTypingIndicator,
   IncomingMessage,
 } from '@multi-cc-im/shared';
+import type { WeixinCredentials } from './credentials.js';
 import { WeixinConfigManager } from '../lib/ilink/api/config-cache.js';
 import { sendTyping } from '../lib/ilink/api/api.js';
 import {
@@ -54,8 +56,13 @@ export interface WeixinAdapterOpts {
   configStore: ConfigStore;
   /** iLink long-poll cursor 持久化（重启续接） */
   cursorStore: CursorStore;
-  /** iLink bot_token；caller 从 keychain 取后传入（CLAUDE.md 规范） */
-  token: string;
+  /**
+   * Wechat 凭据存储 —— 跟 Tencent OpenClaw vendor 上游一致的 0600 JSON 文件
+   * （见 [DD: credentials 持久化策略](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+   * 与 CLAUDE.md「凭据 0600 落盘」）。`start()` 时 `load()` 取 `bot_token`，
+   * 未登录抛错引导用户跑 QR login。
+   */
+  credentialStore: CredentialStore<WeixinCredentials>;
   /**
    * 入站媒体（image / voice / file / video）解密落盘的根目录。Bridge 决定
    * 策略（通常 `~/.multi-cc-im/inbound/wechat/`）；adapter 在此目录下按 msgId
@@ -100,7 +107,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
       }
       const account = await resolveAccount({
         configStore: opts.configStore,
-        token: opts.token,
+        credentialStore: opts.credentialStore,
       });
       resolvedAccount = account;
       configMgr = new WeixinConfigManager(
