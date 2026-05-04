@@ -12,6 +12,7 @@
   "dependencies": {
     "@multi-cc-im/shared": "workspace:*",
     "@multi-cc-im/storage-files": "workspace:*",
+    "chokidar": "^4.0.3",
     "zod": "^3.23.8"
   }
 }
