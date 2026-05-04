@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { ConfigStore } from '@multi-cc-im/shared';
+import type { ConfigStore, CredentialStore } from '@multi-cc-im/shared';
 import { resolveAccount } from './accounts.js';
+import type { WeixinCredentials } from './credentials.js';
 import {
   CDN_BASE_URL,
   DEFAULT_BASE_URL,
@@ -15,11 +16,21 @@ const stubConfigStore: ConfigStore = {
   },
 };
 
+function stubCredentialStore(
+  state: WeixinCredentials | null,
+): CredentialStore<WeixinCredentials> {
+  return {
+    load: async () => state,
+    save: async () => {},
+    delete: async () => {},
+  };
+}
+
 describe('resolveAccount', () => {
-  it('returns the iLink default endpoints for owner-only mode', async () => {
+  it('returns the iLink default endpoints when credentials present', async () => {
     const acc = await resolveAccount({
       configStore: stubConfigStore,
-      token: 'tok-abc',
+      credentialStore: stubCredentialStore({ token: 'tok-abc' }),
     });
     expect(acc).toEqual({
       accountId: 'default',
@@ -29,12 +40,21 @@ describe('resolveAccount', () => {
     });
   });
 
-  it('passes the caller-supplied token through verbatim', async () => {
+  it('passes the persisted token through verbatim', async () => {
     const acc = await resolveAccount({
       configStore: stubConfigStore,
-      token: 'second-token',
+      credentialStore: stubCredentialStore({ token: 'second-token' }),
     });
     expect(acc.token).toBe('second-token');
+  });
+
+  it('throws when credentialStore.load() returns null (not yet logged in)', async () => {
+    await expect(
+      resolveAccount({
+        configStore: stubConfigStore,
+        credentialStore: stubCredentialStore(null),
+      }),
+    ).rejects.toThrow(/credentials not found.*login wechat/i);
   });
 
   it('does not invoke configStore in v1', async () => {
@@ -48,7 +68,10 @@ describe('resolveAccount', () => {
         called = true;
       },
     };
-    await resolveAccount({ configStore: spy, token: 't' });
+    await resolveAccount({
+      configStore: spy,
+      credentialStore: stubCredentialStore({ token: 't' }),
+    });
     expect(called).toBe(false);
   });
 });

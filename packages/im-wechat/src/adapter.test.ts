@@ -4,10 +4,12 @@ import path from 'node:path';
 import os from 'node:os';
 import type {
   ConfigStore,
+  CredentialStore,
   CursorStore,
   IMHandler,
   IncomingMessage,
 } from '@multi-cc-im/shared';
+import type { WeixinCredentials } from './credentials.js';
 import {
   isFileSender,
   isImageSender,
@@ -69,6 +71,16 @@ function makeCursorStore(): CursorStore {
   };
 }
 
+function makeCredentialStore(
+  token = 't',
+): CredentialStore<WeixinCredentials> {
+  return {
+    load: async () => ({ token }),
+    save: async () => {},
+    delete: async () => {},
+  };
+}
+
 function makeHandler(): IMHandler & {
   received: IncomingMessage[];
   errors: Error[];
@@ -125,7 +137,7 @@ function makeAdapter() {
   return createWeixinAdapter({
     configStore: stubConfigStore,
     cursorStore: makeCursorStore(),
-    token: 't',
+    credentialStore: makeCredentialStore(),
     inboundMediaDir,
   });
 }
@@ -226,7 +238,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
     const adapter = createWeixinAdapter({
       configStore: stubConfigStore,
       cursorStore: makeCursorStore(),
-      token: 'tok-xyz',
+      credentialStore: makeCredentialStore('tok-xyz'),
       inboundMediaDir,
     });
     await adapter.start(makeHandler());

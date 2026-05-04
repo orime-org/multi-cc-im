@@ -36,6 +36,7 @@ export type {
 export type {
   CursorStore,
   ConfigStore,
+  CredentialStore,
   PendingQueue,
   PendingMsg,
   Config,
