@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runHookReceiver } from './hook-receiver.js';
@@ -8,6 +8,8 @@ import {
   readEnded,
   readLastHookAt,
 } from './state-files.js';
+import { enqueueInjection } from './injection-queue.js';
+import { resolveEventsLogPath } from './events-log.js';
 import type { ParsedHookPayload } from './payloads.js';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
@@ -41,6 +43,12 @@ const STOP: ParsedHookPayload = {
   stop_hook_active: false,
   last_assistant_message: 'hi',
 };
+
+const STOP_ACTIVE: ParsedHookPayload = {
+  ...STOP,
+  hook_event_name: 'Stop',
+  stop_hook_active: true,
+} as ParsedHookPayload;
 
 const SESSION_END: ParsedHookPayload = {
   session_id: SID as never,
@@ -151,5 +159,99 @@ describe('runHookReceiver', () => {
     await runHookReceiver({ stateDir, payload: USER_PROMPT_SUBMIT });
     const t2 = (await readLastHookAt({ stateDir, sessionId: SID })) ?? 0;
     expect(t2).toBeGreaterThanOrEqual(t1);
+  });
+
+  describe('events.jsonl append side-effect', () => {
+    it('every hook event appends to <sid>.events.jsonl', async () => {
+      await runHookReceiver({ stateDir, payload: USER_PROMPT_SUBMIT });
+      await runHookReceiver({ stateDir, payload: STOP });
+      const filePath = resolveEventsLogPath({ stateDir, sessionId: SID });
+      const lines = (await readFile(filePath, 'utf-8'))
+        .trim()
+        .split('\n');
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!).hook_event_name).toBe('UserPromptSubmit');
+      expect(JSON.parse(lines[1]!).hook_event_name).toBe('Stop');
+    });
+
+    it('SessionStart and SessionEnd also append events.jsonl (not just state files)', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: stubCapturePid,
+      });
+      await runHookReceiver({ stateDir, payload: SESSION_END });
+      const filePath = resolveEventsLogPath({ stateDir, sessionId: SID });
+      const lines = (await readFile(filePath, 'utf-8'))
+        .trim()
+        .split('\n');
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!).hook_event_name).toBe('SessionStart');
+      expect(JSON.parse(lines[1]!).hook_event_name).toBe('SessionEnd');
+    });
+  });
+
+  describe('Stop hook injection-queue', () => {
+    it('Stop with stop_hook_active=false + queued injection → returns decision:block', async () => {
+      await enqueueInjection({
+        stateDir,
+        sessionId: SID,
+        content: 'follow-up prompt',
+      });
+      const result = await runHookReceiver({ stateDir, payload: STOP });
+      expect(result).toEqual({
+        decision: 'block',
+        reason: 'follow-up prompt',
+      });
+    });
+
+    it('Stop with stop_hook_active=false + empty queue → returns void (no decision)', async () => {
+      const result = await runHookReceiver({ stateDir, payload: STOP });
+      expect(result).toBeUndefined();
+    });
+
+    it('Stop with stop_hook_active=TRUE + queued injection → returns void (anti-loop guard)', async () => {
+      await enqueueInjection({
+        stateDir,
+        sessionId: SID,
+        content: 'should-not-be-popped',
+      });
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP_ACTIVE,
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it('Stop with stop_hook_active=TRUE leaves queue intact for next normal Stop', async () => {
+      await enqueueInjection({ stateDir, sessionId: SID, content: 'still-queued' });
+      await runHookReceiver({ stateDir, payload: STOP_ACTIVE });
+      // Subsequent normal Stop should pop the still-queued injection
+      const result = await runHookReceiver({ stateDir, payload: STOP });
+      expect(result).toEqual({ decision: 'block', reason: 'still-queued' });
+    });
+
+    it('FIFO across multiple Stop fires: each pops oldest first', async () => {
+      await enqueueInjection({ stateDir, sessionId: SID, content: 'a' });
+      await enqueueInjection({ stateDir, sessionId: SID, content: 'b' });
+      const r1 = await runHookReceiver({ stateDir, payload: STOP });
+      const r2 = await runHookReceiver({ stateDir, payload: STOP });
+      const r3 = await runHookReceiver({ stateDir, payload: STOP });
+      expect(r1).toEqual({ decision: 'block', reason: 'a' });
+      expect(r2).toEqual({ decision: 'block', reason: 'b' });
+      expect(r3).toBeUndefined();
+    });
+
+    it('Non-Stop events ignore the injection queue (e.g. UserPromptSubmit)', async () => {
+      await enqueueInjection({ stateDir, sessionId: SID, content: 'x' });
+      const result = await runHookReceiver({
+        stateDir,
+        payload: USER_PROMPT_SUBMIT,
+      });
+      expect(result).toBeUndefined();
+      // Queue should still hold 'x' for future Stop.
+      const stopResult = await runHookReceiver({ stateDir, payload: STOP });
+      expect(stopResult).toEqual({ decision: 'block', reason: 'x' });
+    });
   });
 });

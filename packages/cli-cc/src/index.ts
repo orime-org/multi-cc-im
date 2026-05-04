@@ -35,4 +35,32 @@ export type {
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI
 // subcommand (future CLI package).
 export { runHookReceiver } from './hook-receiver.js';
-export type { RunHookReceiverOpts } from './hook-receiver.js';
+export type { HookDecision, RunHookReceiverOpts } from './hook-receiver.js';
+
+// Append-only event log (writer in receiver, reader in adapter).
+export {
+  appendEvent,
+  resolveEventsLogPath,
+  tailNewEvents,
+} from './events-log.js';
+export type {
+  AppendEventOpts,
+  EventsLogPath,
+  TailNewEventsOpts,
+  TailNewEventsResult,
+} from './events-log.js';
+
+// Stop-hook injection queue (bridge enqueues; receiver pops).
+export {
+  enqueueInjection,
+  popInjection,
+  resolveInjectionQueuePath,
+} from './injection-queue.js';
+export type {
+  EnqueueInjectionOpts,
+  InjectionQueuePath,
+} from './injection-queue.js';
+
+// File-watching CLIAdapter for bridge core.
+export { createCcCliAdapter } from './adapter.js';
+export type { CreateCcCliAdapterOpts } from './adapter.js';

@@ -1,10 +1,23 @@
 import { execFile } from 'node:child_process';
+import { appendEvent } from './events-log.js';
+import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
   touchLastHookAt,
   writeCcPid,
   writeEnded,
 } from './state-files.js';
+
+/**
+ * The single allowed `stdout` payload for cc hooks per CLAUDE.md「关键规范」
+ * "受控 JSON `{decision:"block",...}` 除外". Returned by `runHookReceiver`
+ * (Stop branch with non-empty queue + `stop_hook_active=false`); CLI caller
+ * writes it to stdout. Mirrors `HookDecision` in `@multi-cc-im/shared`.
+ */
+export interface HookDecision {
+  decision: 'block';
+  reason: string;
+}
 
 /**
  * Capture cc parent process PID + start time for PID-reuse defense.
@@ -60,20 +73,21 @@ export interface RunHookReceiverOpts {
 
 /**
  * Process a single cc hook event:
- * - Always: touch `<sid>.last-hook-at` with current ms (PaneAlive idle-timeout
- *   fallback signal).
- * - SessionStart: write `<sid>.cc-pid` with `process.ppid` + `ps -o lstart=`
- *   (PaneAlive PID + reuse defense).
- * - SessionEnd: write `<sid>.ended` with `reason` + `endedAt` (PaneAlive flips
- *   to dead immediately on graceful exit).
- * - Other events (UserPromptSubmit / PreToolUse / PostToolUse / Stop): only
- *   the last-hook-at touch — bridge router consumes them via separate
- *   file-watching CLIAdapter (follow-up PR).
+ * - Always: touch `<sid>.last-hook-at` (PaneAlive idle-timeout signal) +
+ *   append payload to `<sid>.events.jsonl` (CLIAdapter file-watcher consumes).
+ * - SessionStart: also write `<sid>.cc-pid` with `process.ppid` + `ps -o
+ *   lstart=` (PaneAlive PID + reuse defense).
+ * - SessionEnd: also write `<sid>.ended` with `reason` + `endedAt` (PaneAlive
+ *   flips to dead immediately on graceful exit).
+ * - Stop: if `stop_hook_active === false` AND queue has pending injection,
+ *   pop the oldest line and **return** `{ decision:'block', reason }` for the
+ *   CLI caller to print as the hook's stdout response. `stop_hook_active=true`
+ *   skips the queue entirely (CLAUDE.md「关键规范」"idle 唤醒用 stop_hook_active
+ *   防死循环"硬约束). Other events return `void`.
  *
- * **No protocol output to stdout**. Per CLAUDE.md「关键规范」"multi-cc-im hook
- * 不许写非协议 stdout"; Stop hook injection (`{decision:"block",...}`) is the
- * sole allowed output and lives in the future CLIAdapter PR (queue-based, not
- * receiver state).
+ * **The returned `HookDecision` is the only allowed stdout payload** per
+ * CLAUDE.md「关键规范」"受控 JSON `{decision:"block",...}` 除外"; CLI caller
+ * writes it to stdout (other hook output goes to stderr / state files).
  *
  * Throws on partial failure (e.g. `ps -o lstart=` fails). Hook caller is
  * expected to: log error to stderr, `process.exit(1)` — cc treats non-zero
@@ -81,7 +95,7 @@ export interface RunHookReceiverOpts {
  */
 export async function runHookReceiver(
   opts: RunHookReceiverOpts,
-): Promise<void> {
+): Promise<HookDecision | void> {
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
 
@@ -93,5 +107,14 @@ export async function runHookReceiver(
     await writeEnded({ stateDir, sessionId, reason: payload.reason });
   }
 
+  await appendEvent({ stateDir, sessionId, payload });
   await touchLastHookAt({ stateDir, sessionId });
+
+  if (
+    payload.hook_event_name === 'Stop' &&
+    payload.stop_hook_active === false
+  ) {
+    const reason = await popInjection({ stateDir, sessionId });
+    if (reason !== null) return { decision: 'block', reason };
+  }
 }
