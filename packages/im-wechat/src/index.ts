@@ -10,3 +10,5 @@ export { runMonitor } from './monitor.js';
 export type { MonitorOpts } from './monitor.js';
 export { WeixinCredentialsSchema } from './credentials.js';
 export type { WeixinCredentials } from './credentials.js';
+export { loginWechat } from './login.js';
+export type { LoginWechatOpts, LoginOutput } from './login.js';
