@@ -1,9 +1,9 @@
 # Keychain 库选型 DD 报告
 
-**Topic**: multi-cc-im 把 iLink `bot_token` 落地到 OS keychain（CLAUDE.md「凭据进 keychain」硬规则）选哪个 Node.js 库
-**Date**: 2026-05-03
-**Status**: 🟡 待用户决定
-**结论**: 推荐候选 **C `@napi-rs/keyring`**（理由见第 4 步）；如用户认可，锁定后写入 CLAUDE.md「关键设计假设」+「关键规范」对应栏。
+**Topic**: multi-cc-im `bot_token` 等敏感凭据持久化策略（DD 触发时议题是「OS keychain 选哪个库」，扩展研究后议题升级为「该不该用 keychain」）
+**Date**: 2026-05-03 起草 → 2026-05-04 用户拍板
+**Status**: ✅ 已锁定
+**结论**: 选定 **A 变体方案** —— **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致，**不调 OS keychain**，**不要 ENV 兜底**。决议详情见文末「第 6 步」。第 1-5 步保留作 DD 流程证据档。
 
 > 本报告按 CLAUDE.md「重大决策 DD 流程」5 步走。触发启发式：「影响项目安全模型」（凭据存储）+「影响长期维护负担」（核心 native binding 部署链）+「跨平台兼容性」（macOS+Linux+Windows+headless WSL）。
 >
@@ -233,21 +233,55 @@ PR #8 落地 wechat IMAdapter 骨架时，`createWeixinAdapter({ token })` 的 `
 
 ---
 
-## 锁定后写入 CLAUDE.md 的内容
+## 第 6 步：决议（2026-05-04 用户拍板）
 
-如选 C，"关键设计假设" 表加一行：
+第 4 步推荐 **C `@napi-rs/keyring`**，但用户读完推荐后追问两个具体问题（"Windows 怎么支持？" + "微信生态其他产品怎么做？"），**新派一轮研究 agent** 拉到关键证据，**翻转推荐**为 A 变体。
 
-```markdown
-| Auth/keychain（bot_token 持久化）| ✓ | `@napi-rs/keyring`（vendored libsecret + keyutils fallback + MIT）；service=`multi-cc-im-<im>`, account=`default`；ENV `ILINK_BOT_TOKEN` 兜底；[DD: keychain 库选型](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
-```
+### 触发翻转的 3 项新证据
 
-"关键规范" 表 "凭据进 keychain" 那行更新：
+1. **Tencent OpenClaw 上游自己用 0600 文件，不调 keychain**
+   `Tencent/openclaw-weixin@6e58a2b src/auth/accounts.ts:206-208` 直接 `fs.writeFileSync(JSON.stringify(...))` + `fs.chmodSync(0o600)`。我们 vendor 的协议库**自己上游就是这个做法**。multi-cc-im 走 keychain = **比协议作者本人还严格** = 偏离 vendor 上游同步路径。
 
-```markdown
-| **凭据进 keychain** | `bot_token` 落盘前必须经 `@napi-rs/keyring`（macOS Keychain / Windows DPAPI / Linux libsecret-vendored 或 keyutils）；明文出现在文件或日志 = bug。仅 ENV `ILINK_BOT_TOKEN` 是允许的兜底入口（dev / CI 用） |
-```
+2. **整个微信 / 腾讯生态零产品调 keychain**
+   研究 agent 实测：微信 PC 桌面（macOS + Windows）、企业微信 / WeCom、腾讯云 CLI（tccli）、腾讯 IM SDK（TIM）、OpenIM —— **全部不调 OS keychain**，统一用 SQLCipher（密钥从进程 memory 派生）或 0600 明文文件。"调 keychain" 是 multi-cc-im 自定的更高标准，跟生态主流明显偏离。
 
-如选 A，"关键规范" 整段重写为允许 0600 文件 + ENV，CLAUDE.md 多处规则联动改。
+3. **`@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通**
+   - WSL 里 napi-rs 走 Linux 路径不走 Windows DPAPI；`linux-keyutils` reboot 即丢，`dbus-secret-service` 默认无 DBUS session 直接 panic（[keyring-rs#15](https://github.com/open-source-cooperative/keyring-rs/issues/15) / [microsoft/WSL#9375](https://github.com/microsoft/WSL/discussions/9375)）。multi-cc-im 用户群必含 WSL，**默认开箱失败**是大坑。
+   - Windows DPAPI 不做进程级隔离（[源码](https://github.com/open-source-cooperative/windows-native-keyring-store/blob/main/src/utils.rs) 调 `CredWriteW` 写 `CRED_TYPE_GENERIC`，同用户任意进程都能 `CredReadW` 读出）。比 0600 文件防护强不了多少 —— 都是"用户态执行权 = 输"的威胁模型。
+
+### 5 问决议
+
+| # | 问题 | 决议 |
+|---|---|---|
+| 1 | 选哪个库 | **A 变体**：不调 keychain，**0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 OpenClaw vendor 上游一致 |
+| 2 | sync vs async API | N/A（无 keychain 库） |
+| 3 | namespace 命名 | **文件名按 IM 区分**：`wechat.json` / `telegram.json` / `feishu.json`（owner-only 单 account 模型，无 sub-key namespace） |
+| 4 | 包归属 | **`packages/storage-files/` 加 `credential-store.ts`**（复用既有 atomic-write 工具；跟 cursor / config / pending-queue 对称）；接口 IM-agnostic：`load(im) / save(im, data) / delete(im)`，未来 tg / 飞书 adapter 直接用 |
+| 5 | ENV 兜底 | **去掉**。OpenClaw 上游也没 ENV 兜底，multi-cc-im 实际用例不需要（CI 用 mock token / 不用 Docker / 单机长驻 / 应急走 QR re-login）。少一条代码路径要测、跟上游对齐 |
+
+### 已写入 CLAUDE.md（commit 同 PR）
+
+1. **「重大决策 DD 流程」典型例子** 把 "auth/keychain 库选型" 改为 "credentials 持久化策略"（议题升级后名字也升级）
+2. **「关键设计假设」状态表** 新增行：
+   ```markdown
+   | Credentials 持久化（`bot_token` 等）| ✓ | **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致；**不调 OS keychain**（微信生态零产品调 + `@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通防护有限）；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
+   ```
+3. **「关键规范」表** 把「凭据进 keychain」改写为「凭据 0600 落盘」：
+   ```markdown
+   | **凭据 0600 落盘** | `bot_token` 等敏感凭据写 `~/.multi-cc-im/credentials/<im>.json`（mode 0600，仅 owner 读写）；不进 git / 日志 / console / toml；明文出现在这 4 处任一 = bug。**不调 OS keychain**（理由见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）|
+   ```
+4. **「关键规范」表** 「禁止硬编码密钥 / 外部 CLI 路径」 行 "密钥走 keychain" → "密钥落 0600 JSON 文件"
+5. **「禁止清单」** "bot_token 写 toml/日志/console" → "bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置"
+
+### 未来如要回归 keychain 的触发条件
+
+A 变体不是终点，仅是 v1 起步形态。如出现下列情况，应重新开 DD：
+- 用户报告"0600 文件被 backup tool / Dropbox / Time Machine 扫到泄漏"成实际威胁
+- 多用户场景出现（owner-only 假设破裂）
+- iLink token 升级为短期 OAuth + refresh 模型（频繁刷新 / 撤销，文件比 keychain 操作贵）
+- WSL 用户群消失 + Windows 用户占比 > 80%（DPAPI 防护边际收益更显著）
+
+回归路径：复活本 DD 第 4 步推荐 C `@napi-rs/keyring`（证据链已齐，重新评估时不必从零）。
 
 ---
 
