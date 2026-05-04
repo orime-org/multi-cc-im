@@ -38,6 +38,16 @@ export const PaneIdSchema = z
   .nonnegative()
   .transform((n) => n as PaneId);
 
+/**
+ * Reverse lookup `pane_id → session_id`. Bridge router owns the map (built
+ * from `WEZTERM_PANE` env captured at SessionStart hook); term-wezterm's
+ * PaneAlive capability consumes via DI.
+ */
+export interface PaneToSessionMap {
+  /** Returns the session_id tracked for this pane, or `null` if unknown. */
+  get(paneId: PaneId): SessionId | null;
+}
+
 /** User-given short name for a session (used for `@friendly` routing). */
 export const FriendlyNameSchema = z
   .string()

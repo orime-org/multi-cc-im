@@ -1,9 +1,30 @@
 import type {
   PaneId,
+  PaneToSessionMap,
   TermAdapter,
   TermHandler,
+  TermPaneAlive,
 } from '@multi-cc-im/shared';
 import { runWezTermCli } from './cli.js';
+import { createIsPaneAlive } from './pane-alive.js';
+import type { PidProbe } from './pid-probe.js';
+
+/**
+ * PaneAlive plumbing — pass to attach the `isPaneAlive` capability. Without
+ * this, returned adapter is plain `TermAdapter` (no capability); bridge
+ * router using such an adapter would have nothing to gate `sendText` against
+ * and **must refuse** per CLAUDE.md「不验证 cc 活性就 send-text」.
+ */
+export interface PaneAliveOpts {
+  /** Where cli-cc state files live (e.g. `~/.multi-cc-im/state/`). */
+  stateDir: string;
+  /** Bridge router's pane_id → session_id map. */
+  paneToSession: PaneToSessionMap;
+  /** Test seam (default: real `kill(0)` + `ps -o lstart=`). */
+  pidProbe?: PidProbe;
+  /** Stale-hook fallback threshold; default 30 min (DD g). */
+  idleTimeoutMs?: number;
+}
 
 export interface CreateWezTermAdapterOpts {
   /**
@@ -13,6 +34,11 @@ export interface CreateWezTermAdapterOpts {
    * 「禁止硬编码密钥 / 外部 CLI 路径」 — never hardcode this.
    */
   wezterm: { path: string };
+  /**
+   * Optional PaneAlive capability config. When provided, returned adapter
+   * also satisfies `TermPaneAlive` (intersection type via overload signature).
+   */
+  paneAlive?: PaneAliveOpts;
 }
 
 /**
@@ -34,20 +60,25 @@ export interface CreateWezTermAdapterOpts {
  * forbidden by CLAUDE.md「关键规范」 "send-text 注入两步法". This adapter
  * doesn't enforce the order at the type level — bridge router must do it.
  *
- * **PaneAlive capability is intentionally NOT implemented in this PR**: the
- * multi-signal strategy (DD: pane 活性策略) requires SessionEnd hook + cc PID
- * state files which are owned by `packages/cli-cc/`. PaneAlive lands in the
- * follow-up PR that wires cli-cc + bridge router together. CLAUDE.md
- * 「禁止清单」"不验证 cc 活性就 send-text" enforcement is bridge router's
- * responsibility — at that layer it must check `isPaneAlive(adapter)` guard
- * and reject send if false.
+ * When `opts.paneAlive` is supplied, the returned adapter also satisfies
+ * `TermPaneAlive` (multi-signal `isPaneAlive` per [pane 活性策略 DD g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)).
+ * Without it the adapter has no `isPaneAlive` method — bridge router using
+ * `isPaneAlive(adapter)` guard from `@multi-cc-im/shared` will see it as
+ * a plain TermAdapter and (per CLAUDE.md「禁止清单」"不验证 cc 活性就
+ * send-text") must refuse to route.
  */
 export function createWezTermAdapter(
+  opts: CreateWezTermAdapterOpts & { paneAlive: PaneAliveOpts },
+): TermAdapter & TermPaneAlive;
+export function createWezTermAdapter(
   opts: CreateWezTermAdapterOpts,
-): TermAdapter {
+): TermAdapter;
+export function createWezTermAdapter(
+  opts: CreateWezTermAdapterOpts,
+): TermAdapter | (TermAdapter & TermPaneAlive) {
   const wezterm = opts.wezterm.path;
 
-  return {
+  const base: TermAdapter = {
     name: 'wezterm',
 
     async start(_handler: TermHandler): Promise<void> {
@@ -81,4 +112,9 @@ export function createWezTermAdapter(
       // No socket / subprocess held — nothing to release.
     },
   };
+
+  if (!opts.paneAlive) return base;
+
+  const isPaneAlive = createIsPaneAlive(opts.paneAlive);
+  return { ...base, isPaneAlive } satisfies TermAdapter & TermPaneAlive;
 }
