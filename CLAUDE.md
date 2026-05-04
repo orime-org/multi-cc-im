@@ -32,7 +32,7 @@
 - 反悔代价 > 1 周工作量
 - 影响"用现有 SDK 不造轮子"准则的具体实施
 
-典型例子：iLink 协议库选型、storage 数据库选型、auth/keychain 库选型、IM/CLI adapter 接口设计、价格表来源、bridge 部署形态、pane 活性验证策略。
+典型例子：iLink 协议库选型、storage 数据库选型、credentials 持久化策略、IM/CLI adapter 接口设计、价格表来源、bridge 部署形态、pane 活性验证策略。
 
 **5 步流程**:
 1. **候选枚举**：穷举所有可见候选（含 from scratch / vendor in / npm depend / 第三方调用 / 跨语言抄）
@@ -68,6 +68,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 语音（iLink `voice_text`） | ⚠️ | 跟协议层 DD 联动 |
 | 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
 | pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
+| Credentials 持久化（`bot_token` 等）| ✓ | **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致；**不调 OS keychain**（微信生态零产品调 + `@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通防护有限）；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
 
 # 关键规范（MANDATORY）
 
@@ -78,7 +79,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **禁止 `var` / `require()`** | ESM only，`type: "module"` |
 | **公共函数必须 TSDoc** | `@param @returns @throws @example`，ESLint `eslint-plugin-tsdoc` 强制 |
 | **禁止裸 catch** | 必须分类 + `pino` log；不许 `catch(e) {}` 吞错 |
-| **禁止硬编码密钥 / 外部 CLI 路径** | 密钥走 keychain；外部 CLI（wezterm 等）运行时探测（[策略](docs/architecture.md#外部-cli-工具路径策略)），禁止 hardcode 绝对路径 —— 开源项目用户安装位置不一 |
+| **禁止硬编码密钥 / 外部 CLI 路径** | 密钥落 0600 JSON 文件（见下行「凭据 0600 落盘」）；外部 CLI（wezterm 等）运行时探测（[策略](docs/architecture.md#外部-cli-工具路径策略)），禁止 hardcode 绝对路径 —— 开源项目用户安装位置不一 |
 | **Local-first** | 所有用户数据落本机 SQLite + 文件，**不上传任何外部服务** |
 | **iLink 长轮询必须有** | timeout（35s+）+ 退避重试 + cursor 持久化（重启后续接，不掉消息）|
 | **send-text 注入两步法** | Step1 默认 paste 内容（任意 `\n` / 元字符 / Unicode 安全），Step2 `--no-paste $'\r'` 提交。混用 `--no-paste` 发内容 = 注入面（cc TUI 解释快捷键）|
@@ -88,13 +89,13 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **路由前必须验证 pane 里 cc 活着** | pane lifecycle ≠ cc lifecycle；`/exit` 后 pane 还在但里面是 zsh，盲注入会发到 shell。具体活性策略见 v1 实施前 DD |
 | **路由 key 用 `CLAUDE_PROJECT_DIR` 或 `stdin.cwd`** | 已 realpath；不要用 `PWD` env（macOS `/tmp` vs `/private/tmp` 不一致） |
 | **不修改 cc 自己的 jsonl** | `~/.claude/projects/**/*.jsonl` 只读；任何写入都是 bug |
-| **凭据进 keychain** | `bot_token` 落盘前必须经 `keytar` / `secret-tool`；明文出现在文件或日志 = bug |
+| **凭据 0600 落盘** | `bot_token` 等敏感凭据写 `~/.multi-cc-im/credentials/<im>.json`（mode 0600，仅 owner 读写）；不进 git / 日志 / console / toml；明文出现在这 4 处任一 = bug。**不调 OS keychain**（理由见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）|
 | **重大决策必走 DD** | 见上节；未 DD 就实施 = 当场撤回 |
 | **TDD 红→绿→蓝节奏** | 先写会失败的测试 codify 目标行为 → 最少代码让测试通过 → 重构 + ≥80% 覆盖。实施中发现 DD 假设错（测试无论如何写不通）→ 停下重做 DD，不在错假设上打补丁。详见 [`docs/dev.md`](docs/dev.md)「TDD 写代码节奏」节 |
 
 # 禁止清单
 
-托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 toml/日志/console | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串 | 同步阻塞 hook > 1s | adapter 间直接 import | service 层依赖 framework | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）
+托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置 | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串 | 同步阻塞 hook > 1s | adapter 间直接 import | service 层依赖 framework | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）
 
 # 编码行为准则
 
