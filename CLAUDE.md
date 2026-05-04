@@ -63,7 +63,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 出站 / 入站 / Idle 唤醒 / Session 标识 / jsonl schema / pane-id | ✓ | [DD: hook+wezterm 实测](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md) |
 | ACL（owner-only） | ✓ | 协议层自带过滤 |
 | 多机（仅一台） | ✓ | 协议层硬约束（getupdates cursor 全局共享） |
-| 路由语法（`@a` 前缀 / 模糊匹配 / 多播 / 粘性默认） | ? | 用户最终 sign-off |
+| 路由语法 | ✓ | **G' 组合**：`@<name>` tmux 4 级 fallback（id / `=exact` / exact / 短前缀 / glob，歧义报错列候选）+ 空格分多目标（`@a @b ...`）+ `@all` 广播 + last-explicit-mention 粘性默认（带 visible echo）+ `@list / @help / @current` 控制命令；session 死自动 unset current；[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) |
 | 价格表来源 | ✓ | vendor LiteLLM Claude 子集（`packages/analytics/data/prices.json` ~4KB）+ `scripts/sync-prices.sh` 周期同步 + `config.toml [pricing]` user override；[DD: 价格表来源](docs/superpowers/specs/2026-04-30-pricing-table-dd.md) |
 | 语音（iLink `voice_text`） | ⚠️ | 跟协议层 DD 联动 |
 | 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
@@ -87,6 +87,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **idle 唤醒用 `stop_hook_active` 防死循环** | Stop hook 处理时先 `if (stdin.stop_hook_active) return;`。stdin 字段是 cc 原生防护，零 race，比文件标记可靠 |
 | **路由解析 = `WEZTERM_PANE` env** | hook env 直接给，O(1)。禁用 `wezterm cli list` 解析 cwd 反推 pane-id（O(N) + 多 cc 同 cwd 时歧义） |
 | **路由前必须验证 pane 里 cc 活着** | pane lifecycle ≠ cc lifecycle；`/exit` 后 pane 还在但里面是 zsh，盲注入会发到 shell。具体活性策略见 v1 实施前 DD |
+| **路由 visible echo 必须有** | bot 把消息派给 cc 前后必须给微信端可见反馈（`→ frontend received` / `📌 current = frontend` / `⚠️ frontend disconnected, current cleared`），否则 last-explicit-mention 粘性的 current_session 状态跟用户脑模型会错配（[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) 第 4 步理由 3） |
 | **路由 key 用 `CLAUDE_PROJECT_DIR` 或 `stdin.cwd`** | 已 realpath；不要用 `PWD` env（macOS `/tmp` vs `/private/tmp` 不一致） |
 | **不修改 cc 自己的 jsonl** | `~/.claude/projects/**/*.jsonl` 只读；任何写入都是 bug |
 | **凭据 0600 落盘** | `bot_token` 等敏感凭据写 `~/.multi-cc-im/credentials/<im>.json`（mode 0600，仅 owner 读写）；不进 git / 日志 / console / toml；明文出现在这 4 处任一 = bug。**不调 OS keychain**（理由见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）|
@@ -95,7 +96,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 
 # 禁止清单
 
-托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置 | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串 | 同步阻塞 hook > 1s | adapter 间直接 import | service 层依赖 framework | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）
+托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置 | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串 | 同步阻塞 hook > 1s | adapter 间直接 import | service 层依赖 framework | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）| 自动 last-reply-to 粘性（cc 最后回复的 session 自动当下次 current_session — Cline #3514 用户反弹证伪）| 路由 `@<前缀>` 歧义时自动挑第一个（须报错列候选 — tmux/screen/Vim/aider 全行业拒绝）
 
 # 编码行为准则
 
