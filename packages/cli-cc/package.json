@@ -1,0 +1,17 @@
+{
+  "name": "@multi-cc-im/cli-cc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@multi-cc-im/shared": "workspace:*",
+    "@multi-cc-im/storage-files": "workspace:*",
+    "zod": "^3.23.8"
+  }
+}

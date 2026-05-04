@@ -1,0 +1,121 @@
+import { z } from 'zod';
+
+/**
+ * zod schemas for cc hook stdin payloads. Source of truth: hook+wezterm DD H1
+ * 实测 (2026-04-27). Mirrors the type-only definitions in
+ * `@multi-cc-im/shared/adapter/cli.ts`; concrete runtime validation lives here
+ * because cc-hook stdin is **external input** (CLAUDE.md「TypeScript strict,
+ * 禁止 any」"外部输入用 zod runtime 校验" 硬规则).
+ *
+ * Note: the runtime schemas validate the **same constraints** as shared's
+ * branded schemas (UUID for `session_id`, absolute path for `cwd` / ending in
+ * `.jsonl` for `transcript_path`) but **don't apply the `Brand<>` transform**.
+ * Branded types live at the type level only — re-emitting branded types
+ * across packages collides with `unique symbol` declaration-emit
+ * constraints, so packages downstream of cli-cc cast at the boundary if they
+ * need branded values.
+ */
+
+const baseHookPayload = {
+  session_id: z.string().uuid(),
+  transcript_path: z.string().startsWith('/').endsWith('.jsonl'),
+  cwd: z.string().min(1).startsWith('/'),
+};
+
+export const SessionStartPayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('SessionStart'),
+  source: z.string(),
+  model: z.string(),
+});
+
+export const UserPromptSubmitPayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('UserPromptSubmit'),
+  permission_mode: z.string(),
+  prompt: z.string(),
+});
+
+export const PreToolUsePayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('PreToolUse'),
+  permission_mode: z.string(),
+  tool_name: z.string(),
+  tool_input: z.record(z.string(), z.unknown()),
+  tool_use_id: z.string(),
+});
+
+export const PostToolUseToolResponseSchema = z.object({
+  stdout: z.string(),
+  stderr: z.string(),
+  interrupted: z.boolean(),
+  isImage: z.boolean(),
+  noOutputExpected: z.boolean(),
+});
+
+export const PostToolUsePayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('PostToolUse'),
+  permission_mode: z.string(),
+  tool_name: z.string(),
+  tool_input: z.record(z.string(), z.unknown()),
+  tool_response: PostToolUseToolResponseSchema,
+  tool_use_id: z.string(),
+  duration_ms: z.number(),
+});
+
+export const StopPayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('Stop'),
+  permission_mode: z.string(),
+  stop_hook_active: z.boolean(),
+  last_assistant_message: z.string(),
+});
+
+/**
+ * Hook fired when cc session ends (graceful `/exit`, `/clear`, or other reasons
+ * documented at https://docs.anthropic.com/en/docs/claude-code/hooks#sessionend).
+ * Required by [pane 活性策略 DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
+ * receiver writes `<sid>.ended` so term-wezterm PaneAlive can flip to dead immediately
+ * on graceful exit (vs. polling for PID death).
+ *
+ * NOT in `shared/adapter/cli.ts` as a CLIAdapter Handler callback yet —
+ * cc-side hook receiver handles it internally for state-file purposes;
+ * exposing through Handler.onSessionEnd is a follow-up if bridge router wants
+ * the live signal (vs. consuming the `<sid>.ended` file directly).
+ */
+export const SessionEndPayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('SessionEnd'),
+  /**
+   * Termination reason — open enum per Anthropic docs (`/exit` / `/clear` /
+   * `logout` / `prompt_input_exit` / `other`). Stored verbatim.
+   */
+  reason: z.string(),
+});
+
+/**
+ * Discriminated union over `hook_event_name`. Use this for the generic stdin
+ * → typed payload entry path; downstream branch on `payload.hook_event_name`.
+ */
+export const HookPayloadSchema = z.discriminatedUnion('hook_event_name', [
+  SessionStartPayloadSchema,
+  UserPromptSubmitPayloadSchema,
+  PreToolUsePayloadSchema,
+  PostToolUsePayloadSchema,
+  StopPayloadSchema,
+  SessionEndPayloadSchema,
+]);
+
+export type ParsedHookPayload = z.infer<typeof HookPayloadSchema>;
+
+/**
+ * Raw stdin entry point: JSON.parse + zod validate. Throws ZodError /
+ * SyntaxError on invalid input (caller decides whether to log + exit non-zero
+ * vs. swallow — multi-cc-im hook scripts MUST log to stderr + exit non-zero;
+ * `process.stdout` is reserved for protocol output per CLAUDE.md「关键规范」
+ * "multi-cc-im hook 不许写非协议 stdout").
+ */
+export function parseHookPayload(rawStdin: string): ParsedHookPayload {
+  return HookPayloadSchema.parse(JSON.parse(rawStdin));
+}
