@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# multi-cc-im — wrapper that execs apps/multi-cc-im/src/cli.ts via tsx
-# (workspace devDependency at <repo>/node_modules/.bin/tsx).
+# multi-cc-im — wrapper exec'd by cc settings.json hook commands + user shell.
 #
-# cc settings.json hook commands point at this wrapper's absolute path; the
-# wrapper resolves the repo root from $BASH_SOURCE so users can place the
-# checkout anywhere and hooks keep working. CLAUDE.md「禁止硬编码外部 CLI
-# 路径」对齐 —— 此 wrapper 仅 hardcode 自身相对路径到 repo root 的关系，
-# tsx + cli.ts 都从同一 root 解析。
+# Resolves repo root from $BASH_SOURCE so users place the checkout anywhere
+# and hooks keep working with a single absolute-path hardcode (CLAUDE.md
+# 「禁止硬编码外部 CLI 路径」: only this wrapper's path lands in cc settings;
+# everything else is computed).
 #
-# Why tsx (not raw `node --experimental-strip-types`):
-# Node 22-24 default 不能把 TS-ESM 风格 import './foo.js' 解析回 './foo.ts'
-# 源码（实测 v24.10 报 ERR_MODULE_NOT_FOUND）。tsx 处理两件事：strip types +
-# rewrite .js → .ts during resolution。v2 加 tsup bundle 后可换成 plain
-# `node /path/cli.js`，shebang 不变（兼容）。
+# Two execution modes:
+#
+# 1. **Production (preferred)** — `apps/multi-cc-im/dist/cli.js` exists from
+#    `pnpm --filter multi-cc-im build` (tsup bundle). Cold start ~50ms,
+#    matters because cc fires hooks ~2× per assistant turn.
+#
+# 2. **Dev fallback** — bundle missing → exec via tsx (workspace devDep at
+#    node_modules/.bin/tsx). Cold start ~300ms but no build step needed.
+#    Node 22-24 default 不能 resolve TS-ESM 风格 import './foo.js' →
+#    './foo.ts' (实测 v24.10 ERR_MODULE_NOT_FOUND); tsx handles the rewrite.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST_CLI="${REPO_ROOT}/apps/multi-cc-im/dist/cli.js"
+SRC_CLI="${REPO_ROOT}/apps/multi-cc-im/src/cli.ts"
 TSX_BIN="${REPO_ROOT}/node_modules/.bin/tsx"
 
+if [[ -f "${DIST_CLI}" ]]; then
+  exec node "${DIST_CLI}" "$@"
+fi
+
 if [[ ! -x "${TSX_BIN}" ]]; then
-  echo "multi-cc-im: tsx not found at ${TSX_BIN}" >&2
-  echo "  Run \`pnpm install\` from ${REPO_ROOT} first." >&2
+  echo "multi-cc-im: neither dist/cli.js nor tsx is available" >&2
+  echo "  Run \`pnpm install\` from ${REPO_ROOT} (dev mode), or" >&2
+  echo "  \`pnpm --filter multi-cc-im build\` to build dist/cli.js (production mode)." >&2
   exit 1
 fi
 
-exec "${TSX_BIN}" "${REPO_ROOT}/apps/multi-cc-im/src/cli.ts" "$@"
+exec "${TSX_BIN}" "${SRC_CLI}" "$@"
