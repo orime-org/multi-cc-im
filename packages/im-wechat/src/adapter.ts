@@ -302,11 +302,16 @@ async function weixinMessageToIncoming(
   }
 
   const text = textParts.length > 0 ? textParts.join('') : null;
+  const replyCtx: WeixinReplyContext = {
+    to: fromUserId,
+    contextToken: msg.context_token,
+  };
   return {
     msgId,
     from: fromUserId,
     text,
     attachments,
+    replyCtx,
     timestamp: msg.create_time_ms ?? Date.now(),
   };
 }

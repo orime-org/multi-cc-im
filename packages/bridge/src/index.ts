@@ -26,3 +26,9 @@ export type {
 
 export { createPersistentRouterState } from './persistent-state.js';
 export type { CreatePersistentRouterStateOpts } from './persistent-state.js';
+
+export { createOrchestrator } from './orchestrator.js';
+export type {
+  BridgeOrchestrator,
+  CreateOrchestratorOpts,
+} from './orchestrator.js';
