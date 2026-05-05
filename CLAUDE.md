@@ -2,8 +2,8 @@
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
-> **状态**：v0 设计阶段，无业务代码。架构 / SQLite schema / 数据存储目录 / 外部 CLI 路径策略 → [`docs/architecture.md`](docs/architecture.md)；不直接采用项目 → [`docs/competitors.md`](docs/competitors.md)；开发命令 → [`docs/dev.md`](docs/dev.md)。
-> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）。
+> **状态**：v1 实施完成（2026-05-05）—— 6 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge）+ 1 app（apps/multi-cc-im CLI binary）全到位，56 测试文件 / 713 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD 8 篇 → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / image+voice 实测 / tg+飞书 / analytics。
+> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#23）。
 
 # 核心约束（项目第一原则）
 
