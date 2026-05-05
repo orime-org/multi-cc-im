@@ -17,3 +17,12 @@ export type {
   RouterState,
   SessionRegistry,
 } from './router.js';
+
+export { createSessionRegistry } from './session-registry.js';
+export type {
+  CreateSessionRegistryOpts,
+  SessionRegistryAndMap,
+} from './session-registry.js';
+
+export { createPersistentRouterState } from './persistent-state.js';
+export type { CreatePersistentRouterStateOpts } from './persistent-state.js';

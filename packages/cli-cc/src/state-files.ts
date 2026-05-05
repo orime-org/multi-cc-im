@@ -44,6 +44,20 @@ export interface CcPidEntry {
    * string match is the comparison.
    */
   startedAt: string;
+  /**
+   * `process.env.WEZTERM_PANE` captured at SessionStart hook (cc inherits the
+   * env from wezterm). Bridge session-registry uses this for the
+   * `paneId → sessionId` reverse map (term-wezterm PaneAlive consumes via DI).
+   * Optional: cc may run outside wezterm (no env), in which case the session
+   * isn't routable from bridge.
+   */
+  paneId?: number;
+  /**
+   * `cwd` from SessionStart payload (already realpath'd by cc). Bridge
+   * SessionRegistry stores so the session can be displayed / filtered by
+   * project root without re-reading the payload.
+   */
+  cwd?: string;
 }
 
 export interface CcPidIO {
@@ -55,10 +69,13 @@ export async function writeCcPid(
   opts: CcPidIO & CcPidEntry,
 ): Promise<void> {
   const filePath = join(opts.stateDir, `${opts.sessionId}.cc-pid`);
-  await atomicWrite(
-    filePath,
-    JSON.stringify({ pid: opts.pid, startedAt: opts.startedAt }, null, 2),
-  );
+  const body: CcPidEntry = {
+    pid: opts.pid,
+    startedAt: opts.startedAt,
+    ...(opts.paneId !== undefined ? { paneId: opts.paneId } : {}),
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+  };
+  await atomicWrite(filePath, JSON.stringify(body, null, 2));
 }
 
 export async function readCcPid(opts: CcPidIO): Promise<CcPidEntry | null> {

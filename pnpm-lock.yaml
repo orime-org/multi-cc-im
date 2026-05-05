@@ -23,9 +23,18 @@ importers:
 
   packages/bridge:
     dependencies:
+      '@multi-cc-im/cli-cc':
+        specifier: workspace:*
+        version: link:../cli-cc
       '@multi-cc-im/shared':
         specifier: workspace:*
         version: link:../shared
+      '@multi-cc-im/storage-files':
+        specifier: workspace:*
+        version: link:../storage-files
+      '@multi-cc-im/term-wezterm':
+        specifier: workspace:*
+        version: link:../term-wezterm
 
   packages/cli-cc:
     dependencies:
