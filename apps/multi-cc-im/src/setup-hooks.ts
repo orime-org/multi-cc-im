@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,12 @@ export interface SetupHooksResult {
   writtenTo?: string;
   /** Total hooks registered after write (multi-cc-im 6 + others preserved). */
   hookCount?: number;
+  /**
+   * Path of the timestamped backup of the previous settings.json (when one
+   * existed). User can `cp <backupPath> <ccSettingsPath>` to restore if our
+   * write went sideways.
+   */
+  backupPath?: string;
 }
 
 /**
@@ -132,6 +138,27 @@ export async function runSetupHooksCommand(
   };
 
   await mkdir(dirname(ccSettingsPath), { recursive: true });
+
+  // Backup BEFORE write — protects user's other cc settings (mcp servers /
+  // model preferences / theme etc.) in case our merge logic ever corrupts.
+  // Timestamped name never overwrites prior backups; user can restore any.
+  let backupPath: string | undefined;
+  try {
+    await stat(ccSettingsPath);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    backupPath = `${ccSettingsPath}.bak.${ts}`;
+    await copyFile(ccSettingsPath, backupPath);
+    log(`  ✓ backup: ${backupPath}`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return {
+        exitCode: 1,
+        stderr: `multi-cc-im setup-hooks: failed to backup ${ccSettingsPath}: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    // ENOENT = no existing file to backup; that's fine
+  }
+
   await atomicWrite(ccSettingsPath, `${JSON.stringify(newSettings, null, 2)}\n`);
 
   if (removedCount > 0) {
@@ -157,6 +184,7 @@ export async function runSetupHooksCommand(
     stderr: '',
     writtenTo: ccSettingsPath,
     hookCount: totalHooks,
+    ...(backupPath !== undefined ? { backupPath } : {}),
   };
 }
 
