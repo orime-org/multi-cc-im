@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "openclaw/plugin-sdk/infra-runtime": [
+        "../../packages/im-wechat/src/openclaw-shim/infra-runtime.ts"
+      ],
+      "openclaw/plugin-sdk/reply-runtime": [
+        "../../packages/im-wechat/src/openclaw-shim/reply-runtime.ts"
+      ]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

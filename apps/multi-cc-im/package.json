@@ -1,0 +1,25 @@
+{
+  "name": "multi-cc-im",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "multi-cc-im": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@multi-cc-im/bridge": "workspace:*",
+    "@multi-cc-im/cli-cc": "workspace:*",
+    "@multi-cc-im/im-wechat": "workspace:*",
+    "@multi-cc-im/shared": "workspace:*",
+    "@multi-cc-im/storage-files": "workspace:*",
+    "@multi-cc-im/term-wezterm": "workspace:*",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/qrcode-terminal": "^0.12.2"
+  }
+}
