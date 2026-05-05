@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@multi-cc-im/shared": "workspace:*"
+    "@multi-cc-im/cli-cc": "workspace:*",
+    "@multi-cc-im/shared": "workspace:*",
+    "@multi-cc-im/storage-files": "workspace:*",
+    "@multi-cc-im/term-wezterm": "workspace:*"
   }
 }

@@ -74,7 +74,7 @@ describe('runHookReceiver', () => {
     startedAt: 'Tue May  4 16:38:00 2026',
   });
 
-  it('SessionStart → writes cc-pid file with captured pid + startedAt', async () => {
+  it('SessionStart → writes cc-pid file with captured pid + startedAt + cwd from payload', async () => {
     await runHookReceiver({
       stateDir,
       payload: SESSION_START,
@@ -83,7 +83,41 @@ describe('runHookReceiver', () => {
     expect(await readCcPid({ stateDir, sessionId: SID })).toEqual({
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      cwd: CWD,
     });
+  });
+
+  it('SessionStart → captures paneId when WEZTERM_PANE is set', async () => {
+    await runHookReceiver({
+      stateDir,
+      payload: SESSION_START,
+      capturePid: async () => ({
+        pid: 12345,
+        startedAt: 'Tue May  4 16:38:00 2026',
+        paneId: 42,
+      }),
+    });
+    expect(await readCcPid({ stateDir, sessionId: SID })).toEqual({
+      pid: 12345,
+      startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: 42,
+      cwd: CWD,
+    });
+  });
+
+  it('SessionStart → omits paneId when WEZTERM_PANE not set (cc outside wezterm)', async () => {
+    await runHookReceiver({
+      stateDir,
+      payload: SESSION_START,
+      capturePid: async () => ({
+        pid: 12345,
+        startedAt: 'Tue May  4 16:38:00 2026',
+        paneId: undefined,
+      }),
+    });
+    const result = await readCcPid({ stateDir, sessionId: SID });
+    expect(result?.paneId).toBeUndefined();
+    expect(result?.pid).toBe(12345);
   });
 
   it('SessionStart → also touches last-hook-at', async () => {

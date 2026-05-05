@@ -20,21 +20,26 @@ export interface HookDecision {
 }
 
 /**
- * Capture cc parent process PID + start time for PID-reuse defense.
+ * Capture cc parent process info at SessionStart hook fire:
+ * - `pid` = `process.ppid` (cc invoked the hook script which invoked
+ *   `multi-cc-im hook`, so ppid = cc)
+ * - `startedAt` = `ps -o lstart= -p <pid>` output (stable start-time string;
+ *   stored verbatim for exact-string-match PID-reuse defense)
+ * - `paneId` = `process.env.WEZTERM_PANE` (cc inherits env from wezterm;
+ *   undefined when cc runs outside wezterm — session not routable)
  *
- * Default impl reads `process.ppid` (cc invoked the hook script which invoked
- * `multi-cc-im hook`, so ppid = cc) + spawns `ps -o lstart= -p <pid>` to get
- * a stable start-time string (macOS / Linux compatible). Caller can inject a
+ * `lstart` format example: `Tue May  4 16:38:00 2026`. Caller can inject a
  * stub via `RunHookReceiverOpts.capturePid` for tests.
- *
- * `lstart` format example: `Tue May  4 16:38:00 2026`. Stored verbatim — the
- * comparison is exact-string-match, no parsing.
  */
 async function defaultCapturePid(): Promise<{
   pid: number;
   startedAt: string;
+  paneId: number | undefined;
 }> {
   const ppid = process.ppid;
+  const paneEnv = process.env.WEZTERM_PANE;
+  const paneId =
+    paneEnv && /^\d+$/.test(paneEnv) ? Number(paneEnv) : undefined;
   return new Promise((resolve, reject) => {
     execFile(
       'ps',
@@ -50,7 +55,7 @@ async function defaultCapturePid(): Promise<{
           );
           return;
         }
-        resolve({ pid: ppid, startedAt: stdout.trim() });
+        resolve({ pid: ppid, startedAt: stdout.trim(), paneId });
       },
     );
   });
@@ -65,10 +70,15 @@ export interface RunHookReceiverOpts {
   /** Already-parsed + validated stdin payload (see `parseHookPayload`). */
   payload: ParsedHookPayload;
   /**
-   * Override PID + lstart capture (default: `process.ppid` + `ps -o lstart=`).
-   * Tests pass a stub to avoid spawning `ps`.
+   * Override PID + lstart + paneId capture (default: `process.ppid` +
+   * `ps -o lstart=` + `process.env.WEZTERM_PANE`). Tests pass a stub to avoid
+   * spawning `ps` and to control paneId.
    */
-  capturePid?: () => Promise<{ pid: number; startedAt: string }>;
+  capturePid?: () => Promise<{
+    pid: number;
+    startedAt: string;
+    paneId?: number | undefined;
+  }>;
 }
 
 /**
@@ -101,8 +111,15 @@ export async function runHookReceiver(
 
   if (payload.hook_event_name === 'SessionStart') {
     const capture = opts.capturePid ?? defaultCapturePid;
-    const { pid, startedAt } = await capture();
-    await writeCcPid({ stateDir, sessionId, pid, startedAt });
+    const captured = await capture();
+    await writeCcPid({
+      stateDir,
+      sessionId,
+      pid: captured.pid,
+      startedAt: captured.startedAt,
+      ...(captured.paneId !== undefined ? { paneId: captured.paneId } : {}),
+      cwd: payload.cwd,
+    });
   } else if (payload.hook_event_name === 'SessionEnd') {
     await writeEnded({ stateDir, sessionId, reason: payload.reason });
   }
