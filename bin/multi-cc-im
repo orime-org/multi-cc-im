@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# multi-cc-im — wrapper that execs apps/multi-cc-im/src/cli.ts via tsx
+# (workspace devDependency at <repo>/node_modules/.bin/tsx).
+#
+# cc settings.json hook commands point at this wrapper's absolute path; the
+# wrapper resolves the repo root from $BASH_SOURCE so users can place the
+# checkout anywhere and hooks keep working. CLAUDE.md「禁止硬编码外部 CLI
+# 路径」对齐 —— 此 wrapper 仅 hardcode 自身相对路径到 repo root 的关系，
+# tsx + cli.ts 都从同一 root 解析。
+#
+# Why tsx (not raw `node --experimental-strip-types`):
+# Node 22-24 default 不能把 TS-ESM 风格 import './foo.js' 解析回 './foo.ts'
+# 源码（实测 v24.10 报 ERR_MODULE_NOT_FOUND）。tsx 处理两件事：strip types +
+# rewrite .js → .ts during resolution。v2 加 tsup bundle 后可换成 plain
+# `node /path/cli.js`，shebang 不变（兼容）。
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TSX_BIN="${REPO_ROOT}/node_modules/.bin/tsx"
+
+if [[ ! -x "${TSX_BIN}" ]]; then
+  echo "multi-cc-im: tsx not found at ${TSX_BIN}" >&2
+  echo "  Run \`pnpm install\` from ${REPO_ROOT} first." >&2
+  exit 1
+fi
+
+exec "${TSX_BIN}" "${REPO_ROOT}/apps/multi-cc-im/src/cli.ts" "$@"

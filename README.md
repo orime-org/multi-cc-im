@@ -28,40 +28,43 @@ CLI 入口位于 `apps/multi-cc-im/src/cli.ts`。开发期 `pnpm --filter multi-
 ### 3. 首次登录 wechat（QR 扫码）
 
 ```bash
-pnpm --filter multi-cc-im dev login wechat
+./bin/multi-cc-im login wechat
+# 等价于 pnpm --filter multi-cc-im dev login wechat（dev 期 alias）
 ```
 
 终端打印 QR；微信扫码 + 确认 → bridge 把 `bot_token` 落到 `~/.multi-cc-im/credentials/wechat.json`（mode 0600，跟 Tencent OpenClaw vendor 上游一致；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）。
 
 ### 4. 配 cc hooks（每个 cc 跑前一次）
 
-把以下加到 `~/.claude/settings.json` 的 `hooks` 段（**绝对路径** 指向你 clone 的位置）：
+把以下加到 `~/.claude/settings.json` 的 `hooks` 段（**绝对路径** 指向 repo 根的 `bin/multi-cc-im` bash wrapper）：
 
 ```json
 {
   "hooks": [
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook SessionStart" },
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook SessionStart" },
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook UserPromptSubmit" },
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook UserPromptSubmit" },
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook PreToolUse" },
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook PreToolUse" },
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook PostToolUse" },
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook PostToolUse" },
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook Stop" },
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook Stop" },
     { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/apps/multi-cc-im/src/cli.ts hook SessionEnd" }
+      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook SessionEnd" }
   ]
 }
 ```
 
-> v2 会加全局 `multi-cc-im` 命令（`pnpm link --global` 或 npm publish），届时 hook 命令简化为 `multi-cc-im hook <event>`，不依赖绝对路径。
+`bin/multi-cc-im` 是一个 bash wrapper 自动用 workspace 内的 `tsx` 跑 `apps/multi-cc-im/src/cli.ts`（Node 22-24 default 不能 resolve TS-ESM 风格 `import './foo.js'` → `./foo.ts`，需要 tsx 或 v2 的 tsup bundle）。
+
+> v2 会加全局 `multi-cc-im` 命令（tsup bundle + `npm publish` / `pnpm link --global`），届时 hook 命令简化为 `multi-cc-im hook <event>` 不依赖绝对路径。
 
 ### 5. 起 bridge daemon
 
 ```bash
-pnpm --filter multi-cc-im dev start
+./bin/multi-cc-im start
 ```
 
 后台长跑 iLink 长轮询 + 监 cc hook events.jsonl + wechat IncomingMessage → cc TUI 路由。Ctrl+C 优雅 shutdown（flush current_session 状态 + 释放所有 adapter）。

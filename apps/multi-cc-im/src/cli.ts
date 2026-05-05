@@ -1,4 +1,9 @@
-#!/usr/bin/env node
+// Entry point invoked by the `bin/multi-cc-im` bash wrapper via tsx. Node
+// 22-24 default can't resolve `import './hook.js'` → `./hook.ts` for the
+// source-as-bin pattern (实测 v24.10 ERR_MODULE_NOT_FOUND); tsx handles the
+// extension rewrite. v2 will tsup-bundle to .js, at which point this file
+// could regain a `#!/usr/bin/env node` shebang directly.
+
 import qrcodeTerminal from 'qrcode-terminal';
 import { runHookCommand } from './hook.js';
 import { runLoginWechatCommand } from './login.js';

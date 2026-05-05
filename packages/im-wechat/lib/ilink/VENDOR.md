@@ -40,7 +40,7 @@ lib/ilink/
 为去除 OpenClaw 插件框架运行时依赖 + 满足 multi-cc-im strict TS（`noUncheckedIndexedAccess: true`），对 vendored 代码做了以下**最小**改动:
 
 1. **OpenClaw runtime 解耦（5 个文件改 import）**
-   - `auth/pairing.ts`、`auth/accounts.ts`、`messaging/send.ts`、`util/logger.ts` 改 `from "openclaw/..."` 为 tsconfig path alias `"openclaw/plugin-sdk/infra-runtime"` / `"openclaw/plugin-sdk/reply-runtime"`，由 `packages/im-wechat/tsconfig*.json` 的 `paths` 映射到 `src/openclaw-shim/`。
+   - `auth/pairing.ts`、`auth/accounts.ts`、`messaging/send.ts`、`util/logger.ts` 的 `from "openclaw/plugin-sdk/infra-runtime"` / `"openclaw/plugin-sdk/reply-runtime"` 透传不动 —— 由 workspace package `openclaw`（`packages/openclaw/`）提供这两个 entry 的 minimal shim（仅 vendored code 真用到的 `resolvePreferredOpenClawTmpDir` + `withFileLock` + `ReplyPayload` 类型）。原先靠 tsconfig path alias 映射到 `src/openclaw-shim/`，重构成 workspace package 后纯 Node module resolution 能 work，tsx / vitest / 真 node 都不要特殊配置。
    - `auth/accounts.ts` 整体替换为最小版本（仅保留 `DEFAULT_BASE_URL` / `CDN_BASE_URL` / `deriveRawAccountId` / `loadConfigRouteTag` 4 个被 vendored 文件依赖的导出 — 上游的多账户索引 / 加密存储均由 multi-cc-im 替代实现）。
    - `messaging/process-message.ts` 删除（深度耦合 OpenClaw `channelRuntime` + 业务逻辑由 multi-cc-im bridge core 重写）。
 2. **strict TS 兼容补丁（2 个文件、5 行）**

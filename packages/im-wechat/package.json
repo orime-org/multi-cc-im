@@ -11,13 +11,12 @@
   },
   "dependencies": {
     "@multi-cc-im/shared": "workspace:*",
-    "proper-lockfile": "^4.1.2",
+    "openclaw": "workspace:*",
     "qrcode-terminal": "^0.12.0",
     "silk-wasm": "^3.7.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/proper-lockfile": "^4.1.4",
     "@types/qrcode-terminal": "^0.12.2"
   }
 }

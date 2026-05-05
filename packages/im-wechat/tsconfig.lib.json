@@ -2,11 +2,6 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": ".",
-    "baseUrl": ".",
-    "paths": {
-      "openclaw/plugin-sdk/infra-runtime": ["./src/openclaw-shim/infra-runtime.js"],
-      "openclaw/plugin-sdk/reply-runtime": ["./src/openclaw-shim/reply-runtime.js"]
-    },
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false
   },

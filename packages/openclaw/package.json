@@ -1,0 +1,21 @@
+{
+  "name": "openclaw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal shim for the OpenClaw plugin SDK — only the API surface that vendored Tencent/openclaw-weixin actually calls. Decouples the vendored protocol layer from the full upstream `openclaw` framework (80MB / 36 deps) we don't need.",
+  "exports": {
+    "./plugin-sdk": "./src/plugin-sdk/index.ts",
+    "./plugin-sdk/infra-runtime": "./src/plugin-sdk/infra-runtime.ts",
+    "./plugin-sdk/reply-runtime": "./src/plugin-sdk/reply-runtime.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
+  }
+}
