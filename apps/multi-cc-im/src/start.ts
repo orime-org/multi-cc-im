@@ -173,6 +173,7 @@ export async function runStartCommand(
         cliAdapter,
         registry,
         state: routerState,
+        log,
         onError: (err, ctx) => {
           const msg = err instanceof Error ? err.message : String(err);
           log(
