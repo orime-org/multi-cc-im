@@ -5,8 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 
 /**
- * The 6 cc hook events multi-cc-im needs to subscribe to. Order matches
- * `examples/claude-settings.json` template + README Quick Start step 4.
+ * The 6 cc hook events multi-cc-im needs to subscribe to.
  *
  * - `SessionStart` — captures `WEZTERM_PANE` env, populates paneToSession
  * - `UserPromptSubmit` — events.jsonl entry (analytics)
@@ -14,6 +13,15 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  * - `Stop` — assistant turn complete; bridge forwards `last_assistant_message`
  *   to wechat origin via `lastReplyCtxBySession`
  * - `SessionEnd` — drives PaneAlive "graceful exit" signal
+ *
+ * `matcher` per event:
+ * - `PreToolUse`/`PostToolUse` → `"*"` matches all tool names
+ * - others (no tool concept) → `""` matches every invocation
+ *
+ * Schema follows cc upstream: `hooks` is an object keyed by event name,
+ * each event maps to an array of matcher groups, each group has its own
+ * inner `hooks` array of handler entries. See
+ * https://code.claude.com/docs/en/hooks for the authoritative shape.
  */
 const HOOK_EVENTS = [
   'SessionStart',
@@ -23,6 +31,24 @@ const HOOK_EVENTS = [
   'Stop',
   'SessionEnd',
 ] as const;
+
+type HookEventName = (typeof HOOK_EVENTS)[number];
+
+const TOOL_MATCHED_EVENTS = new Set<HookEventName>(['PreToolUse', 'PostToolUse']);
+
+interface HookHandler {
+  type: 'command';
+  command: string;
+}
+
+interface MatcherGroup {
+  matcher: string;
+  hooks: HookHandler[];
+}
+
+type HooksMap = Record<string, MatcherGroup[]>;
+
+const MULTI_CC_IM_HOOK_NEEDLE = 'bin/multi-cc-im hook ';
 
 export interface RunSetupHooksOpts {
   /**
@@ -47,7 +73,10 @@ export interface SetupHooksResult {
   stderr: string;
   /** Path of the cc settings.json that was written (when exit 0). */
   writtenTo?: string;
-  /** Total hooks registered after write (multi-cc-im 6 + others preserved). */
+  /**
+   * Total handler entries across all events after merge (sum of every
+   * `matcher group → inner hooks[]` length).
+   */
   hookCount?: number;
   /**
    * Path of the timestamped backup of the previous settings.json (when one
@@ -59,19 +88,27 @@ export interface SetupHooksResult {
 
 /**
  * Implement `multi-cc-im setup-hooks`. Idempotent merge of multi-cc-im's 6
- * hook commands into `~/.claude/settings.json`:
+ * hook commands into `~/.claude/settings.json` using cc's nested-object
+ * schema (`hooks: { EventName: [{matcher, hooks: [...]}] }`).
  *
- * - **Missing file or empty `{}`**: write a fresh `{ "hooks": [...] }` with
- *   our 6 commands.
- * - **Existing settings with non-multi-cc-im hooks**: preserve them, append
- *   our 6.
+ * - **Missing file or empty `{}`**: write a fresh `{ "hooks": { ... } }`
+ *   with our 6 events.
+ * - **Existing settings with non-multi-cc-im hooks**: preserve them verbatim,
+ *   append our matcher groups under each of the 6 events.
  * - **Existing settings with stale multi-cc-im hooks** (e.g. user moved the
  *   repo, ABS_PATH changed): drop those by detecting `bin/multi-cc-im hook`
  *   substring in `command`, then add fresh 6 with current absolute path.
- * - **Other top-level fields** (e.g. `otherSetting`): preserved verbatim.
+ *   Empty matcher groups / event keys are pruned after the drop.
+ * - **Existing settings with legacy flat-array `hooks`** (PR #31 / #32 era —
+ *   cc rejected these with a Settings Warning): discarded entirely. Those
+ *   entries were never honored, so nothing of value is lost. A log line
+ *   tells the user the cleanup happened.
+ * - **Other top-level fields** (e.g. `mcpServers`, `model`): preserved
+ *   verbatim.
  *
  * Atomic write via `atomicWrite` (same-dir tmp + fsync + rename, mode 0600 —
- * matches cc's own settings.json default permission).
+ * matches cc's own settings.json default permission). Backup of the prior
+ * settings.json is taken first to a timestamped `.bak.<iso>` sibling.
  *
  * Errors:
  * - Invalid JSON in existing settings.json → exit 1, settings.json untouched.
@@ -90,11 +127,6 @@ export async function runSetupHooksCommand(
   log(`  multi-cc-im repo: ${repoRoot}`);
 
   const wrapperPath = `${repoRoot}/bin/multi-cc-im`;
-  const ourHooks = HOOK_EVENTS.map((event) => ({
-    matcher: '*',
-    type: 'command' as const,
-    command: `${wrapperPath} hook ${event}`,
-  }));
 
   let existing: Record<string, unknown> = {};
   try {
@@ -118,23 +150,22 @@ export async function runSetupHooksCommand(
     }
   }
 
-  const existingHooks = Array.isArray(existing.hooks)
-    ? (existing.hooks as unknown[])
-    : [];
-
-  // Filter out any existing multi-cc-im hooks (idempotent re-run; replaces
-  // stale entries with possibly-different ABS_PATH).
-  const otherHooks = existingHooks.filter((h) => {
-    if (typeof h !== 'object' || h === null) return true;
-    const cmd = (h as { command?: unknown }).command;
-    if (typeof cmd !== 'string') return true;
-    return !cmd.includes('bin/multi-cc-im hook ');
-  });
-  const removedCount = existingHooks.length - otherHooks.length;
+  const { hooksMap, removedCount, legacyArrayDropped } = pruneExistingHooks(
+    existing.hooks,
+  );
+  for (const event of HOOK_EVENTS) {
+    const handler: HookHandler = {
+      type: 'command',
+      command: `${wrapperPath} hook ${event}`,
+    };
+    const matcher = TOOL_MATCHED_EVENTS.has(event) ? '*' : '';
+    const groups = hooksMap[event] ?? [];
+    hooksMap[event] = [...groups, { matcher, hooks: [handler] }];
+  }
 
   const newSettings: Record<string, unknown> = {
     ...existing,
-    hooks: [...otherHooks, ...ourHooks],
+    hooks: hooksMap,
   };
 
   await mkdir(dirname(ccSettingsPath), { recursive: true });
@@ -161,21 +192,27 @@ export async function runSetupHooksCommand(
 
   await atomicWrite(ccSettingsPath, `${JSON.stringify(newSettings, null, 2)}\n`);
 
+  if (legacyArrayDropped > 0) {
+    log(
+      `  ✓ replaced ${legacyArrayDropped} legacy flat-array hook entr${legacyArrayDropped === 1 ? 'y' : 'ies'} (cc was ignoring them — wrong schema from older multi-cc-im versions)`,
+    );
+  }
   if (removedCount > 0) {
     log(
-      `  ✓ removed ${removedCount} stale multi-cc-im hook(s) (likely from previous repo path)`,
+      `  ✓ removed ${removedCount} stale multi-cc-im hook handler(s) (likely from previous repo path)`,
     );
   }
   log(
     `  ✓ added 6 multi-cc-im hooks (events: ${HOOK_EVENTS.join(', ')})`,
   );
-  const totalHooks = (newSettings.hooks as unknown[]).length;
-  if (otherHooks.length > 0) {
+  const totalHandlers = countHandlers(hooksMap);
+  const otherHandlers = totalHandlers - HOOK_EVENTS.length;
+  if (otherHandlers > 0) {
     log(
-      `  ✓ total hooks now: ${totalHooks} (${otherHooks.length} from other tools preserved)`,
+      `  ✓ total handlers now: ${totalHandlers} (${otherHandlers} from other tools preserved)`,
     );
   } else {
-    log(`  ✓ total hooks now: ${totalHooks}`);
+    log(`  ✓ total handlers now: ${totalHandlers}`);
   }
   log(`  done. Test with: \`./bin/multi-cc-im start\` then start cc in any wezterm tab.`);
 
@@ -183,9 +220,84 @@ export async function runSetupHooksCommand(
     exitCode: 0,
     stderr: '',
     writtenTo: ccSettingsPath,
-    hookCount: totalHooks,
+    hookCount: totalHandlers,
     ...(backupPath !== undefined ? { backupPath } : {}),
   };
+}
+
+/**
+ * Walk the user's existing `hooks` value, drop any handler whose `command`
+ * mentions `bin/multi-cc-im hook ` (so re-running the command swaps stale
+ * ABS_PATH entries cleanly), and prune empty matcher groups / events left
+ * behind. Returns a map ready to receive our fresh entries.
+ *
+ * Handles three input shapes:
+ * 1. Object — cc upstream schema; walked normally.
+ * 2. Array — legacy buggy multi-cc-im flat-array (cc rejected with Settings
+ *    Warning, so it was effectively dead). Discarded entirely; counted via
+ *    `legacyArrayDropped` for the log line.
+ * 3. Anything else (undefined/null/string/etc.) — treated as no existing
+ *    hooks; an empty map is returned.
+ */
+function pruneExistingHooks(rawHooks: unknown): {
+  hooksMap: HooksMap;
+  removedCount: number;
+  legacyArrayDropped: number;
+} {
+  if (Array.isArray(rawHooks)) {
+    return { hooksMap: {}, removedCount: 0, legacyArrayDropped: rawHooks.length };
+  }
+  if (typeof rawHooks !== 'object' || rawHooks === null) {
+    return { hooksMap: {}, removedCount: 0, legacyArrayDropped: 0 };
+  }
+
+  const out: HooksMap = {};
+  let removedCount = 0;
+
+  for (const [event, value] of Object.entries(rawHooks as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue;
+    const filteredGroups: MatcherGroup[] = [];
+    for (const group of value) {
+      if (typeof group !== 'object' || group === null) continue;
+      const matcher = (group as { matcher?: unknown }).matcher;
+      const innerHooks = (group as { hooks?: unknown }).hooks;
+      if (!Array.isArray(innerHooks)) continue;
+      const filteredHandlers: HookHandler[] = [];
+      for (const handler of innerHooks) {
+        if (typeof handler !== 'object' || handler === null) continue;
+        const cmd = (handler as { command?: unknown }).command;
+        const type = (handler as { type?: unknown }).type;
+        if (
+          type === 'command' &&
+          typeof cmd === 'string' &&
+          cmd.includes(MULTI_CC_IM_HOOK_NEEDLE)
+        ) {
+          removedCount++;
+          continue;
+        }
+        // Preserve unknown handler shapes verbatim (http/mcp_tool/agent/prompt).
+        filteredHandlers.push(handler as HookHandler);
+      }
+      if (filteredHandlers.length === 0) continue;
+      filteredGroups.push({
+        matcher: typeof matcher === 'string' ? matcher : '',
+        hooks: filteredHandlers,
+      });
+    }
+    if (filteredGroups.length > 0) {
+      out[event] = filteredGroups;
+    }
+  }
+
+  return { hooksMap: out, removedCount, legacyArrayDropped: 0 };
+}
+
+function countHandlers(hooksMap: HooksMap): number {
+  let n = 0;
+  for (const groups of Object.values(hooksMap)) {
+    for (const g of groups) n += g.hooks.length;
+  }
+  return n;
 }
 
 function resolveDefaultRepoRoot(): string {
