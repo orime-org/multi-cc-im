@@ -1,0 +1,15 @@
+{
+  "name": "@multi-cc-im/bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@multi-cc-im/shared": "workspace:*"
+  }
+}
