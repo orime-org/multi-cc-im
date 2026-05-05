@@ -48,6 +48,14 @@ export interface CreateOrchestratorOpts {
    * silently swallow. Bridge main entry passes its `pino` logger.
    */
   onError?: (err: unknown, context: { phase: string; sessionId?: SessionId }) => void;
+  /**
+   * INFO-level event sink — fires for inbound routing decisions, outbound cc
+   * Stop forwards / skips, and SessionStart refreshes. Default: silently
+   * swallow. \`apps/multi-cc-im/src/start.ts\` wires this to the same stderr
+   * logger as its pre-flight banner so users running smoke can watch the
+   * full wechat → cc → wechat round-trip in real time.
+   */
+  log?: (line: string) => void;
 }
 
 export interface BridgeOrchestrator {
@@ -92,6 +100,7 @@ export function createOrchestrator(
     opts.sendKeystrokeDelayMs ?? DEFAULT_SEND_KEYSTROKE_DELAY_MS;
   const lastReplyCtxBySession = new Map<SessionId, IMReplyContext>();
   const onError = opts.onError ?? (() => {});
+  const log = opts.log ?? (() => {});
 
   // ============================================================================
   // Inbound: wechat → router → term sendText 两步法
@@ -139,6 +148,13 @@ export function createOrchestrator(
       lastReplyCtxBySession.set(d.session.sessionId, msg.replyCtx);
     }
 
+    if (result.dispatches.length > 0) {
+      const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
+      log(`[wechat → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);
+    } else if (result.echo.length > 0) {
+      log(`[wechat] router returned echo only: ${truncate(result.echo, 80)}`);
+    }
+
     // Run dispatches in parallel (each pane is independent; router 决策保证
     // 同 pane 不会有冲突 dispatches)
     const dispatchErrors: string[] = (
@@ -169,10 +185,18 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handleStop(p: StopPayload): Promise<HookDecision | void> {
+    const sid8 = p.session_id.slice(0, 8);
     const replyCtx = lastReplyCtxBySession.get(p.session_id);
-    if (!replyCtx) return; // session never received wechat traffic — silent
-    if (p.last_assistant_message.length === 0) return; // empty reply — skip
+    if (!replyCtx) {
+      log(`[Stop ${sid8}] no wechat origin recorded, skip forward`);
+      return; // session never received wechat traffic — silent
+    }
+    if (p.last_assistant_message.length === 0) {
+      log(`[Stop ${sid8}] empty assistant message, skip forward`);
+      return;
+    }
 
+    log(`[cc → wechat] session ${sid8} reply='${truncate(p.last_assistant_message, 80)}'`);
     try {
       await opts.imAdapter.send(p.last_assistant_message, replyCtx);
     } catch (err) {
@@ -181,9 +205,11 @@ export function createOrchestrator(
   }
 
   const cliHandler: CLIHandler = {
-    async onSessionStart(_p: SessionStartPayload): Promise<void> {
+    async onSessionStart(p: SessionStartPayload): Promise<void> {
       // Refresh registry so the new session shows up on next inbound dispatch.
       // listAlive() also rebuilds paneToSession cache used by PaneAlive.
+      const sid8 = p.session_id.slice(0, 8);
+      log(`[SessionStart ${sid8}] cwd=${p.cwd} model=${p.model}`);
       await opts.registry.listAlive().catch((err) => {
         onError(err, { phase: 'sessionStartRefresh' });
       });
@@ -233,4 +259,9 @@ export function createOrchestrator(
 
 function displayName(s: { friendlyName: string | undefined; sessionId: string }): string {
   return s.friendlyName ?? `$${s.sessionId.slice(0, 8)}`;
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
 }

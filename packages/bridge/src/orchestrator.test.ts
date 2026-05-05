@@ -494,3 +494,156 @@ describe('createOrchestrator — error handling', () => {
     await orch.stop();
   });
 });
+
+describe('createOrchestrator — INFO log sink', () => {
+  it('inbound dispatch emits one [wechat → name] line with truncated body', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hello world'));
+    const dispatchLine = lines.find((l) => l.startsWith('[wechat →'));
+    expect(dispatchLine).toContain('frontend');
+    expect(dispatchLine).toContain('hello world');
+    await orch.stop();
+  });
+
+  it('multi-target dispatch lists all target names', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('@frontend @api hi'));
+    const dispatchLine = lines.find((l) => l.startsWith('[wechat →'));
+    expect(dispatchLine).toContain('frontend');
+    expect(dispatchLine).toContain('api');
+    await orch.stop();
+  });
+
+  it('cc Stop with stored replyCtx emits [cc → wechat] line with truncated reply', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    // First inbound to set replyCtx
+    await im.handler!.onMessage(incoming('hello'));
+    lines.length = 0; // clear inbound logs
+    // Then stop
+    await cli.handler!.onStop({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: 'cc replied',
+    });
+    const stopLine = lines.find((l) => l.startsWith('[cc → wechat]'));
+    expect(stopLine).toContain('cc replied');
+    expect(stopLine).toContain(SID_A.slice(0, 8));
+    await orch.stop();
+  });
+
+  it('cc Stop without stored replyCtx emits skip-forward line', async () => {
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await cli.handler!.onStop({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: 'lone reply',
+    });
+    expect(lines.some((l) => l.includes('no wechat origin recorded'))).toBe(true);
+    await orch.stop();
+  });
+
+  it('SessionStart hook emits [SessionStart sid8] cwd + model', async () => {
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await cli.handler!.onSessionStart({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      model: 'claude-opus-4-7',
+    });
+    const startLine = lines.find((l) => l.startsWith('[SessionStart'));
+    expect(startLine).toContain(SID_A.slice(0, 8));
+    expect(startLine).toContain('/tmp/proj-a');
+    expect(startLine).toContain('claude-opus-4-7');
+    await orch.stop();
+  });
+
+  it('long body in inbound is truncated to ~80 chars with ellipsis', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    const longText = 'x'.repeat(200);
+    await orch.start();
+    await im.handler!.onMessage(incoming(longText));
+    const line = lines.find((l) => l.startsWith('[wechat →'))!;
+    expect(line.length).toBeLessThan(150); // not full 200
+    expect(line.endsWith('…')).toBe(true);
+    await orch.stop();
+  });
+});
