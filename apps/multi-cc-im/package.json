@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "smoke": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "@multi-cc-im/bridge": "workspace:*",
@@ -14,9 +19,12 @@
     "@multi-cc-im/shared": "workspace:*",
     "@multi-cc-im/storage-files": "workspace:*",
     "@multi-cc-im/term-wezterm": "workspace:*",
-    "qrcode-terminal": "^0.12.0"
+    "proper-lockfile": "^4.1.2",
+    "qrcode-terminal": "^0.12.0",
+    "silk-wasm": "^3.7.1"
   },
   "devDependencies": {
-    "@types/qrcode-terminal": "^0.12.2"
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsup": "^8.5.0"
   }
 }

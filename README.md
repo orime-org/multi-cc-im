@@ -20,10 +20,11 @@ multi-cc-im 启动时探测 wezterm 路径并缓存到 `~/.multi-cc-im/config.to
 git clone https://github.com/orime-org/multi-cc-im.git
 cd multi-cc-im
 pnpm install
-pnpm typecheck && pnpm test  # 可选验证
+pnpm typecheck && pnpm test            # 可选验证
+pnpm --filter multi-cc-im build        # 推荐: bundle dist/cli.js 提速 cold start
 ```
 
-CLI 入口位于 `apps/multi-cc-im/src/cli.ts`。开发期 `pnpm --filter multi-cc-im dev <subcommand>` 通过 `tsx` 跑 TS 源码；后续打包发布时 v2 加 `tsup` bundle 步骤。
+CLI 入口走 `bin/multi-cc-im` bash wrapper。**生产模式**（推荐）：跑过 `pnpm build` 后 wrapper 自动用 `apps/multi-cc-im/dist/cli.js` (≈ 50ms 启动)。**开发模式**：bundle 不存在时 fallback `tsx src/cli.ts` (≈ 300-1500ms 启动)。cc hook 每轮 assistant 触发 2 次，**生产模式必装**否则手机敲字延迟肉眼可见。
 
 ### 3. 首次登录 wechat（QR 扫码）
 
@@ -103,9 +104,11 @@ multi-cc-im/
 
 ```bash
 pnpm install
-pnpm typecheck      # 7 workspaces tsc --noEmit
-pnpm test           # 56 files / 713 tests
-pnpm test:coverage  # 同上 + v8 coverage（80% threshold 全维度门槛）
+pnpm typecheck                       # 8 workspaces tsc --noEmit
+pnpm test                            # 56 files / 713 tests
+pnpm test:coverage                   # 同上 + v8 coverage（80% threshold 全维度门槛）
+pnpm --filter multi-cc-im build      # tsup bundle → apps/multi-cc-im/dist/cli.js
+pnpm --filter multi-cc-im dev <cmd>  # tsx src/cli.ts（不要 build，dev 期 alias）
 ```
 
 TDD 节奏（红 → 绿 → 蓝），重大决策 5 步 DD 流程，commit / PR 一律不带 AI 作者署名 —— 详见 [CLAUDE.md](CLAUDE.md)「关键规范」+ [docs/dev.md](docs/dev.md)。
