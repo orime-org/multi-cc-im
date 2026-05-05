@@ -74,5 +74,13 @@ export const IncomingMessageSchema = z.object({
   text: z.string().nullable(),
   attachments: z.array(AttachmentSchema).default([]),
   timestamp: z.number(),
+  /**
+   * Adapter-specific reply context, opaque to bridge core. Bridge stores it
+   * per-session (`lastReplyCtxBySession`) so that when cc Stop hook fires for
+   * that session, the reply can be routed back via `IMAdapter.send(content,
+   * replyCtx)`. Each IMAdapter constructs the value and casts on send (e.g.
+   * wechat: `{ to: from_user_id, contextToken: msg.context_token }`).
+   */
+  replyCtx: z.unknown(),
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;

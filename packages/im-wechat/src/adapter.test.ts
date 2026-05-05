@@ -189,6 +189,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
       from: 'wxid_user',
       text: 'hello',
       attachments: [],
+      replyCtx: { to: 'wxid_user', contextToken: undefined },
       timestamp: 1700000000000,
     });
     await adapter.stop();
