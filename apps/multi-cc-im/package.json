@@ -3,9 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "bin": {
-    "multi-cc-im": "./src/cli.ts"
-  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts"
