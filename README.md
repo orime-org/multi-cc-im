@@ -36,28 +36,16 @@ CLI 入口位于 `apps/multi-cc-im/src/cli.ts`。开发期 `pnpm --filter multi-
 
 ### 4. 配 cc hooks（每个 cc 跑前一次）
 
-把以下加到 `~/.claude/settings.json` 的 `hooks` 段（**绝对路径** 指向 repo 根的 `bin/multi-cc-im` bash wrapper）：
+直接复制 [`examples/claude-settings.json`](examples/claude-settings.json) 的 `hooks` 段到你的 `~/.claude/settings.json`，把 `ABS_PATH` 全部替换成 repo 绝对路径。一行 sed：
 
-```json
-{
-  "hooks": [
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook SessionStart" },
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook UserPromptSubmit" },
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook PreToolUse" },
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook PostToolUse" },
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook Stop" },
-    { "matcher": "*", "type": "command",
-      "command": "/abs/path/to/multi-cc-im/bin/multi-cc-im hook SessionEnd" }
-  ]
-}
+```bash
+# 把这里的输出 merge 进 ~/.claude/settings.json 的 hooks 段
+sed "s|ABS_PATH|$(pwd)|g" examples/claude-settings.json
 ```
 
 `bin/multi-cc-im` 是一个 bash wrapper 自动用 workspace 内的 `tsx` 跑 `apps/multi-cc-im/src/cli.ts`（Node 22-24 default 不能 resolve TS-ESM 风格 `import './foo.js'` → `./foo.ts`，需要 tsx 或 v2 的 tsup bundle）。
+
+cc 需要订阅 6 个 hook events：SessionStart 设 paneToSession map / SessionEnd 驱 PaneAlive 信号 / UserPromptSubmit + Stop 进 bridge router / PreToolUse + PostToolUse 进 events.jsonl 给将来 analytics 用。
 
 > v2 会加全局 `multi-cc-im` 命令（tsup bundle + `npm publish` / `pnpm link --global`），届时 hook 命令简化为 `multi-cc-im hook <event>` 不依赖绝对路径。
 
