@@ -57,3 +57,58 @@ jobs:
 
       - name: Test with coverage
         run: pnpm test:coverage
+
+  bundle-smoke:
+    name: bundle-smoke
+    # tsup bundle + bin wrapper end-to-end —— unit tests 跑 TS source via
+    # vitest，不验证 production bundle 路径（noExternal/external 选择 / shims
+    # CJS interop / dist/cli.js 加载 / ESM module resolution）。这个 job 防止
+    # tsup config 退化时悄悄变成 cc hook 启动报错。
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build tsup bundle
+        run: pnpm --filter multi-cc-im build
+
+      - name: Verify dist/cli.js exists
+        run: test -f apps/multi-cc-im/dist/cli.js
+
+      - name: Smoke — bin wrapper picks up bundled cli (--version)
+        run: |
+          out="$(./bin/multi-cc-im --version)"
+          test "$out" = "0.0.0"
+
+      - name: Smoke — hook subcommand round-trip (Stop)
+        run: |
+          export MULTI_CC_IM_HOME="$(mktemp -d)"
+          SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
+          PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
+          echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
+          # State files written under <home>/state/<sid>.{events.jsonl,last-hook-at}
+          test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
+          test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
+          # events.jsonl contains exactly one JSON line for the Stop event.
+          # Numeric `-eq` compare (not `=`) — wc -l output is whitespace-padded
+          # on macOS / some Linux distros.
+          line_count="$(wc -l < "$MULTI_CC_IM_HOME/state/$SID.events.jsonl")"
+          [ "$line_count" -eq 1 ]
+
+      - name: Smoke — bin wrapper falls back to tsx when dist absent
+        run: |
+          rm -rf apps/multi-cc-im/dist
+          out="$(./bin/multi-cc-im --version)"
+          test "$out" = "0.0.0"
