@@ -36,6 +36,14 @@ export interface RunStartCommandOpts {
    * lifecycle / IM long-poll.
    */
   buildOrchestrator?: () => BridgeOrchestrator;
+  /**
+   * Logger for pre-flight banner + ready / error lines. Default writes to
+   * `process.stderr` (CLAUDE.md「multi-cc-im hook 不许写非协议 stdout」reserves
+   * stdout for hook decision JSON; start subcommand isn't a hook but stays
+   * consistent so stderr is the default diagnostic channel). Tests inject a
+   * spy to assert log content without polluting test stdout/stderr.
+   */
+  log?: (line: string) => void;
 }
 
 export interface StartCommandResult {
@@ -77,6 +85,9 @@ export async function runStartCommand(
   const paths = opts.root
     ? resolveAppPaths({ env: { MULTI_CC_IM_HOME: opts.root } })
     : resolveAppPaths();
+  const log = opts.log ?? defaultLog;
+
+  log(`multi-cc-im start (root: ${paths.root})`);
 
   // ===== 1. Pre-flight: credentials =====
   const credentialPath = paths.credentialFor('wechat');
@@ -88,6 +99,7 @@ export async function runStartCommand(
       stderr: `multi-cc-im start: wechat credentials not found at ${credentialPath}\n  Run \`multi-cc-im login wechat\` first to scan QR + save bot_token.`,
     };
   }
+  log(`  ✓ wechat credentials at ${credentialPath}`);
 
   // ===== 1b. Pre-flight: wezterm path resolution =====
   const configStore = createConfigStore({ filePath: paths.configToml });
@@ -109,6 +121,9 @@ export async function runStartCommand(
       external_paths: { ...config.external_paths, wezterm },
     };
     await configStore.save(config);
+    log(`  ✓ wezterm at ${wezterm} (cached to config.toml)`);
+  } else {
+    log(`  ✓ wezterm at ${wezterm}`);
   }
 
   // ===== 2. Build adapters =====
@@ -126,6 +141,11 @@ export async function runStartCommand(
   const routerState = await createPersistentRouterState({
     stateDir: paths.stateDir,
   });
+
+  const aliveSessions = await registry.listAlive();
+  log(
+    `  ✓ session registry: ${aliveSessions.length} alive cc session(s)${aliveSessions.length === 0 ? ' (start cc in any wezterm tab to see them appear)' : ''}`,
+  );
 
   const imAdapter = createWeixinAdapter({
     configStore,
@@ -153,9 +173,16 @@ export async function runStartCommand(
         cliAdapter,
         registry,
         state: routerState,
+        onError: (err, ctx) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(
+            `  ⚠️  orchestrator [${ctx.phase}${ctx.sessionId ? ` ${ctx.sessionId.slice(0, 8)}` : ''}]: ${msg}`,
+          );
+        },
       });
 
   await orchestrator.start();
+  log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
 
   return {
     exitCode: 0,
@@ -165,6 +192,11 @@ export async function runStartCommand(
       await routerState.flush();
     },
   };
+}
+
+/** Default log sink writes to stderr (stdout reserved for hook protocol). */
+function defaultLog(line: string): void {
+  process.stderr.write(`${line}\n`);
 }
 
 /**
