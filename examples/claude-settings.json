@@ -1,0 +1,35 @@
+{
+  "_comment": "multi-cc-im hooks template — replace ABS_PATH with the absolute path to your multi-cc-im checkout. After editing, merge the `hooks` block into ~/.claude/settings.json (cc reads from there). The 6 events are needed: SessionStart sets up paneToSession map; SessionEnd / PID checks drive PaneAlive; UserPromptSubmit / Stop carry events into bridge router; PreToolUse / PostToolUse populate events.jsonl for future analytics. See README.md Quick Start step 4 for context.",
+  "hooks": [
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook SessionStart"
+    },
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook UserPromptSubmit"
+    },
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook PreToolUse"
+    },
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook PostToolUse"
+    },
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook Stop"
+    },
+    {
+      "matcher": "*",
+      "type": "command",
+      "command": "ABS_PATH/bin/multi-cc-im hook SessionEnd"
+    }
+  ]
+}
