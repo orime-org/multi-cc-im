@@ -172,7 +172,7 @@ describe('runSetupHooksCommand', () => {
       expect(Object.keys(written.hooks)).toHaveLength(6);
     });
 
-    it('logs progress lines (cc settings path / repo path / handler count)', async () => {
+    it('logs progress lines (cc settings path / repo path / handler count) on first write', async () => {
       const lines: string[] = [];
       await runSetupHooksCommand({
         ccSettingsPath: ccSettings,
@@ -185,6 +185,93 @@ describe('runSetupHooksCommand', () => {
       expect(joined).toContain(repoRoot);
       expect(joined).toContain('6 multi-cc-im hooks');
       expect(joined).toMatch(/total handlers now: \d+/);
+    });
+  });
+
+  describe('no-op when already up-to-date', () => {
+    async function listBackups(): Promise<string[]> {
+      const all = await readdir(dirname(ccSettings));
+      return all.filter((f) => f.startsWith('settings.json.bak.'));
+    }
+
+    it('second run with unchanged content makes no backup file', async () => {
+      await run();
+      expect(await listBackups()).toHaveLength(0); // first run created file from scratch
+      await run();
+      expect(await listBackups()).toHaveLength(0); // second run is no-op, still 0
+    });
+
+    it('second run returns backupPath undefined', async () => {
+      await run();
+      const r = await runSetupHooksCommand({
+        ccSettingsPath: ccSettings,
+        repoRoot,
+        log: () => {},
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.backupPath).toBeUndefined();
+    });
+
+    it('second run logs "already up-to-date" instead of "removed ... stale"', async () => {
+      await run();
+      const lines: string[] = [];
+      await runSetupHooksCommand({
+        ccSettingsPath: ccSettings,
+        repoRoot,
+        log: (l) => lines.push(l),
+      });
+      const joined = lines.join('\n');
+      expect(joined).toContain('already up-to-date');
+      expect(joined).not.toMatch(/removed \d+ stale/);
+      expect(joined).not.toContain('added 6 multi-cc-im hooks');
+    });
+
+    it('settings.json with other-tool hooks already merged → re-run is no-op', async () => {
+      await mkdir(join(home, '.claude'), { recursive: true });
+      await writeFile(
+        ccSettings,
+        JSON.stringify({
+          hooks: {
+            Notification: [
+              {
+                matcher: '',
+                hooks: [{ type: 'command', command: '/bin/notify' }],
+              },
+            ],
+          },
+        }),
+        'utf-8',
+      );
+      await run(); // merges multi-cc-im 6 in alongside Notification entry
+      const afterFirst = await readFile(ccSettings, 'utf-8');
+      const backupsAfterFirst = await listBackups();
+
+      const r2 = await runSetupHooksCommand({
+        ccSettingsPath: ccSettings,
+        repoRoot,
+        log: () => {},
+      });
+      expect(r2.exitCode).toBe(0);
+      expect(r2.backupPath).toBeUndefined();
+      const afterSecond = await readFile(ccSettings, 'utf-8');
+      expect(afterSecond).toBe(afterFirst);
+      expect(await listBackups()).toEqual(backupsAfterFirst);
+    });
+
+    it('changed ABS_PATH (user moved repo) → re-run is NOT a no-op (writes + backs up)', async () => {
+      await run();
+      const newRepoRoot = await mkdtemp(join(tmpdir(), 'mcim-setup-newrepo-'));
+      try {
+        const r = await runSetupHooksCommand({
+          ccSettingsPath: ccSettings,
+          repoRoot: newRepoRoot, // simulate moved repo
+          log: () => {},
+        });
+        expect(r.exitCode).toBe(0);
+        expect(r.backupPath).toBeDefined(); // backup taken because content changes
+      } finally {
+        await rm(newRepoRoot, { recursive: true, force: true });
+      }
     });
   });
 
@@ -498,7 +585,10 @@ describe('runSetupHooksCommand', () => {
       expect(() => ccHooksSchema.parse(newContent.hooks)).not.toThrow();
     });
 
-    it('multiple runs → multiple timestamped backups, none overwritten', async () => {
+    it('multiple runs that actually change content → multiple timestamped backups, none overwritten', async () => {
+      // Force two real writes by changing repoRoot between runs (simulates
+      // user moving the multi-cc-im checkout). Same-content re-runs no-op
+      // and don't create a backup — covered separately by the no-op tests.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '{}', 'utf-8');
 
@@ -511,18 +601,23 @@ describe('runSetupHooksCommand', () => {
 
       await new Promise((r) => setTimeout(r, 10));
 
-      const r2 = await runSetupHooksCommand({
-        ccSettingsPath: ccSettings,
-        repoRoot,
-        log: () => {},
-      });
-      expect(r2.backupPath).toBeDefined();
-      expect(r2.backupPath).not.toBe(r1.backupPath);
+      const newRepoRoot = await mkdtemp(join(tmpdir(), 'mcim-setup-newrepo-'));
+      try {
+        const r2 = await runSetupHooksCommand({
+          ccSettingsPath: ccSettings,
+          repoRoot: newRepoRoot,
+          log: () => {},
+        });
+        expect(r2.backupPath).toBeDefined();
+        expect(r2.backupPath).not.toBe(r1.backupPath);
 
-      const backups = (await readdir(dirname(ccSettings))).filter((f) =>
-        f.startsWith('settings.json.bak.'),
-      );
-      expect(backups).toHaveLength(2);
+        const backups = (await readdir(dirname(ccSettings))).filter((f) =>
+          f.startsWith('settings.json.bak.'),
+        );
+        expect(backups).toHaveLength(2);
+      } finally {
+        await rm(newRepoRoot, { recursive: true, force: true });
+      }
     });
 
     it('backup path follows <settings>.bak.<iso-timestamp> pattern', async () => {
