@@ -49,6 +49,14 @@ export interface SweepStaleStateFilesResult {
   legacyCleaned: number;
 }
 
+export interface SweepStaleStateFilesOpts {
+  /**
+   * Preview only — count what would be deleted without actually deleting.
+   * Used by `multi-cc-im cleanup --dry-run`. Default false (real delete).
+   */
+  dryRun?: boolean;
+}
+
 /**
  * Sweep `<stateDir>` per the rules in the module header. Returns a summary
  * the caller can log; throws on unexpected fs errors (ENOENT on stateDir
@@ -56,7 +64,13 @@ export interface SweepStaleStateFilesResult {
  */
 export async function sweepStaleStateFiles(
   stateDir: string,
+  sweepOpts: SweepStaleStateFilesOpts = {},
 ): Promise<SweepStaleStateFilesResult> {
+  const dryRun = sweepOpts.dryRun ?? false;
+  const remove = async (filePath: string): Promise<void> => {
+    if (dryRun) return;
+    await unlinkSafely(filePath);
+  };
   let entries: string[];
   try {
     entries = await readdir(stateDir);
@@ -73,7 +87,7 @@ export async function sweepStaleStateFiles(
   for (const name of entries) {
     if (name === 'current-session') {
       // Top-level legacy file from PR-B1 era — delete unconditionally.
-      await unlinkSafely(join(stateDir, name));
+      await remove(join(stateDir, name));
       topLevelLegacyCount++;
       continue;
     }
@@ -109,30 +123,30 @@ export async function sweepStaleStateFiles(
   for (const group of groups.values()) {
     // Always cleanup legacy files regardless of paired/lone state.
     for (const f of group.legacyFiles) {
-      await unlinkSafely(f);
+      await remove(f);
       legacyCleaned++;
     }
 
     if (group.hasStart && group.hasEnd) {
       // Completed session — delete the 3-set (start + end + leftover stops).
-      await unlinkSafely(join(stateDir, `${group.sid}.SessionStart`));
-      await unlinkSafely(join(stateDir, `${group.sid}.SessionEnd`));
-      for (const f of group.stopFiles) await unlinkSafely(f);
+      await remove(join(stateDir, `${group.sid}.SessionStart`));
+      await remove(join(stateDir, `${group.sid}.SessionEnd`));
+      for (const f of group.stopFiles) await remove(f);
       pairedCleaned++;
       orphanStopsCleaned += group.stopFiles.length;
     } else if (group.hasStart && !group.hasEnd) {
       // cc still alive (probably) but daemon-down accumulated Stop files
       // can't be forwarded — wechat replyCtx is in-memory and was lost.
       // Delete them so they don't replay forever.
-      for (const f of group.stopFiles) await unlinkSafely(f);
+      for (const f of group.stopFiles) await remove(f);
       orphanStopsCleaned += group.stopFiles.length;
     } else if (!group.hasStart && group.hasEnd) {
       // Orphan SessionEnd (shouldn't happen — defensive cleanup).
-      await unlinkSafely(join(stateDir, `${group.sid}.SessionEnd`));
+      await remove(join(stateDir, `${group.sid}.SessionEnd`));
     } else {
       // No SessionStart, no SessionEnd, possibly some Stop files from a
       // very stale daemon-down state. Drop them.
-      for (const f of group.stopFiles) await unlinkSafely(f);
+      for (const f of group.stopFiles) await remove(f);
       orphanStopsCleaned += group.stopFiles.length;
     }
   }

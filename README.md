@@ -79,7 +79,14 @@ The state/ directory is **monitor-only** — it never accumulates cc conversatio
 | `<sid>.SessionEnd` | cc exit → cleanup sweep (0-byte tombstone) | Marks cc dead so daemon stops routing to it |
 | `wechat-cursor` | persistent | iLink long-poll cursor (don't lose messages on restart) |
 
-Daemon startup runs a sweep that deletes paired `SessionStart` + `SessionEnd` (= cc lifecycle complete), orphan `Stop.<ts>` (= daemon-down accumulation that can't be forwarded), and any legacy state files from pre-redesign installs.
+Daemon startup runs a sweep that deletes paired `SessionStart` + `SessionEnd` (= cc lifecycle complete), orphan `Stop.<ts>` (= daemon-down accumulation that can't be forwarded), and any legacy state files from pre-redesign installs. To trigger the same sweep manually (e.g. when daemon has been running for weeks and `state/` accumulated dead-session pairs):
+
+```bash
+./bin/multi-cc-im cleanup --dry-run    # preview what would be deleted
+./bin/multi-cc-im cleanup              # actually delete
+```
+
+Safe to run while daemon is running — only deletes sessions that already have a `SessionEnd` tombstone (cc already dead, daemon already stopped routing to it).
 
 ### 6. Name your cc sessions (recommended)
 

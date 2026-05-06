@@ -5,6 +5,7 @@
 // this file could regain a `#!/usr/bin/env node` shebang directly.
 
 import qrcodeTerminal from 'qrcode-terminal';
+import { runCleanupCommand } from './cleanup.js';
 import { runHookCommand } from './hook.js';
 import { runLoginWechatCommand } from './login.js';
 import { runSetupHooksCommand } from './setup-hooks.js';
@@ -17,6 +18,11 @@ Usage:
   multi-cc-im login wechat         — scan QR + save bot_token to credentials
   multi-cc-im setup-hooks          — register multi-cc-im in ~/.claude/settings.json
                                      (idempotent merge, preserves other tools' hooks)
+  multi-cc-im cleanup [--dry-run]  — manually sweep ~/.multi-cc-im/state/
+                                     (paired SessionStart+SessionEnd, orphan Stop
+                                     files, legacy state files). Same as the
+                                     daemon's startup sweep; safe to run while
+                                     daemon is running (won't touch live cc).
   multi-cc-im hook <event>         — cc hook entrypoint (called by cc settings.json)
   multi-cc-im --help | -h          — print this help
   multi-cc-im --version | -v       — print version
@@ -56,6 +62,8 @@ async function main(): Promise<number> {
       return await dispatchLogin(rest);
     case 'setup-hooks':
       return await dispatchSetupHooks();
+    case 'cleanup':
+      return await dispatchCleanup(rest);
     case 'start':
       return await dispatchStart();
     default:
@@ -68,6 +76,24 @@ async function main(): Promise<number> {
 
 async function dispatchSetupHooks(): Promise<number> {
   const result = await runSetupHooksCommand();
+  if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
+  return result.exitCode;
+}
+
+async function dispatchCleanup(args: string[]): Promise<number> {
+  // Accept --dry-run / -n; reject other flags.
+  let dryRun = false;
+  for (const arg of args) {
+    if (arg === '--dry-run' || arg === '-n') {
+      dryRun = true;
+    } else {
+      process.stderr.write(
+        `multi-cc-im cleanup: unknown arg '${arg}'\nUsage: multi-cc-im cleanup [--dry-run]\n`,
+      );
+      return 2;
+    }
+  }
+  const result = await runCleanupCommand({ dryRun });
   if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
   return result.exitCode;
 }
