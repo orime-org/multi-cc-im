@@ -15,7 +15,7 @@ export interface ConfigStoreOpts {
  * and save — fail-fast per `docs/architecture.md`. Save is atomic.
  *
  * On first run, returns the schema's default-populated Config object
- * (empty friendly_names, empty acl.owners, empty external_paths).
+ * (empty acl.owners, empty external_paths).
  */
 export function createConfigStore(opts: ConfigStoreOpts): ConfigStore {
   const { filePath } = opts;

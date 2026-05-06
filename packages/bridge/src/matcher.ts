@@ -1,15 +1,30 @@
-import type { CwdAbs, FriendlyName, PaneId, SessionId } from '@multi-cc-im/shared';
+import type { CwdAbs, PaneId, SessionId } from '@multi-cc-im/shared';
+
+/**
+ * Reserved tab name that always refers to the bridge daemon itself rather
+ * than any cc session. `@multi-cc-im /list` etc. are bridge commands. Users
+ * cannot legitimately /rename a cc to this string (router rejects it on
+ * matcher entry).
+ */
+export const RESERVED_BRIDGE_NAME = 'multi-cc-im';
 
 /**
  * Per-session info needed for routing decisions. Bridge orchestrator builds
- * this from cli-cc state files (cc-pid + WEZTERM_PANE captured at SessionStart)
- * + ConfigStore `[friendly_names]` lookup.
+ * this from cli-cc state files (cc-pid + WEZTERM_PANE captured at
+ * SessionStart) and refreshes `tabTitle` on every IM-touching event by
+ * polling `wezterm cli list --format json` — see [DD: routing-syntax G']
+ * (../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
  */
 export interface SessionInfo {
   sessionId: SessionId;
   paneId: PaneId;
-  /** User-configured short name (`[friendly_names]` in config.toml). */
-  friendlyName: FriendlyName | undefined;
+  /**
+   * Tab title set via cc's `/rename <name>` slash command, observed via
+   * `wezterm cli list --format json`. `undefined` means the user has not
+   * named this cc yet — display falls back to `$<sid8>` and the bridge
+   * sends a one-time hint to IM at SessionStart.
+   */
+  tabTitle: string | undefined;
   cwd: CwdAbs;
 }
 
@@ -19,24 +34,30 @@ export type MatchResult =
   | { type: 'none' };
 
 /**
- * Resolve a `@<query>` token to a SessionInfo per [DD: routing-syntax G' tmux
- * 4-level fallback](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
+ * Resolve a `@<query>` token to a SessionInfo via tmux-style 5-level fallback
+ * over the user-set tab title (cc `/rename`):
  *
- * 1. **`$<id-prefix>`** — strict, match by SessionId short hash (no fallback)
- * 2. **`=<exact>`** — strict, exact friendly_name match (no prefix / glob)
- * 3. **exact** — friendly_name === query
- * 4. **prefix** — friendly_name.startsWith(query)
- * 5. **glob** — fnmatch (`*` and `?`) over friendly_name
+ * 1. **`$<id-prefix>`** — strict, match by SessionId short hash
+ * 2. **`=<exact>`** — strict exact tabTitle match
+ * 3. **exact** — tabTitle === query
+ * 4. **prefix** — tabTitle.startsWith(query)
+ * 5. **glob** — fnmatch (`*` and `?`) over tabTitle
  *
- * At each level: 0 candidates → next level / `none` / 1 → unique / 2+ →
- * `ambiguous` (do **not** fall through). Caller (router) reports candidates
- * verbatim back to user as a list.
+ * At each level: 0 candidates → next level / `none` / 1 → unique /
+ * 2+ → `ambiguous` (do **not** fall through). Caller (router) reports
+ * candidates verbatim back to user as a numbered list with `$sid8` so they
+ * can disambiguate via `$<id-prefix>`.
+ *
+ * Reserved name `multi-cc-im` is filtered out before matching — even if a
+ * user manages to /rename a cc to that string, it's never resolvable to a
+ * session (the router treats `@multi-cc-im` as a bridge command target).
  */
 export function matchSession(
   query: string,
   sessions: readonly SessionInfo[],
 ): MatchResult {
   if (query.length === 0) return { type: 'none' };
+  if (query === RESERVED_BRIDGE_NAME) return { type: 'none' };
 
   // Level 1: $<id-prefix> — strict id-only
   if (query.startsWith('$')) {
@@ -45,26 +66,26 @@ export function matchSession(
     return finalize(idMatches);
   }
 
-  // Level 2: =<exact> — strict exact friendly_name
+  // Level 2: =<exact> — strict exact tabTitle
   if (query.startsWith('=')) {
     const exactQuery = query.slice(1);
-    const matches = sessions.filter((s) => s.friendlyName === exactQuery);
+    const matches = sessions.filter((s) => s.tabTitle === exactQuery);
     return finalize(matches);
   }
 
-  // Level 3: exact friendly_name
-  const exactMatches = sessions.filter((s) => s.friendlyName === query);
+  // Level 3: exact tabTitle
+  const exactMatches = sessions.filter((s) => s.tabTitle === query);
   if (exactMatches.length > 0) return finalize(exactMatches);
 
-  // Level 4: prefix friendly_name
+  // Level 4: prefix tabTitle
   const prefixMatches = sessions.filter(
-    (s) => s.friendlyName !== undefined && s.friendlyName.startsWith(query),
+    (s) => s.tabTitle !== undefined && s.tabTitle.startsWith(query),
   );
   if (prefixMatches.length > 0) return finalize(prefixMatches);
 
-  // Level 5: glob friendly_name (* and ?)
+  // Level 5: glob tabTitle (* and ?)
   const globMatches = sessions.filter(
-    (s) => s.friendlyName !== undefined && globMatch(query, s.friendlyName),
+    (s) => s.tabTitle !== undefined && globMatch(query, s.tabTitle),
   );
   return finalize(globMatches);
 }

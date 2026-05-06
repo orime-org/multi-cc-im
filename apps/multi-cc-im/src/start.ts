@@ -18,6 +18,7 @@ import {
 } from '@multi-cc-im/storage-files';
 import {
   createWezTermAdapter,
+  listAllTabs,
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
 import { resolveAppPaths } from './config-paths.js';
@@ -137,7 +138,7 @@ export async function runStartCommand(
   });
   const registry = createSessionRegistry({
     stateDir: paths.stateDir,
-    configStore,
+    getTabTitles: () => listAllTabs({ wezterm }),
   });
   const routerState = await createPersistentRouterState({
     stateDir: paths.stateDir,

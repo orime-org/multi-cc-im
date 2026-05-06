@@ -70,18 +70,38 @@ sed "s|ABS_PATH|$(pwd)|g" examples/claude-settings.json
 
 Long-running background process: iLink long-polling + watching cc hook `events.jsonl` + routing WeChat `IncomingMessage` to the cc TUI. `Ctrl+C` triggers a graceful shutdown (flushes `current_session` state + releases all adapters).
 
+### 6. Name your cc sessions (recommended)
+
+Once cc is running, use its built-in `/rename` command to give the session a friendly name:
+
+```
+/rename frontend
+```
+
+cc persists the name to its session state (so `claude --resume` restores it) and pushes it to the wezterm tab title via OSC. multi-cc-im polls `wezterm cli list --format json` on every IM event and uses that title as the routing key:
+
+- WeChat `@frontend hello` → routes to the cc whose tab title is `frontend`
+- WeChat `→ frontend received` echo confirms the routing
+- cc reply forwarded back to WeChat is prefixed with `[frontend]` so you can tell sessions apart
+
+**Without `/rename`**, multi-cc-im falls back to a short session-id hash like `$1813fd32` and appends a one-time hint pointing you at `/rename`. Tab title polling is real-time — rename and the new name shows up on the next IM round-trip with no daemon restart.
+
+`multi-cc-im` is a reserved name and cannot be used as a tab title (router rejects it because it conflicts with bridge command targets — see `@list` / `@help` / `@current`).
+
 ## Routing syntax (user perspective)
 
-Locked per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
+Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with one update from the original DD: the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map. Behavior is otherwise identical.
 
 | What you send in WeChat | What it does |
 |---|---|
 | `hello` | Routes to `current_session` (last-explicit-mention sticky; with a single cc, automatically = that one) |
-| `@frontend hello` | Routes to the session whose `friendly_name = frontend`, and sets `current` |
-| `@fr hello` | Short prefix (tmux-style 4-level fallback: id → `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
+| `@frontend hello` | Routes to the session whose tab title is `frontend`, and sets `current` |
+| `@fr hello` | Short prefix (tmux-style 5-level fallback: `$<sid-prefix>` → `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
+| `@$1813fd32 hello` | Strict id-prefix match (always available even when no `/rename` was done) |
 | `@frontend @api sync` | Multi-target dispatch; **does not change `current`** |
+| `@frontend /clear` | Forwards the `/clear` slash command into the cc TUI — cc handles it as its own slash command |
 | `@all stop everything` | Broadcast to every live session |
-| `@list` / `@help` / `@current` | Control commands; the bot echoes back without dispatching |
+| `@list` / `@help` / `@current` | Bridge control commands; the bot echoes back without dispatching to any cc |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 

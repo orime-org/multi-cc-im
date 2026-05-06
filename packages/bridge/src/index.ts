@@ -6,7 +6,7 @@
 export { parse } from './parser.js';
 export type { ParsedMessage } from './parser.js';
 
-export { matchSession } from './matcher.js';
+export { matchSession, RESERVED_BRIDGE_NAME } from './matcher.js';
 export type { MatchResult, SessionInfo } from './matcher.js';
 
 export { route } from './router.js';

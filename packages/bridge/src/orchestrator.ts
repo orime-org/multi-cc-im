@@ -165,6 +165,16 @@ export function createOrchestrator(
     if (result.echo.length > 0) echoLines.push(result.echo);
     if (dispatchErrors.length > 0) echoLines.push(...dispatchErrors);
 
+    // Surface "/rename hint" for any dispatched session that still lacks a
+    // tabTitle. Real-time wezterm poll on every IM event means the hint
+    // self-clears once the user runs cc /rename.
+    const unnamed = result.dispatches
+      .map((d) => d.session)
+      .filter((s) => !s.tabTitle || s.tabTitle.length === 0)
+      .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd }));
+    const hint = renameHintFor(unnamed);
+    if (hint) echoLines.push(hint);
+
     if (echoLines.length === 0) return;
     try {
       await opts.imAdapter.send(echoLines.join('\n'), msg.replyCtx);
@@ -196,9 +206,25 @@ export function createOrchestrator(
       return;
     }
 
-    log(`[cc → wechat] session ${sid8} reply='${truncate(p.last_assistant_message, 80)}'`);
+    // Refresh registry so we see the freshest tabTitle (user may have
+    // /rename'd since the last call). Look up THIS session for its display
+    // name and prefix the wechat-bound message so the user can tell which
+    // cc is replying.
+    let prefix = `$${sid8}`;
     try {
-      await opts.imAdapter.send(p.last_assistant_message, replyCtx);
+      const sessions = await opts.registry.listAlive();
+      const me = sessions.find((s) => s.sessionId === p.session_id);
+      if (me) prefix = displayName(me);
+    } catch (err) {
+      onError(err, { phase: 'forwardStopRegistry', sessionId: p.session_id });
+    }
+
+    log(
+      `[cc → wechat] ${prefix} reply='${truncate(p.last_assistant_message, 80)}'`,
+    );
+    const body = `[${prefix}]\n${p.last_assistant_message}`;
+    try {
+      await opts.imAdapter.send(body, replyCtx);
     } catch (err) {
       onError(err, { phase: 'forwardStop', sessionId: p.session_id });
     }
@@ -257,8 +283,32 @@ export function createOrchestrator(
   };
 }
 
-function displayName(s: { friendlyName: string | undefined; sessionId: string }): string {
-  return s.friendlyName ?? `$${s.sessionId.slice(0, 8)}`;
+function displayName(s: { tabTitle: string | undefined; sessionId: string }): string {
+  if (s.tabTitle && s.tabTitle.length > 0) return s.tabTitle;
+  return `$${s.sessionId.slice(0, 8)}`;
+}
+
+/**
+ * Produce the one-time "/rename hint" line appended to inbound dispatch
+ * echoes when a target cc still has no tab title. User runs cc `/rename
+ * <name>` once → next forward observes the new title via real-time
+ * `wezterm cli list` poll → hint stops appearing.
+ */
+function renameHintFor(
+  unnamedSessions: Array<{ sessionId: string; cwd: string }>,
+): string | null {
+  if (unnamedSessions.length === 0) return null;
+  const lines = unnamedSessions.map((s) => {
+    const sid8 = s.sessionId.slice(0, 8);
+    const cwdName = s.cwd.split('/').filter(Boolean).pop() ?? s.cwd;
+    return `  · $${sid8} (${cwdName})`;
+  });
+  return [
+    '',
+    '[multi-cc-im] tab title missing for:',
+    ...lines,
+    '  Run `/rename <name>` in each cc TUI to set a friendly name.',
+  ].join('\n');
 }
 
 function truncate(text: string, max: number): string {

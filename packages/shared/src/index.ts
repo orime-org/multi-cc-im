@@ -40,13 +40,11 @@ export type {
   PendingQueue,
   PendingMsg,
   Config,
-  FriendlyNames,
   ACLConfig,
   ExternalPaths,
 } from './adapter/storage.js';
 export {
   ConfigSchema,
-  FriendlyNamesSchema,
   ACLConfigSchema,
   ExternalPathsSchema,
 } from './adapter/storage.js';

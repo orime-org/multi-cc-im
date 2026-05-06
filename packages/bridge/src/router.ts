@@ -4,8 +4,11 @@ import { parse, type ParsedMessage } from './parser.js';
 
 /**
  * Lookup interface for currently-alive cc sessions. Bridge orchestrator
- * implements this by joining cli-cc state files (alive sessions) +
- * ConfigStore `[friendly_names]` map. Router stays IO-free / pure-function-ish.
+ * implements this by joining cli-cc state files (alive sessions) with the
+ * latest wezterm pane titles (cc `/rename`). Router stays IO-free /
+ * pure-function-ish — orchestrator must call `listAlive()` after refreshing
+ * tab titles so each `SessionInfo.tabTitle` reflects the user's current
+ * naming.
  */
 export interface SessionRegistry {
   listAlive(): Promise<readonly SessionInfo[]>;
@@ -298,7 +301,9 @@ function handleControl(
 // ============================================================================
 
 function displayName(s: SessionInfo): string {
-  if (s.friendlyName) return s.friendlyName;
-  // Fall back to short session-id hash so user always has SOMETHING to address
+  if (s.tabTitle && s.tabTitle.length > 0) return s.tabTitle;
+  // Fall back to short session-id hash so user always has SOMETHING to address.
+  // SessionStart hook also pushes a one-time IM hint pointing the user at
+  // `/rename` when this fallback path triggers — see orchestrator.
   return `$${s.sessionId.slice(0, 8)}`;
 }

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { FriendlyNameSchema } from '../types.js';
 
 /**
  * Storage strategy is **file-based** (no SQL DB) — see Storage DD
@@ -55,10 +54,6 @@ export interface CredentialStore<T> {
 // ConfigStore: TOML-backed user config
 // ============================================================================
 
-/** Schema for `[friendly_names]` — `session_id → human name` for `@xxx` routing. */
-export const FriendlyNamesSchema = z.record(z.string(), FriendlyNameSchema);
-export type FriendlyNames = z.infer<typeof FriendlyNamesSchema>;
-
 /** Schema for `[acl]` — owner-only allowlist. */
 export const ACLConfigSchema = z.object({
   owners: z.array(z.string()).default([]),
@@ -77,7 +72,6 @@ export type ExternalPaths = z.infer<typeof ExternalPathsSchema>;
  * (zod parse failure = fail-fast per architecture.md).
  */
 export const ConfigSchema = z.object({
-  friendly_names: FriendlyNamesSchema.default({}),
   acl: ACLConfigSchema.default({ owners: [] }),
   external_paths: ExternalPathsSchema.default({}),
 });
