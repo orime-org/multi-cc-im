@@ -177,7 +177,7 @@ export async function runStartCommand(
         state: routerState,
         log,
         onError: (err, ctx) => {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = formatErrorWithCause(err);
           log(
             `  ⚠️  orchestrator [${ctx.phase}${ctx.sessionId ? ` ${ctx.sessionId.slice(0, 8)}` : ''}]: ${msg}`,
           );
@@ -200,6 +200,35 @@ export async function runStartCommand(
 /** Default log sink writes to stderr (stdout reserved for hook protocol). */
 function defaultLog(line: string): void {
   process.stderr.write(`${line}\n`);
+}
+
+/**
+ * Render an error including its cause chain. Node 22+ `fetch` rejects with a
+ * generic `Error: fetch failed` whose `.cause` carries the real reason
+ * (`ECONNREFUSED`, `ETIMEDOUT`, undici socket errors, etc.). The default
+ * logger only printed `err.message` and dropped that, leaving messages like
+ * "fetch failed" with no diagnostic value. Walk the chain so the daemon log
+ * shows e.g. `fetch failed (cause: connect ECONNREFUSED 14.18.180.207:443
+ * [code=ECONNREFUSED])`.
+ */
+function formatErrorWithCause(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts: string[] = [err.message];
+  let depth = 0;
+  let cur: unknown = (err as Error & { cause?: unknown }).cause;
+  while (cur !== undefined && cur !== null && depth < 5) {
+    if (cur instanceof Error) {
+      const code = (cur as Error & { code?: unknown }).code;
+      const codeStr = typeof code === 'string' ? ` [code=${code}]` : '';
+      parts.push(`cause: ${cur.message}${codeStr}`);
+      cur = (cur as Error & { cause?: unknown }).cause;
+    } else {
+      parts.push(`cause: ${String(cur)}`);
+      break;
+    }
+    depth++;
+  }
+  return parts.length === 1 ? parts[0]! : `${parts[0]} (${parts.slice(1).join('; ')})`;
 }
 
 /**

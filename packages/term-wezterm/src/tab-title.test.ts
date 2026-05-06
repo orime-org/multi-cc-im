@@ -162,6 +162,46 @@ describe('listAllTabs', () => {
       /not running/,
     );
   });
+
+  it('cc default title "Claude Code" → empty string (treated as un-renamed)', async () => {
+    mockRunWezTermCli.mockResolvedValue(
+      JSON.stringify([
+        { pane_id: 30, title: 'Claude Code', cwd: 'file:///x' },
+      ]),
+    );
+    const tabs = await listAllTabs({ wezterm: WEZTERM });
+    expect(tabs.get(30)?.title).toBe('');
+  });
+
+  it('cc default title with model annotation "Claude Code [1m]" → empty string', async () => {
+    mockRunWezTermCli.mockResolvedValue(
+      JSON.stringify([
+        { pane_id: 31, title: 'Claude Code [1m]', cwd: 'file:///x' },
+      ]),
+    );
+    const tabs = await listAllTabs({ wezterm: WEZTERM });
+    expect(tabs.get(31)?.title).toBe('');
+  });
+
+  it('default title with status prefix "✳ Claude Code" → empty string', async () => {
+    mockRunWezTermCli.mockResolvedValue(
+      JSON.stringify([
+        { pane_id: 32, title: '✳ Claude Code', cwd: 'file:///x' },
+      ]),
+    );
+    const tabs = await listAllTabs({ wezterm: WEZTERM });
+    expect(tabs.get(32)?.title).toBe('');
+  });
+
+  it('user /rename to "Claude Code stuff" still preserved (only exact default matches)', async () => {
+    mockRunWezTermCli.mockResolvedValue(
+      JSON.stringify([
+        { pane_id: 33, title: 'Claude Code stuff', cwd: 'file:///x' },
+      ]),
+    );
+    const tabs = await listAllTabs({ wezterm: WEZTERM });
+    expect(tabs.get(33)?.title).toBe('Claude Code stuff');
+  });
 });
 
 describe('getTabTitleByPaneId', () => {

@@ -19,6 +19,26 @@ import { runWezTermCli } from './cli.js';
  */
 const STATUS_PREFIX_RE = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}✀-➿⠀-⣿]+\s+/u;
 
+/**
+ * Default tab titles cc itself sets when the user has not run `/rename`.
+ * Treat any of these (after status-prefix stripping) as **unnamed** so the
+ * router falls back to `$<sid8>` and the IM-side rename hint kicks in.
+ *
+ * Without this guard, multiple un-renamed cc sessions would all show up as
+ * "Claude Code" in `@list` output and `@<query>` matching, defeating the
+ * point of having a friendly identifier at all.
+ *
+ * Variants observed in real wezterm output:
+ * - `Claude Code` — fresh cc on a model the title doesn't annotate
+ * - `Claude Code [1m]` — cc on a 1M-context model (e.g. opus-4-7[1m])
+ *
+ * Match is exact-equals (with the `[…]` suffix optional + arbitrary inner
+ * text), case-sensitive — anything the user actually `/rename`'d to "Claude
+ * Code" or similar would only collide if they typed it letter-perfectly,
+ * which we accept as a quirk (the user can /rename anything else).
+ */
+const DEFAULT_CC_TITLE_RE = /^Claude Code(\s*\[[^\]]*\])?$/;
+
 export interface TabInfo {
   paneId: number;
   /**
@@ -46,6 +66,9 @@ interface RawPaneEntry {
  * - `null` / missing / non-string → `""`
  * - leading status emoji + whitespace stripped (see {@link STATUS_PREFIX_RE})
  * - resulting string `.trim()`'d
+ * - if the cleaned title equals cc's default ("Claude Code" or "Claude
+ *   Code [1m]" etc., see {@link DEFAULT_CC_TITLE_RE}), it's collapsed to
+ *   `""` so the router treats this session as un-renamed
  *
  * Entries with missing or non-numeric `pane_id` are silently skipped — those
  * cannot be addressed by send-text anyway, and surfacing them as errors would
@@ -90,12 +113,13 @@ export async function listAllTabs(opts: {
 
     const rawTitle = typeof raw.title === 'string' ? raw.title : '';
     const cleanedTitle = rawTitle.replace(STATUS_PREFIX_RE, '').trim();
+    const finalTitle = DEFAULT_CC_TITLE_RE.test(cleanedTitle) ? '' : cleanedTitle;
 
     const cwd = typeof raw.cwd === 'string' ? raw.cwd : '';
 
     result.set(paneId, {
       paneId,
-      title: cleanedTitle,
+      title: finalTitle,
       cwd,
     });
   }
