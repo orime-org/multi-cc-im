@@ -3,13 +3,9 @@
 // because the cc hook stdin is external input requiring zod-validated entry.
 export {
   HookPayloadSchema,
-  PostToolUseToolResponseSchema,
-  PostToolUsePayloadSchema,
-  PreToolUsePayloadSchema,
   SessionEndPayloadSchema,
   SessionStartPayloadSchema,
   StopPayloadSchema,
-  UserPromptSubmitPayloadSchema,
   parseHookPayload,
 } from './payloads.js';
 export type { ParsedHookPayload } from './payloads.js';

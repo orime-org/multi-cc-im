@@ -25,15 +25,6 @@ const SESSION_START: ParsedHookPayload = {
   model: 'claude-opus-4-7[1m]',
 };
 
-const USER_PROMPT_SUBMIT: ParsedHookPayload = {
-  session_id: SID as never,
-  transcript_path: TX as never,
-  cwd: CWD as never,
-  hook_event_name: 'UserPromptSubmit',
-  permission_mode: 'default',
-  prompt: 'hi',
-};
-
 const STOP: ParsedHookPayload = {
   session_id: SID as never,
   transcript_path: TX as never,
@@ -145,15 +136,11 @@ describe('runHookReceiver', () => {
     expect(ts).toBeGreaterThanOrEqual(before);
   });
 
-  it('UserPromptSubmit / Stop → only touch last-hook-at (no other state files)', async () => {
-    await runHookReceiver({ stateDir, payload: USER_PROMPT_SUBMIT });
-    expect(await readCcPid({ stateDir, sessionId: SID })).toBeNull();
-    expect(await readEnded({ stateDir, sessionId: SID })).toBeNull();
-    expect(await readLastHookAt({ stateDir, sessionId: SID })).toBeGreaterThan(0);
-
+  it('Stop → only touches last-hook-at (no other state files)', async () => {
     await runHookReceiver({ stateDir, payload: STOP });
     expect(await readCcPid({ stateDir, sessionId: SID })).toBeNull();
     expect(await readEnded({ stateDir, sessionId: SID })).toBeNull();
+    expect(await readLastHookAt({ stateDir, sessionId: SID })).toBeGreaterThan(0);
   });
 
   it('SessionStart with capturePid throwing surfaces the error (caller logs to stderr + exits non-zero)', async () => {
@@ -190,22 +177,22 @@ describe('runHookReceiver', () => {
     });
     const t1 = (await readLastHookAt({ stateDir, sessionId: SID })) ?? 0;
     await new Promise((r) => setTimeout(r, 5));
-    await runHookReceiver({ stateDir, payload: USER_PROMPT_SUBMIT });
+    await runHookReceiver({ stateDir, payload: STOP });
     const t2 = (await readLastHookAt({ stateDir, sessionId: SID })) ?? 0;
     expect(t2).toBeGreaterThanOrEqual(t1);
   });
 
   describe('events.jsonl append side-effect', () => {
     it('every hook event appends to <sid>.events.jsonl', async () => {
-      await runHookReceiver({ stateDir, payload: USER_PROMPT_SUBMIT });
       await runHookReceiver({ stateDir, payload: STOP });
+      await runHookReceiver({ stateDir, payload: SESSION_END });
       const filePath = resolveEventsLogPath({ stateDir, sessionId: SID });
       const lines = (await readFile(filePath, 'utf-8'))
         .trim()
         .split('\n');
       expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!).hook_event_name).toBe('UserPromptSubmit');
-      expect(JSON.parse(lines[1]!).hook_event_name).toBe('Stop');
+      expect(JSON.parse(lines[0]!).hook_event_name).toBe('Stop');
+      expect(JSON.parse(lines[1]!).hook_event_name).toBe('SessionEnd');
     });
 
     it('SessionStart and SessionEnd also append events.jsonl (not just state files)', async () => {
@@ -276,11 +263,11 @@ describe('runHookReceiver', () => {
       expect(r3).toBeUndefined();
     });
 
-    it('Non-Stop events ignore the injection queue (e.g. UserPromptSubmit)', async () => {
+    it('Non-Stop events ignore the injection queue (e.g. SessionEnd)', async () => {
       await enqueueInjection({ stateDir, sessionId: SID, content: 'x' });
       const result = await runHookReceiver({
         stateDir,
-        payload: USER_PROMPT_SUBMIT,
+        payload: SESSION_END,
       });
       expect(result).toBeUndefined();
       // Queue should still hold 'x' for future Stop.

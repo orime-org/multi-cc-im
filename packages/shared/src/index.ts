@@ -26,10 +26,8 @@ export type {
   HookPayload,
   HookDecision,
   SessionStartPayload,
-  UserPromptSubmitPayload,
-  PreToolUsePayload,
-  PostToolUsePayload,
   StopPayload,
+  SessionEndPayload,
 } from './adapter/cli.js';
 
 // Storage capability interfaces (concrete impl in packages/storage-files)

@@ -23,40 +23,6 @@ export interface SessionStartPayload extends BaseHookPayload {
   model: string;
 }
 
-/** Hook fired right before cc submits a user prompt to the model. */
-export interface UserPromptSubmitPayload extends BaseHookPayload {
-  hook_event_name: 'UserPromptSubmit';
-  permission_mode: string;
-  /** Full user input text (multi-cc-im does NOT need to tail jsonl for this). */
-  prompt: string;
-}
-
-/** Hook fired right before a cc tool call executes. */
-export interface PreToolUsePayload extends BaseHookPayload {
-  hook_event_name: 'PreToolUse';
-  permission_mode: string;
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-  tool_use_id: string;
-}
-
-/** Hook fired right after a cc tool call returns. */
-export interface PostToolUsePayload extends BaseHookPayload {
-  hook_event_name: 'PostToolUse';
-  permission_mode: string;
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-  tool_response: {
-    stdout: string;
-    stderr: string;
-    interrupted: boolean;
-    isImage: boolean;
-    noOutputExpected: boolean;
-  };
-  tool_use_id: string;
-  duration_ms: number;
-}
-
 /**
  * Hook fired when cc finishes a single assistant turn (NOT session end).
  * - `stop_hook_active: true` means the current Stop is being invoked inside
@@ -73,13 +39,18 @@ export interface StopPayload extends BaseHookPayload {
   last_assistant_message: string;
 }
 
-/** Discriminated union of every cc hook payload multi-cc-im observes. */
-export type HookPayload =
-  | SessionStartPayload
-  | UserPromptSubmitPayload
-  | PreToolUsePayload
-  | PostToolUsePayload
-  | StopPayload;
+/**
+ * Hook fired when a cc session terminates (clean `/exit`, logout, etc.).
+ * Drives multi-cc-im's PaneAlive "graceful exit" signal.
+ */
+export interface SessionEndPayload extends BaseHookPayload {
+  hook_event_name: 'SessionEnd';
+  /** e.g. `'clear'`, `'logout'`, `'/exit'`, `'prompt_input_exit'`. */
+  reason: string;
+}
+
+/** Discriminated union of every cc hook payload multi-cc-im subscribes to. */
+export type HookPayload = SessionStartPayload | StopPayload | SessionEndPayload;
 
 /**
  * Stdout response shape that cc's Stop hook treats as an injection request.
@@ -95,12 +66,16 @@ export interface HookDecision {
 /**
  * Handler an CLIAdapter pushes hook events into. The bridge implements this
  * to wire cc → router → IM.
+ *
+ * multi-cc-im subscribes to only 3 hook events. Earlier versions also
+ * subscribed to `UserPromptSubmit` / `PreToolUse` / `PostToolUse` for
+ * analytics, but cc's own transcript jsonl
+ * (`~/.claude/projects/<dir>/<sid>.jsonl`) already records that data —
+ * future analytics work should read cc's transcript directly via the
+ * `transcript_path` exposed in each `SessionStart` payload.
  */
 export interface Handler {
   onSessionStart(p: SessionStartPayload): Promise<void>;
-  onUserPromptSubmit(p: UserPromptSubmitPayload): Promise<void>;
-  onPreToolUse(p: PreToolUsePayload): Promise<void>;
-  onPostToolUse(p: PostToolUsePayload): Promise<void>;
   /**
    * On Stop, the handler may return a `HookDecision` to inject a follow-up
    * prompt. Return `void` (or undefined) to let cc end the turn normally.
@@ -109,6 +84,7 @@ export interface Handler {
    * `void` in that case to avoid infinite block loops.
    */
   onStop(p: StopPayload): Promise<HookDecision | void>;
+  onSessionEnd(p: SessionEndPayload): Promise<void>;
 }
 
 /**

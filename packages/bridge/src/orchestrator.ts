@@ -8,14 +8,12 @@ import type {
   IMReplyContext,
   IncomingMessage,
   PaneToSessionMap,
-  PostToolUsePayload,
-  PreToolUsePayload,
+  SessionEndPayload,
   SessionId,
   SessionStartPayload,
   StopPayload,
   TermAdapter,
   TermPaneAlive,
-  UserPromptSubmitPayload,
 } from '@multi-cc-im/shared';
 import { route } from './router.js';
 import type { RouterDispatch, RouterState, SessionRegistry } from './router.js';
@@ -240,14 +238,19 @@ export function createOrchestrator(
         onError(err, { phase: 'sessionStartRefresh' });
       });
     },
-    async onUserPromptSubmit(_p: UserPromptSubmitPayload): Promise<void> {
-      // Direct cc TUI input — bridge doesn't forward to wechat (Stop hook will
-      // carry the assistant reply for forwarding, no need for the prompt itself).
-    },
-    async onPreToolUse(_p: PreToolUsePayload): Promise<void> {},
-    async onPostToolUse(_p: PostToolUsePayload): Promise<void> {},
     async onStop(p: StopPayload): Promise<HookDecision | void> {
       return handleStop(p);
+    },
+    async onSessionEnd(p: SessionEndPayload): Promise<void> {
+      // Drop in-memory wechat reply context — a future cc that happens to
+      // reuse this UUID (e.g. resume after long delay) shouldn't inherit a
+      // stale reply target.
+      const sid8 = p.session_id.slice(0, 8);
+      log(`[SessionEnd ${sid8}] reason=${p.reason}`);
+      lastReplyCtxBySession.delete(p.session_id);
+      await opts.registry.listAlive().catch((err) => {
+        onError(err, { phase: 'sessionEndRefresh' });
+      });
     },
   };
 
