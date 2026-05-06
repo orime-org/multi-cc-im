@@ -136,13 +136,21 @@ export async function runSetupHooksCommand(
   let existing: Record<string, unknown> = {};
   try {
     const raw = await readFile(ccSettingsPath, 'utf-8');
-    try {
-      existing = JSON.parse(raw) as Record<string, unknown>;
-    } catch (parseErr) {
-      return {
-        exitCode: 1,
-        stderr: `multi-cc-im setup-hooks: failed to parse JSON in ${ccSettingsPath}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
-      };
+    if (raw.trim() === '') {
+      // Empty / whitespace-only file is functionally equivalent to `{}` —
+      // treat it as such instead of choking on `JSON.parse('')`. Common when
+      // a previous tool truncated the file to 0 bytes.
+      log(`  (cc settings.json is empty, treating as {})`);
+      existing = {};
+    } else {
+      try {
+        existing = JSON.parse(raw) as Record<string, unknown>;
+      } catch (parseErr) {
+        return {
+          exitCode: 1,
+          stderr: `multi-cc-im setup-hooks: failed to parse JSON in ${ccSettingsPath}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        };
+      }
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {

@@ -141,6 +141,36 @@ describe('runSetupHooksCommand', () => {
       expect(Object.keys(r.settings.hooks!)).toHaveLength(6);
     });
 
+    it('settings.json exists but is 0-byte empty file → treats as {}, adds 6 hooks', async () => {
+      // Common when a previous tool truncated the file (e.g. `> ~/.claude/settings.json`).
+      // Pre-fix this would JSON.parse('') and exit 1 with "Unexpected end of JSON input".
+      await mkdir(join(home, '.claude'), { recursive: true });
+      await writeFile(ccSettings, '', 'utf-8');
+      const r = await run();
+      expect(r.exitCode).toBe(0);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(6);
+    });
+
+    it('settings.json with only whitespace → treats as {}, adds 6 hooks', async () => {
+      await mkdir(join(home, '.claude'), { recursive: true });
+      await writeFile(ccSettings, '  \n\t\n  ', 'utf-8');
+      const r = await run();
+      expect(r.exitCode).toBe(0);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(6);
+    });
+
+    it('empty file logs "is empty, treating as {}" hint', async () => {
+      await mkdir(join(home, '.claude'), { recursive: true });
+      await writeFile(ccSettings, '', 'utf-8');
+      const lines: string[] = [];
+      await runSetupHooksCommand({
+        ccSettingsPath: ccSettings,
+        repoRoot,
+        log: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => l.includes('is empty, treating as {}'))).toBe(true);
+    });
+
     it('idempotent — running twice yields same result', async () => {
       await run();
       const first = JSON.parse(await readFile(ccSettings, 'utf-8'));
