@@ -1,115 +1,116 @@
 # multi-cc-im
 
-个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
+A personal local bridge that exposes **multiple Claude Code sessions running in WezTerm tabs** to WeChat via Tencent's iLink Bot API. Use the terminal in the office, WeChat outside, both at once. Includes `@session` routing, cc usage analytics, and a pluggable architecture for additional IMs / terminals / CLIs.
 
-> **状态**：v1 实施完成 —— 6 packages + 1 app 全部到位（`apps/multi-cc-im/` 可执行 CLI）。剩余 follow-up：真实 wezterm + cc + wechat 端到端 smoke test、image/voice 入站实测、tg / 飞书 IM adapter、analytics。
+> **Status**: v1 implementation complete — 6 packages + 1 app shipped (`apps/multi-cc-im/` is the executable CLI). Remaining follow-ups: real-environment WezTerm + cc + WeChat end-to-end smoke test, image / voice ingress validation, Telegram / Lark IM adapters, analytics.
 
 ## Quick Start
 
-### 1. 装 wezterm（一次性）
+### 1. Install WezTerm (one-time)
 
 ```bash
 brew install --cask wezterm
 ```
 
-multi-cc-im 启动时探测 wezterm 路径并缓存到 `~/.multi-cc-im/config.toml [external_paths].wezterm`，**禁止 hardcode**。详见 [docs/architecture.md「外部 CLI 工具路径策略」](docs/architecture.md#外部-cli-工具路径策略)。
+multi-cc-im probes the WezTerm path at startup and caches it to `~/.multi-cc-im/config.toml [external_paths].wezterm`. **Hardcoded paths are forbidden.** See [docs/architecture.md "External CLI tool path policy"](docs/architecture.md#外部-cli-工具路径策略).
 
-### 2. 装 multi-cc-im
+### 2. Install multi-cc-im
 
 ```bash
 git clone https://github.com/orime-org/multi-cc-im.git
 cd multi-cc-im
 pnpm install
-pnpm typecheck && pnpm test            # 可选验证
-pnpm --filter multi-cc-im build        # 推荐: bundle dist/cli.js 提速 cold start
+pnpm typecheck && pnpm test            # optional verification
+pnpm --filter multi-cc-im build        # recommended: bundle dist/cli.js for fast cold starts
 ```
 
-CLI 入口走 `bin/multi-cc-im` bash wrapper。**生产模式**（推荐）：跑过 `pnpm build` 后 wrapper 自动用 `apps/multi-cc-im/dist/cli.js` (≈ 50ms 启动)。**开发模式**：bundle 不存在时 fallback `tsx src/cli.ts` (≈ 300-1500ms 启动)。cc hook 每轮 assistant 触发 2 次，**生产模式必装**否则手机敲字延迟肉眼可见。
+The CLI entry point is the `bin/multi-cc-im` bash wrapper. **Production mode** (recommended): after `pnpm build` the wrapper auto-uses `apps/multi-cc-im/dist/cli.js` (~50 ms startup). **Dev mode**: when the bundle is absent, falls back to `tsx src/cli.ts` (~300–1500 ms startup). cc hooks fire twice per assistant turn — **production mode is required** in practice; otherwise typing latency from your phone is visible to the eye.
 
-### 3. 首次登录 wechat（QR 扫码）
+### 3. First-time WeChat login (QR scan)
 
 ```bash
 ./bin/multi-cc-im login wechat
-# 等价于 pnpm --filter multi-cc-im dev login wechat（dev 期 alias）
+# equivalent to: pnpm --filter multi-cc-im dev login wechat (dev-time alias)
 ```
 
-终端打印 QR；微信扫码 + 确认 → bridge 把 `bot_token` 落到 `~/.multi-cc-im/credentials/wechat.json`（mode 0600，跟 Tencent OpenClaw vendor 上游一致；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）。
+The terminal prints a QR code; scan + confirm in WeChat → the bridge persists `bot_token` to `~/.multi-cc-im/credentials/wechat.json` (mode 0600, matching the Tencent OpenClaw vendor upstream; [DD: credentials persistence strategy](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)).
 
-### 4. 配 cc hooks（每个 cc 跑前一次）
+### 4. Configure cc hooks (one-time per cc setup)
 
 ```bash
 ./bin/multi-cc-im setup-hooks
 ```
 
-幂等 merge —— 自动检测 `~/.claude/settings.json` 现状，把 multi-cc-im 6 个 hook 命令（用当前 repo 绝对路径）写进去：
-- 文件不存在 → 创建
-- 已有但空 `{}` 或没 `hooks` 字段 → 加 hooks
-- 已有别的工具的 hooks → 保留 + append multi-cc-im 的 6 条
-- 已有旧 multi-cc-im hooks（比如你 repo 换过位置）→ 替换成当前路径的 6 条
+Idempotent merge — auto-detects the current state of `~/.claude/settings.json` and writes multi-cc-im's 6 hook commands (using the current repo's absolute path):
 
-**安全**: 写入前自动备份原 `settings.json` 到 `settings.json.bak.<ISO-timestamp>`（用户后悔可 `cp <backup> ~/.claude/settings.json` 还原；时间戳保证多次跑 setup-hooks 不会丢历史）。
+- File missing → create
+- Exists but empty `{}` or no `hooks` field → add hooks
+- Already has other tools' hooks → preserve them, append multi-cc-im's 6
+- Already has stale multi-cc-im hooks (e.g. you moved the repo) → replace with the current path's 6
 
-bash wrapper `bin/multi-cc-im` 自动用 workspace 内的 `tsx` / 已 build 的 `dist/cli.js` 跑（Node 22-24 default 不能 resolve TS-ESM 风格 `import './foo.js'` → `./foo.ts`）。
+**Safety**: before writing, the previous `settings.json` is automatically backed up to `settings.json.bak.<ISO-timestamp>` (if you regret the change, `cp <backup> ~/.claude/settings.json` restores it; the timestamp guarantees repeated runs of setup-hooks won't lose history).
 
-cc 需要订阅 6 个 hook events：SessionStart 设 paneToSession map / SessionEnd 驱 PaneAlive 信号 / UserPromptSubmit + Stop 进 bridge router / PreToolUse + PostToolUse 进 events.jsonl 给将来 analytics 用。
+The bash wrapper `bin/multi-cc-im` automatically uses the workspace's `tsx` / built `dist/cli.js` (Node 22–24 default cannot resolve TS-ESM-style `import './foo.js'` → `./foo.ts`).
 
-如果你想手动改（不用 setup-hooks）：复制 [`examples/claude-settings.json`](examples/claude-settings.json) 的 `hooks` 段到 `~/.claude/settings.json`，sed 替换 `ABS_PATH` 即可：
+cc must subscribe to 6 hook events: `SessionStart` populates the `paneToSession` map / `SessionEnd` drives the `PaneAlive` signal / `UserPromptSubmit` + `Stop` flow into the bridge router / `PreToolUse` + `PostToolUse` populate `events.jsonl` for future analytics.
+
+If you'd rather edit by hand (without `setup-hooks`): copy the `hooks` block from [`examples/claude-settings.json`](examples/claude-settings.json) into `~/.claude/settings.json` and `sed`-replace `ABS_PATH`:
 
 ```bash
 sed "s|ABS_PATH|$(pwd)|g" examples/claude-settings.json
 ```
 
-> v2 会加全局 `multi-cc-im` 命令（tsup bundle + `npm publish` / `pnpm link --global`），届时 hook 命令简化为 `multi-cc-im hook <event>` 不依赖绝对路径。
+> v2 will add a global `multi-cc-im` command (tsup bundle + `npm publish` / `pnpm link --global`); the hook command will simplify to `multi-cc-im hook <event>` without depending on absolute paths.
 
-### 5. 起 bridge daemon
+### 5. Start the bridge daemon
 
 ```bash
 ./bin/multi-cc-im start
 ```
 
-后台长跑 iLink 长轮询 + 监 cc hook events.jsonl + wechat IncomingMessage → cc TUI 路由。Ctrl+C 优雅 shutdown（flush current_session 状态 + 释放所有 adapter）。
+Long-running background process: iLink long-polling + watching cc hook `events.jsonl` + routing WeChat `IncomingMessage` to the cc TUI. `Ctrl+C` triggers a graceful shutdown (flushes `current_session` state + releases all adapters).
 
-## 路由语法（用户视角）
+## Routing syntax (user perspective)
 
-按 [DD: 路由语法 G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) 锁定：
+Locked per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
 
-| 在微信发什么 | 干啥 |
+| What you send in WeChat | What it does |
 |---|---|
-| `hello` | 派给 `current_session`（last-explicit-mention 粘性；单 cc 自动 = 唯一那个） |
-| `@frontend hello` | 派给 friendly_name = `frontend` 的 session + 设 current |
-| `@fr hello` | 短前缀（tmux 4 级 fallback：id → =strict → exact → prefix → glob）；歧义会列候选 + 拒绝 |
-| `@frontend @api 同步` | 多目标派发，**不动 current** |
-| `@all stop everything` | 广播给所有活 session |
-| `@list` / `@help` / `@current` | 控制命令，bot 回 echo 不派发 |
+| `hello` | Routes to `current_session` (last-explicit-mention sticky; with a single cc, automatically = that one) |
+| `@frontend hello` | Routes to the session whose `friendly_name = frontend`, and sets `current` |
+| `@fr hello` | Short prefix (tmux-style 4-level fallback: id → `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
+| `@frontend @api sync` | Multi-target dispatch; **does not change `current`** |
+| `@all stop everything` | Broadcast to every live session |
+| `@list` / `@help` / `@current` | Control commands; the bot echoes back without dispatching |
 
-bot 派给 cc 前每条都给微信端 `→ frontend received` 等 visible echo（CLAUDE.md「路由 visible echo 必须有」硬规则）。
+Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 
 ## Project Structure
 
 ```
 multi-cc-im/
 ├── apps/
-│   └── multi-cc-im/         CLI binary：start / login wechat / hook <event>
+│   └── multi-cc-im/         CLI binary: start / login wechat / hook <event>
 └── packages/
-    ├── shared/              4 维 adapter 接口 (IM/Term/CLI/Storage) + 类型 + zod
+    ├── shared/              4-dimensional adapter interfaces (IM/Term/CLI/Storage) + types + zod
     ├── storage-files/       atomic-write / cursor / config / pending-queue / credential
-    ├── im-wechat/           IMAdapter(wechat) + iLink 协议 vendor (Tencent/openclaw-weixin v2.1.7)
-    ├── term-wezterm/        TermAdapter(wezterm) + PaneAlive 4 信号状态机
+    ├── im-wechat/           IMAdapter(wechat) + iLink protocol vendor (Tencent/openclaw-weixin v2.1.7)
+    ├── term-wezterm/        TermAdapter(wezterm) + PaneAlive 4-signal state machine
     ├── cli-cc/              CLIAdapter(cc) + hook payload zod + state files + injection queue
-    └── bridge/              router 4 级 fallback / SessionRegistry / orchestrator
+    └── bridge/              router with 4-level fallback / SessionRegistry / orchestrator
 ```
 
-每个包都有 `src/` + 测试，`pnpm test` 全套跑过 700+ 单测；coverage ≥ 80% 全维度门槛。
+Every package has a `src/` directory plus tests; `pnpm test` runs the full suite of 700+ unit tests with coverage ≥ 80% on every dimension.
 
 ## Documentation
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | **必读硬约束**：核心约束 / DD 流程 / 关键规范 / 编码行为准则 / 禁止清单 |
-| [docs/architecture.md](docs/architecture.md) | 架构图 / 包依赖 / 数据存储 / 外部 CLI 路径策略 |
-| [docs/dev.md](docs/dev.md) | 开发命令 + TDD 节奏 |
-| [docs/competitors.md](docs/competitors.md) | 不直接采用的端到端项目（决策记录）|
-| [docs/superpowers/specs/](docs/superpowers/specs/) | 8 篇 DD 报告（协议 / hook / adapter / storage / pricing / pane-alive / keychain / routing）|
+| [CLAUDE.md](CLAUDE.md) | **Mandatory hard constraints**: core rules / DD process / key conventions / coding behavior / forbidden list |
+| [docs/architecture.md](docs/architecture.md) | Architecture diagram / package dependencies / data storage / external CLI path policy |
+| [docs/dev.md](docs/dev.md) | Development commands + TDD rhythm |
+| [docs/competitors.md](docs/competitors.md) | End-to-end projects we considered but did not adopt (decision record) |
+| [docs/superpowers/specs/](docs/superpowers/specs/) | 8 DD reports (protocol / hook / adapter / storage / pricing / pane-alive / keychain / routing) |
 
 ## Development
 
@@ -117,12 +118,12 @@ multi-cc-im/
 pnpm install
 pnpm typecheck                       # 8 workspaces tsc --noEmit
 pnpm test                            # 56 files / 713 tests
-pnpm test:coverage                   # 同上 + v8 coverage（80% threshold 全维度门槛）
+pnpm test:coverage                   # same + v8 coverage (80% threshold on every dimension)
 pnpm --filter multi-cc-im build      # tsup bundle → apps/multi-cc-im/dist/cli.js
-pnpm --filter multi-cc-im dev <cmd>  # tsx src/cli.ts（不要 build，dev 期 alias）
+pnpm --filter multi-cc-im dev <cmd>  # tsx src/cli.ts (no build needed; dev-time alias)
 ```
 
-TDD 节奏（红 → 绿 → 蓝），重大决策 5 步 DD 流程，commit / PR 一律不带 AI 作者署名 —— 详见 [CLAUDE.md](CLAUDE.md)「关键规范」+ [docs/dev.md](docs/dev.md)。
+TDD rhythm (red → green → refactor), 5-step DD process for major decisions, no AI-author attribution in any commit / PR — see [CLAUDE.md](CLAUDE.md) "Key conventions" and [docs/dev.md](docs/dev.md).
 
 ## License
 
