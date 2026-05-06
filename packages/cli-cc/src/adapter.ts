@@ -3,12 +3,10 @@ import { join, basename } from 'node:path';
 import type {
   CLIAdapter,
   CLIHandler,
-  PostToolUsePayload,
-  PreToolUsePayload,
+  SessionEndPayload,
   SessionId,
   SessionStartPayload,
   StopPayload,
-  UserPromptSubmitPayload,
 } from '@multi-cc-im/shared';
 import { tailNewEvents } from './events-log.js';
 import { enqueueInjection } from './injection-queue.js';
@@ -163,17 +161,6 @@ async function dispatch(
     case 'SessionStart':
       await handler.onSessionStart(event as unknown as SessionStartPayload);
       return;
-    case 'UserPromptSubmit':
-      await handler.onUserPromptSubmit(
-        event as unknown as UserPromptSubmitPayload,
-      );
-      return;
-    case 'PreToolUse':
-      await handler.onPreToolUse(event as unknown as PreToolUsePayload);
-      return;
-    case 'PostToolUse':
-      await handler.onPostToolUse(event as unknown as PostToolUsePayload);
-      return;
     case 'Stop':
       // CLIAdapter at this layer doesn't return a HookDecision — Stop hook
       // injection (decision:block) is the receiver's responsibility (it pops
@@ -183,8 +170,7 @@ async function dispatch(
       await handler.onStop(event as unknown as StopPayload);
       return;
     case 'SessionEnd':
-      // No `Handler.onSessionEnd` in shared yet; consumer is the PaneAlive
-      // state-file path (`<sid>.ended`).
+      await handler.onSessionEnd(event as unknown as SessionEndPayload);
       return;
   }
 }

@@ -5,12 +5,10 @@ import { join } from 'node:path';
 import type {
   CLIHandler,
   HookDecision,
-  PostToolUsePayload,
-  PreToolUsePayload,
+  SessionEndPayload,
   SessionId,
   SessionStartPayload,
   StopPayload,
-  UserPromptSubmitPayload,
 } from '@multi-cc-im/shared';
 import { createCcCliAdapter } from './adapter.js';
 import { appendEvent } from './events-log.js';
@@ -29,15 +27,6 @@ const SESSION_START = {
   model: 'claude-opus-4-7[1m]',
 } as const;
 
-const USER = {
-  session_id: SID,
-  transcript_path: TX,
-  cwd: CWD,
-  hook_event_name: 'UserPromptSubmit',
-  permission_mode: 'default',
-  prompt: 'hi',
-} as const;
-
 const STOP = {
   session_id: SID,
   transcript_path: TX,
@@ -48,25 +37,27 @@ const STOP = {
   last_assistant_message: 'hi',
 } as const;
 
+const SESSION_END = {
+  session_id: SID,
+  transcript_path: TX,
+  cwd: CWD,
+  hook_event_name: 'SessionEnd',
+  reason: '/exit',
+} as const;
+
 function makeRecorder() {
   const events: { kind: string; payload: unknown }[] = [];
   const stopReturn: HookDecision | void = undefined;
   const handler: CLIHandler = {
-    async onSessionStart(p) {
+    async onSessionStart(p: SessionStartPayload) {
       events.push({ kind: 'SessionStart', payload: p });
     },
-    async onUserPromptSubmit(p) {
-      events.push({ kind: 'UserPromptSubmit', payload: p });
-    },
-    async onPreToolUse(p) {
-      events.push({ kind: 'PreToolUse', payload: p });
-    },
-    async onPostToolUse(p) {
-      events.push({ kind: 'PostToolUse', payload: p });
-    },
-    async onStop(p) {
+    async onStop(p: StopPayload) {
       events.push({ kind: 'Stop', payload: p });
       return stopReturn;
+    },
+    async onSessionEnd(p: SessionEndPayload) {
+      events.push({ kind: 'SessionEnd', payload: p });
     },
   };
   return { events, handler };
@@ -110,7 +101,7 @@ describe('createCcCliAdapter', () => {
     await appendEvent({
       stateDir,
       sessionId: SID,
-      payload: USER as never,
+      payload: SESSION_END as never,
     });
 
     const adapter = createCcCliAdapter({ stateDir });
@@ -120,10 +111,10 @@ describe('createCcCliAdapter', () => {
       await waitFor(() => events.length === 2);
       expect(events.map((e) => e.kind)).toEqual([
         'SessionStart',
-        'UserPromptSubmit',
+        'SessionEnd',
       ]);
       expect((events[0]!.payload as SessionStartPayload).source).toBe('startup');
-      expect((events[1]!.payload as UserPromptSubmitPayload).prompt).toBe('hi');
+      expect((events[1]!.payload as SessionEndPayload).reason).toBe('/exit');
     } finally {
       await adapter.stop();
     }
@@ -158,7 +149,7 @@ describe('createCcCliAdapter', () => {
       await appendEvent({
         stateDir,
         sessionId: SID,
-        payload: USER as never,
+        payload: SESSION_END as never,
       });
       await appendEvent({
         stateDir,
@@ -167,7 +158,7 @@ describe('createCcCliAdapter', () => {
       });
       await waitFor(() => events.length === 2);
       const kinds = events.map((e) => e.kind).sort();
-      expect(kinds).toEqual(['Stop', 'UserPromptSubmit']);
+      expect(kinds).toEqual(['SessionEnd', 'Stop']);
     } finally {
       await adapter.stop();
     }
@@ -199,59 +190,7 @@ describe('createCcCliAdapter', () => {
     }
   });
 
-  it('PreToolUse / PostToolUse dispatch through respective handler methods', async () => {
-    const adapter = createCcCliAdapter({ stateDir });
-    const { events, handler } = makeRecorder();
-    const PRE_TOOL_USE = {
-      session_id: SID,
-      transcript_path: TX,
-      cwd: CWD,
-      hook_event_name: 'PreToolUse',
-      permission_mode: 'default',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      tool_use_id: 'tool-abc',
-    };
-    const POST_TOOL_USE = {
-      ...PRE_TOOL_USE,
-      hook_event_name: 'PostToolUse',
-      tool_response: {
-        stdout: 'foo\n',
-        stderr: '',
-        interrupted: false,
-        isImage: false,
-        noOutputExpected: false,
-      },
-      duration_ms: 42,
-    };
-    await adapter.start(handler);
-    try {
-      await appendEvent({
-        stateDir,
-        sessionId: SID,
-        payload: PRE_TOOL_USE as never,
-      });
-      await appendEvent({
-        stateDir,
-        sessionId: SID,
-        payload: POST_TOOL_USE as never,
-      });
-      await waitFor(() => events.length === 2);
-      expect((events[0]!.payload as PreToolUsePayload).tool_name).toBe('Bash');
-      expect((events[1]!.payload as PostToolUsePayload).duration_ms).toBe(42);
-    } finally {
-      await adapter.stop();
-    }
-  });
-
-  it('SessionEnd events are dispatched on a noop path (no Handler.onSessionEnd yet)', async () => {
-    const SESSION_END = {
-      session_id: SID,
-      transcript_path: TX,
-      cwd: CWD,
-      hook_event_name: 'SessionEnd',
-      reason: '/exit',
-    };
+  it('SessionEnd dispatches through handler.onSessionEnd', async () => {
     const adapter = createCcCliAdapter({ stateDir });
     const { events, handler } = makeRecorder();
     await adapter.start(handler);
@@ -261,9 +200,9 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         payload: SESSION_END as never,
       });
-      // SessionEnd has no Handler callback (deferred); should not throw
-      await new Promise((r) => setTimeout(r, 150));
-      expect(events).toHaveLength(0);
+      await waitFor(() => events.length === 1);
+      expect(events[0]!.kind).toBe('SessionEnd');
+      expect((events[0]!.payload as SessionEndPayload).reason).toBe('/exit');
     } finally {
       await adapter.stop();
     }
@@ -290,12 +229,10 @@ describe('createCcCliAdapter', () => {
       async onSessionStart() {
         throw new Error('boom');
       },
-      async onUserPromptSubmit() {
+      async onStop() {},
+      async onSessionEnd() {
         // works fine
       },
-      async onPreToolUse() {},
-      async onPostToolUse() {},
-      async onStop() {},
     };
     await adapter.start(handler);
     try {
@@ -307,11 +244,11 @@ describe('createCcCliAdapter', () => {
       await appendEvent({
         stateDir,
         sessionId: SID,
-        payload: USER as never,
+        payload: SESSION_END as never,
       });
       await waitFor(() => handlerErrors.length === 1);
       expect(handlerErrors[0]!.message).toBe('boom');
-      // Watcher kept going past the error — UserPromptSubmit should have
+      // Watcher kept going past the error — SessionEnd should have
       // been processed without re-throwing.
     } finally {
       await adapter.stop();

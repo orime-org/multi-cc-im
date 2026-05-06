@@ -20,16 +20,15 @@ const STOP_PAYLOAD: ParsedHookPayload = {
   hook_event_name: 'Stop',
   permission_mode: 'default',
   stop_hook_active: false,
-  last_assistant_message: 'hi',
+  last_assistant_message: '你好 ✨',
 };
 
-const USER_PAYLOAD: ParsedHookPayload = {
+const SESSION_END_PAYLOAD: ParsedHookPayload = {
   session_id: SID as never,
   transcript_path: TX as never,
   cwd: CWD as never,
-  hook_event_name: 'UserPromptSubmit',
-  permission_mode: 'default',
-  prompt: '你好 ✨',
+  hook_event_name: 'SessionEnd',
+  reason: '/exit',
 };
 
 describe('events-log', () => {
@@ -53,11 +52,11 @@ describe('events-log', () => {
       expect(raw.endsWith('\n')).toBe(true);
       const parsed = JSON.parse(raw.trim());
       expect(parsed.hook_event_name).toBe('Stop');
-      expect(parsed.last_assistant_message).toBe('hi');
+      expect(parsed.last_assistant_message).toBe('你好 ✨');
     });
 
     it('preserves Unicode in JSON serialization (no \\uXXXX escaping)', async () => {
-      await appendEvent({ stateDir, sessionId: SID, payload: USER_PAYLOAD });
+      await appendEvent({ stateDir, sessionId: SID, payload: STOP_PAYLOAD });
       const raw = await readFile(
         join(stateDir, `${SID}.events.jsonl`),
         'utf-8',
@@ -67,7 +66,7 @@ describe('events-log', () => {
 
     it('is append-only (preserves prior lines)', async () => {
       await appendEvent({ stateDir, sessionId: SID, payload: STOP_PAYLOAD });
-      await appendEvent({ stateDir, sessionId: SID, payload: USER_PAYLOAD });
+      await appendEvent({ stateDir, sessionId: SID, payload: SESSION_END_PAYLOAD });
       const lines = (
         await readFile(join(stateDir, `${SID}.events.jsonl`), 'utf-8')
       )
@@ -75,7 +74,7 @@ describe('events-log', () => {
         .split('\n');
       expect(lines).toHaveLength(2);
       expect(JSON.parse(lines[0]!).hook_event_name).toBe('Stop');
-      expect(JSON.parse(lines[1]!).hook_event_name).toBe('UserPromptSubmit');
+      expect(JSON.parse(lines[1]!).hook_event_name).toBe('SessionEnd');
     });
 
     it('creates nested stateDir if missing', async () => {
@@ -105,12 +104,12 @@ describe('events-log', () => {
 
     it('reads all lines from offset 0 + advances offset to file size', async () => {
       await appendEvent({ stateDir, sessionId: SID, payload: STOP_PAYLOAD });
-      await appendEvent({ stateDir, sessionId: SID, payload: USER_PAYLOAD });
+      await appendEvent({ stateDir, sessionId: SID, payload: SESSION_END_PAYLOAD });
       const filePath = join(stateDir, `${SID}.events.jsonl`);
       const result = await tailNewEvents({ filePath, fromOffset: 0 });
       expect(result.events).toHaveLength(2);
       expect(result.events[0]!.hook_event_name).toBe('Stop');
-      expect(result.events[1]!.hook_event_name).toBe('UserPromptSubmit');
+      expect(result.events[1]!.hook_event_name).toBe('SessionEnd');
       expect(result.newOffset).toBeGreaterThan(0);
     });
 
@@ -120,10 +119,10 @@ describe('events-log', () => {
       const first = await tailNewEvents({ filePath, fromOffset: 0 });
       expect(first.events).toHaveLength(1);
 
-      await appendEvent({ stateDir, sessionId: SID, payload: USER_PAYLOAD });
+      await appendEvent({ stateDir, sessionId: SID, payload: SESSION_END_PAYLOAD });
       const second = await tailNewEvents({ filePath, fromOffset: first.newOffset });
       expect(second.events).toHaveLength(1);
-      expect(second.events[0]!.hook_event_name).toBe('UserPromptSubmit');
+      expect(second.events[0]!.hook_event_name).toBe('SessionEnd');
     });
 
     it('returns no events + same offset when nothing has been appended', async () => {

@@ -1,10 +1,11 @@
 import { stat } from 'node:fs/promises';
+import type { SessionId } from '@multi-cc-im/shared';
 import {
   createOrchestrator,
-  createPersistentRouterState,
   createSessionRegistry,
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
+import type { RouterState } from '@multi-cc-im/bridge';
 import { createCcCliAdapter } from '@multi-cc-im/cli-cc';
 import {
   createWeixinAdapter,
@@ -140,9 +141,17 @@ export async function runStartCommand(
     stateDir: paths.stateDir,
     getTabTitles: () => listAllTabs({ wezterm }),
   });
-  const routerState = await createPersistentRouterState({
-    stateDir: paths.stateDir,
-  });
+  // In-memory sticky `current_session` — last-explicit-mention pointer per
+  // routing G' DD. Does NOT persist across daemon restart by design (cc reply
+  // contexts in `lastReplyCtxBySession` are also in-memory; the user re-binds
+  // by sending `@<name> <body>` from WeChat after restart).
+  let currentSid: SessionId | null = null;
+  const routerState: RouterState = {
+    getCurrent: () => currentSid,
+    setCurrent: (id) => {
+      currentSid = id;
+    },
+  };
 
   const aliveSessions = await registry.listAlive();
   log(
@@ -192,7 +201,6 @@ export async function runStartCommand(
     stderr: '',
     shutdown: async () => {
       await orchestrator.stop();
-      await routerState.flush();
     },
   };
 }

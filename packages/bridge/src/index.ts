@@ -24,9 +24,6 @@ export type {
   SessionRegistryAndMap,
 } from './session-registry.js';
 
-export { createPersistentRouterState } from './persistent-state.js';
-export type { CreatePersistentRouterStateOpts } from './persistent-state.js';
-
 export { createOrchestrator } from './orchestrator.js';
 export type {
   BridgeOrchestrator,

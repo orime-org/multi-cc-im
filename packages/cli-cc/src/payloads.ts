@@ -14,6 +14,11 @@ import { z } from 'zod';
  * across packages collides with `unique symbol` declaration-emit
  * constraints, so packages downstream of cli-cc cast at the boundary if they
  * need branded values.
+ *
+ * multi-cc-im subscribes to only 3 hook events: `SessionStart`, `Stop`,
+ * `SessionEnd`. Earlier versions also parsed `UserPromptSubmit` /
+ * `PreToolUse` / `PostToolUse` for analytics in `events.jsonl`; those have
+ * been dropped because cc's own transcript jsonl already records that data.
  */
 
 const baseHookPayload = {
@@ -29,41 +34,6 @@ export const SessionStartPayloadSchema = z.object({
   model: z.string(),
 });
 
-export const UserPromptSubmitPayloadSchema = z.object({
-  ...baseHookPayload,
-  hook_event_name: z.literal('UserPromptSubmit'),
-  permission_mode: z.string(),
-  prompt: z.string(),
-});
-
-export const PreToolUsePayloadSchema = z.object({
-  ...baseHookPayload,
-  hook_event_name: z.literal('PreToolUse'),
-  permission_mode: z.string(),
-  tool_name: z.string(),
-  tool_input: z.record(z.string(), z.unknown()),
-  tool_use_id: z.string(),
-});
-
-export const PostToolUseToolResponseSchema = z.object({
-  stdout: z.string(),
-  stderr: z.string(),
-  interrupted: z.boolean(),
-  isImage: z.boolean(),
-  noOutputExpected: z.boolean(),
-});
-
-export const PostToolUsePayloadSchema = z.object({
-  ...baseHookPayload,
-  hook_event_name: z.literal('PostToolUse'),
-  permission_mode: z.string(),
-  tool_name: z.string(),
-  tool_input: z.record(z.string(), z.unknown()),
-  tool_response: PostToolUseToolResponseSchema,
-  tool_use_id: z.string(),
-  duration_ms: z.number(),
-});
-
 export const StopPayloadSchema = z.object({
   ...baseHookPayload,
   hook_event_name: z.literal('Stop'),
@@ -76,13 +46,8 @@ export const StopPayloadSchema = z.object({
  * Hook fired when cc session ends (graceful `/exit`, `/clear`, or other reasons
  * documented at https://docs.anthropic.com/en/docs/claude-code/hooks#sessionend).
  * Required by [pane-alive strategy DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
- * receiver writes `<sid>.ended` so term-wezterm PaneAlive can flip to dead immediately
- * on graceful exit (vs. polling for PID death).
- *
- * NOT in `shared/adapter/cli.ts` as a CLIAdapter Handler callback yet —
- * cc-side hook receiver handles it internally for state-file purposes;
- * exposing through Handler.onSessionEnd is a follow-up if bridge router wants
- * the live signal (vs. consuming the `<sid>.ended` file directly).
+ * receiver flips term-wezterm PaneAlive to dead immediately on graceful exit
+ * (vs. polling for PID death).
  */
 export const SessionEndPayloadSchema = z.object({
   ...baseHookPayload,
@@ -100,9 +65,6 @@ export const SessionEndPayloadSchema = z.object({
  */
 export const HookPayloadSchema = z.discriminatedUnion('hook_event_name', [
   SessionStartPayloadSchema,
-  UserPromptSubmitPayloadSchema,
-  PreToolUsePayloadSchema,
-  PostToolUsePayloadSchema,
   StopPayloadSchema,
   SessionEndPayloadSchema,
 ]);
