@@ -31,7 +31,6 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
-  shims: false,
   dts: false,
   // Bundle 全部依赖（workspace TS source + 所有 npm deps），让产物尽量自包含；
   // 对**真**不能 inline 的少数 deps 走 external：
