@@ -105,8 +105,11 @@ jobs:
           shopt -s nullglob
           stop_files=("$MULTI_CC_IM_HOME/state/$SID".Stop.*)
           [ "${#stop_files[@]}" -eq 1 ]
-          # The Stop file content is JSON with last_assistant_message.
-          grep -q '"last_assistant_message":"hi"' "${stop_files[0]}"
+          # The Stop file content is JSON (atomicWrite uses 2-space pretty-print)
+          # so match the field name + value separately rather than rely on
+          # exact whitespace.
+          grep -q 'last_assistant_message' "${stop_files[0]}"
+          grep -q '"hi"' "${stop_files[0]}"
           # No legacy files written.
           ! test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
           ! test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
