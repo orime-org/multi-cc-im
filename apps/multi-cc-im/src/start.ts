@@ -23,6 +23,7 @@ import {
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
 import { resolveAppPaths } from './config-paths.js';
+import { sweepStaleStateFiles } from './state-sweep.js';
 
 export interface RunStartCommandOpts {
   /** Override `~/.multi-cc-im` root (env or for tests). */
@@ -127,6 +128,23 @@ export async function runStartCommand(
     log(`  ✓ wezterm at ${wezterm} (cached to config.toml)`);
   } else {
     log(`  ✓ wezterm at ${wezterm}`);
+  }
+
+  // ===== 1c. Sweep stale state files BEFORE chokidar starts watching =====
+  // Cleans paired SessionStart+SessionEnd from completed sessions, orphan
+  // Stop files (daemon-down accumulation that can't be forwarded — replyCtx
+  // is in-memory only), and any legacy state files from pre-redesign
+  // installs (cc-pid / events.jsonl / ended / last-hook-at / current-session).
+  const sweepResult = await sweepStaleStateFiles(paths.stateDir);
+  if (
+    sweepResult.pairedCleaned +
+      sweepResult.orphanStopsCleaned +
+      sweepResult.legacyCleaned >
+    0
+  ) {
+    log(
+      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop file(s), ${sweepResult.legacyCleaned} legacy file(s) cleaned`,
+    );
   }
 
   // ===== 2. Build adapters =====

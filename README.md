@@ -68,7 +68,18 @@ sed "s|ABS_PATH|$(pwd)|g" examples/claude-settings.json
 ./bin/multi-cc-im start
 ```
 
-Long-running background process: iLink long-polling + watching cc hook `events.jsonl` + routing WeChat `IncomingMessage` to the cc TUI. `Ctrl+C` triggers a graceful shutdown (flushes `current_session` state + releases all adapters).
+Long-running background process: iLink long-polling + watching `~/.multi-cc-im/state/` for cc hook events + routing WeChat `IncomingMessage` to the cc TUI. `Ctrl+C` triggers a graceful shutdown (releases all adapters; the in-memory `current_session` sticky pointer is lost — re-`@<name>` from WeChat after restart).
+
+The state/ directory is **monitor-only** — it never accumulates cc conversation content (cc's own transcript jsonl at `~/.claude/projects/<dir>/<sid>.jsonl` already records that data). Per-session footprint:
+
+| File | Lifetime | Daemon role |
+|---|---|---|
+| `<sid>.SessionStart` | cc startup → cleanup sweep | Read at SessionStart hook; tells daemon paneId + transcript_path |
+| `<sid>.Stop.<ts>` | <100 ms (daemon reads + forwards + unlinks) | Bridge for cc → WeChat reply forwarding |
+| `<sid>.SessionEnd` | cc exit → cleanup sweep (0-byte tombstone) | Marks cc dead so daemon stops routing to it |
+| `wechat-cursor` | persistent | iLink long-poll cursor (don't lose messages on restart) |
+
+Daemon startup runs a sweep that deletes paired `SessionStart` + `SessionEnd` (= cc lifecycle complete), orphan `Stop.<ts>` (= daemon-down accumulation that can't be forwarded), and any legacy state files from pre-redesign installs.
 
 ### 6. Name your cc sessions (recommended)
 

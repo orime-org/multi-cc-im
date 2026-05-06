@@ -1,12 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PaneId, PaneToSessionMap, SessionId } from '@multi-cc-im/shared';
 import {
-  touchLastHookAt,
-  writeCcPid,
-  writeEnded,
+  writeSessionEndFile,
+  writeSessionStartFile,
 } from '@multi-cc-im/cli-cc';
 import { createIsPaneAlive } from './pane-alive.js';
 import type { PidProbe } from './pid-probe.js';
@@ -43,7 +42,6 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
 
   afterEach(async () => {
     await rm(stateDir, { recursive: true, force: true });
-    vi.useRealTimers();
   });
 
   it('unknown pane (paneToSession.get returns null) → dead (conservative)', async () => {
@@ -56,7 +54,7 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
   });
 
   it('SessionEnd file present → dead (signal 1: graceful exit)', async () => {
-    await writeEnded({ stateDir, sessionId: SID, reason: '/exit' });
+    await writeSessionEndFile({ stateDir, sessionId: SID });
     const isAlive = createIsPaneAlive({
       stateDir,
       paneToSession: fixedMap({ [PANE]: SID }),
@@ -65,14 +63,28 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
     expect(await isAlive(PANE)).toBe(false);
   });
 
-  it('cc-pid present + PID alive + lstart matches → ALIVE (steady state)', async () => {
-    await writeCcPid({
+  it('SessionStart missing → DEAD (no signal at all, no idle-timeout fallback any more)', async () => {
+    // Per the post-redesign 7-outcome lattice: with no SessionStart file there
+    // is no authoritative pid/startedAt to probe and no idle-timeout fallback,
+    // so the only safe answer is DEAD.
+    const isAlive = createIsPaneAlive({
+      stateDir,
+      paneToSession: fixedMap({ [PANE]: SID }),
+      pidProbe: stubPidProbe({ alive: true }),
+    });
+    expect(await isAlive(PANE)).toBe(false);
+  });
+
+  it('SessionStart present + PID alive + lstart matches → ALIVE (steady state)', async () => {
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID,
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: PANE,
+      cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
-    await touchLastHookAt({ stateDir, sessionId: SID });
     const isAlive = createIsPaneAlive({
       stateDir,
       paneToSession: fixedMap({ [PANE]: SID }),
@@ -84,12 +96,15 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
     expect(await isAlive(PANE)).toBe(true);
   });
 
-  it('cc-pid present + PID DEAD → dead (signal 2: abnormal exit)', async () => {
-    await writeCcPid({
+  it('SessionStart present + PID DEAD → dead (signal 2: abnormal exit)', async () => {
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID,
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: PANE,
+      cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const isAlive = createIsPaneAlive({
       stateDir,
@@ -99,12 +114,15 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
     expect(await isAlive(PANE)).toBe(false);
   });
 
-  it('cc-pid present + PID alive + lstart MISMATCH → dead (PID reuse defense)', async () => {
-    await writeCcPid({
+  it('SessionStart present + PID alive + lstart MISMATCH → dead (PID reuse defense)', async () => {
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID,
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: PANE,
+      cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const isAlive = createIsPaneAlive({
       stateDir,
@@ -117,12 +135,15 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
     expect(await isAlive(PANE)).toBe(false);
   });
 
-  it('cc-pid present + PID alive + ps lstart THROWS → dead (treat probe failure as dead)', async () => {
-    await writeCcPid({
+  it('SessionStart present + PID alive + ps lstart THROWS → dead (treat probe failure as dead)', async () => {
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID,
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: PANE,
+      cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const isAlive = createIsPaneAlive({
       stateDir,
@@ -132,72 +153,17 @@ describe('createIsPaneAlive — multi-signal state machine', () => {
     expect(await isAlive(PANE)).toBe(false);
   });
 
-  it('cc-pid MISSING + last-hook-at fresh → ALIVE (bridge restart fallback)', async () => {
-    // bridge restart edge: SessionStart fired before bridge restart but
-    // disk state was wiped (or never written). last-hook-at is the only
-    // recent signal — if it's fresh enough, conservatively assume alive.
-    await touchLastHookAt({ stateDir, sessionId: SID });
-    const isAlive = createIsPaneAlive({
-      stateDir,
-      paneToSession: fixedMap({ [PANE]: SID }),
-      pidProbe: stubPidProbe({ alive: true }),
-      idleTimeoutMs: 30 * 60_000,
-    });
-    expect(await isAlive(PANE)).toBe(true);
-  });
-
-  it('cc-pid MISSING + last-hook-at STALE → dead (signal 4 idle timeout)', async () => {
-    await touchLastHookAt({ stateDir, sessionId: SID });
-    // Advance time beyond idle timeout.
-    vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + 60 * 60_000);
-    const isAlive = createIsPaneAlive({
-      stateDir,
-      paneToSession: fixedMap({ [PANE]: SID }),
-      pidProbe: stubPidProbe({ alive: true }),
-      idleTimeoutMs: 30 * 60_000,
-    });
-    expect(await isAlive(PANE)).toBe(false);
-  });
-
-  it('cc-pid MISSING + last-hook-at MISSING → dead (no signal at all)', async () => {
-    const isAlive = createIsPaneAlive({
-      stateDir,
-      paneToSession: fixedMap({ [PANE]: SID }),
-      pidProbe: stubPidProbe({ alive: true }),
-    });
-    expect(await isAlive(PANE)).toBe(false);
-  });
-
-  it('idleTimeoutMs default = 30 minutes per DD g recommendation', async () => {
-    await touchLastHookAt({ stateDir, sessionId: SID });
-    vi.useFakeTimers();
-    // 29 min: still fresh
-    vi.setSystemTime(Date.now() + 29 * 60_000);
-    let isAlive = createIsPaneAlive({
-      stateDir,
-      paneToSession: fixedMap({ [PANE]: SID }),
-      pidProbe: stubPidProbe({ alive: true }),
-    });
-    expect(await isAlive(PANE)).toBe(true);
-    // 31 min: stale
-    vi.setSystemTime(Date.now() + 2 * 60_000);
-    isAlive = createIsPaneAlive({
-      stateDir,
-      paneToSession: fixedMap({ [PANE]: SID }),
-      pidProbe: stubPidProbe({ alive: true }),
-    });
-    expect(await isAlive(PANE)).toBe(false);
-  });
-
   it('SessionEnd dominates even when PID still alive (graceful logout race window)', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID,
       pid: 12345,
       startedAt: 'Tue May  4 16:38:00 2026',
+      paneId: PANE,
+      cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
-    await writeEnded({ stateDir, sessionId: SID, reason: '/clear' });
+    await writeSessionEndFile({ stateDir, sessionId: SID });
     const isAlive = createIsPaneAlive({
       stateDir,
       paneToSession: fixedMap({ [PANE]: SID }),

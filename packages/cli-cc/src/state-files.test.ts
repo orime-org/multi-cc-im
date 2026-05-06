@@ -3,12 +3,23 @@ import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  writeCcPid,
-  readCcPid,
-  writeEnded,
-  readEnded,
-  touchLastHookAt,
-  readLastHookAt,
+  SESSION_END_SUFFIX,
+  SESSION_START_SUFFIX,
+  STOP_PREFIX,
+  deleteSessionEndFile,
+  deleteSessionStartFile,
+  deleteStopFile,
+  existsSessionEndFile,
+  formatStopTimestamp,
+  listStopFiles,
+  readSessionStartFile,
+  readStopFile,
+  sessionEndPath,
+  sessionStartPath,
+  stopFilePath,
+  writeSessionEndFile,
+  writeSessionStartFile,
+  writeStopFile,
 } from './state-files.js';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
@@ -24,113 +35,203 @@ describe('state-files', () => {
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  describe('writeCcPid / readCcPid', () => {
-    it('writes <sid>.cc-pid as JSON with pid + startedAt + writes 0600 mode', async () => {
-      await writeCcPid({
+  describe('formatStopTimestamp', () => {
+    it('replaces ":" and "." in ISO timestamps with "-"', () => {
+      const d = new Date('2026-05-06T16:20:15.123Z');
+      expect(formatStopTimestamp(d)).toBe('2026-05-06T16-20-15-123Z');
+    });
+
+    it('produces lexicographically-sortable strings (sort = chronological)', () => {
+      const t1 = formatStopTimestamp(new Date('2026-05-06T16:20:15.123Z'));
+      const t2 = formatStopTimestamp(new Date('2026-05-06T16:20:15.124Z'));
+      const t3 = formatStopTimestamp(new Date('2026-05-06T16:20:16.000Z'));
+      const t4 = formatStopTimestamp(new Date('2027-01-01T00:00:00.000Z'));
+      expect([t4, t1, t3, t2].sort()).toEqual([t1, t2, t3, t4]);
+    });
+  });
+
+  describe('SessionStart file', () => {
+    it('writeSessionStartFile + readSessionStartFile round-trip with all fields', async () => {
+      await writeSessionStartFile({
         stateDir,
         sessionId: SID,
         pid: 12345,
         startedAt: 'Tue May  4 16:38:00 2026',
+        paneId: 42,
+        cwd: '/private/tmp/cc-probe',
+        transcript_path: '/Users/x/.claude/projects/-private-tmp/91215578.jsonl',
       });
-      const filePath = join(stateDir, `${SID}.cc-pid`);
-      const raw = JSON.parse(await readFile(filePath, 'utf-8'));
-      expect(raw).toEqual({
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result).toEqual({
         pid: 12345,
         startedAt: 'Tue May  4 16:38:00 2026',
+        paneId: 42,
+        cwd: '/private/tmp/cc-probe',
+        transcript_path: '/Users/x/.claude/projects/-private-tmp/91215578.jsonl',
       });
-      const stats = await stat(filePath);
+    });
+
+    it('writes to the path returned by sessionStartPath with mode 0600', async () => {
+      await writeSessionStartFile({
+        stateDir,
+        sessionId: SID,
+        pid: 1,
+        startedAt: 'x',
+        cwd: '/tmp',
+        transcript_path: '/x.jsonl',
+      });
+      const path = sessionStartPath({ stateDir, sessionId: SID });
+      expect(path).toBe(join(stateDir, `${SID}${SESSION_START_SUFFIX}`));
+      const stats = await stat(path);
       expect(stats.mode & 0o777).toBe(0o600);
     });
 
-    it('readCcPid returns null when file missing', async () => {
-      expect(await readCcPid({ stateDir, sessionId: SID })).toBeNull();
-    });
-
-    it('readCcPid round-trips written content', async () => {
-      await writeCcPid({
+    it('omits paneId from JSON when not provided (cc outside wezterm)', async () => {
+      await writeSessionStartFile({
         stateDir,
         sessionId: SID,
-        pid: 9876,
-        startedAt: 'Wed May  5 12:00:00 2026',
+        pid: 12345,
+        startedAt: 'Tue May  4 16:38:00 2026',
+        cwd: '/private/tmp/cc-probe',
+        transcript_path: '/x.jsonl',
       });
-      expect(await readCcPid({ stateDir, sessionId: SID })).toEqual({
-        pid: 9876,
-        startedAt: 'Wed May  5 12:00:00 2026',
-      });
+      const filePath = sessionStartPath({ stateDir, sessionId: SID });
+      const raw = JSON.parse(await readFile(filePath, 'utf-8'));
+      expect('paneId' in raw).toBe(false);
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result?.paneId).toBeUndefined();
+      expect(result?.pid).toBe(12345);
+    });
+
+    it('readSessionStartFile returns null when file missing (ENOENT)', async () => {
+      expect(
+        await readSessionStartFile({ stateDir, sessionId: SID }),
+      ).toBeNull();
+    });
+
+    it('deleteSessionStartFile is ENOENT-safe (no throw on missing)', async () => {
+      await expect(
+        deleteSessionStartFile({ stateDir, sessionId: SID }),
+      ).resolves.toBeUndefined();
     });
   });
 
-  describe('writeEnded / readEnded', () => {
-    it('writes <sid>.ended JSON with reason + endedAt', async () => {
-      await writeEnded({
+  describe('SessionEnd file', () => {
+    it('writeSessionEndFile creates a 0-byte tombstone', async () => {
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      const path = sessionEndPath({ stateDir, sessionId: SID });
+      expect(path).toBe(join(stateDir, `${SID}${SESSION_END_SUFFIX}`));
+      const stats = await stat(path);
+      expect(stats.size).toBe(0);
+    });
+
+    it('existsSessionEndFile returns true after write, false when missing', async () => {
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(false);
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(true);
+    });
+
+    it('deleteSessionEndFile is ENOENT-safe', async () => {
+      await expect(
+        deleteSessionEndFile({ stateDir, sessionId: SID }),
+      ).resolves.toBeUndefined();
+      // After write+delete, exists should be false again
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      await deleteSessionEndFile({ stateDir, sessionId: SID });
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(false);
+    });
+  });
+
+  describe('Stop file', () => {
+    it('writeStopFile + readStopFile round-trip via path', async () => {
+      const timestamp = '2026-05-06T16-20-15-123Z';
+      await writeStopFile({
         stateDir,
         sessionId: SID,
-        reason: 'prompt_input_exit',
+        timestamp,
+        last_assistant_message: 'hello world',
       });
-      const raw = JSON.parse(
-        await readFile(join(stateDir, `${SID}.ended`), 'utf-8'),
+      const path = stopFilePath({ stateDir, sessionId: SID, timestamp });
+      expect(path).toBe(
+        join(stateDir, `${SID}${STOP_PREFIX}${timestamp}`),
       );
-      expect(raw.reason).toBe('prompt_input_exit');
-      expect(typeof raw.endedAt).toBe('number');
-      expect(raw.endedAt).toBeGreaterThan(0);
+      expect(await readStopFile(path)).toEqual({
+        last_assistant_message: 'hello world',
+      });
     });
 
-    it('readEnded returns null when file missing', async () => {
-      expect(await readEnded({ stateDir, sessionId: SID })).toBeNull();
-    });
-
-    it('readEnded round-trips written content', async () => {
-      const before = Date.now();
-      await writeEnded({
+    it('readStopFile returns null on ENOENT (daemon-double-event guard)', async () => {
+      const path = stopFilePath({
         stateDir,
         sessionId: SID,
-        reason: '/exit',
+        timestamp: '2026-05-06T16-20-15-123Z',
       });
-      const after = Date.now();
-      const result = await readEnded({ stateDir, sessionId: SID });
-      expect(result?.reason).toBe('/exit');
-      expect(result?.endedAt).toBeGreaterThanOrEqual(before);
-      expect(result?.endedAt).toBeLessThanOrEqual(after);
-    });
-  });
-
-  describe('touchLastHookAt / readLastHookAt', () => {
-    it('writes <sid>.last-hook-at with current ms timestamp', async () => {
-      const before = Date.now();
-      await touchLastHookAt({ stateDir, sessionId: SID });
-      const after = Date.now();
-      const ts = await readLastHookAt({ stateDir, sessionId: SID });
-      expect(ts).toBeGreaterThanOrEqual(before);
-      expect(ts).toBeLessThanOrEqual(after);
+      expect(await readStopFile(path)).toBeNull();
     });
 
-    it('readLastHookAt returns null when file missing', async () => {
-      expect(await readLastHookAt({ stateDir, sessionId: SID })).toBeNull();
-    });
-
-    it('overwrites timestamp on subsequent touches', async () => {
-      await touchLastHookAt({ stateDir, sessionId: SID });
-      await new Promise((r) => setTimeout(r, 10));
-      const expected = Date.now();
-      await touchLastHookAt({ stateDir, sessionId: SID });
-      const actual = await readLastHookAt({ stateDir, sessionId: SID });
-      expect(actual).toBeGreaterThanOrEqual(expected - 5);
-    });
-  });
-
-  describe('directory creation', () => {
-    it('writeCcPid creates nested stateDir if missing', async () => {
-      const nested = join(stateDir, 'multi', 'level', 'state');
-      await writeCcPid({
-        stateDir: nested,
+    it('deleteStopFile is ENOENT-safe', async () => {
+      const path = stopFilePath({
+        stateDir,
         sessionId: SID,
-        pid: 1,
-        startedAt: 'x',
+        timestamp: '2026-05-06T16-20-15-123Z',
       });
-      expect(await readCcPid({ stateDir: nested, sessionId: SID })).toEqual({
-        pid: 1,
-        startedAt: 'x',
+      await expect(deleteStopFile(path)).resolves.toBeUndefined();
+    });
+
+    it('listStopFiles returns paths sorted ascending by timestamp', async () => {
+      const timestamps = [
+        '2026-05-06T16-20-16-000Z',
+        '2026-05-06T16-20-15-123Z',
+        '2027-01-01T00-00-00-000Z',
+      ];
+      // Write in non-sorted order to confirm sort behavior is real
+      for (const timestamp of timestamps) {
+        await writeStopFile({
+          stateDir,
+          sessionId: SID,
+          timestamp,
+          last_assistant_message: `msg-${timestamp}`,
+        });
+      }
+      const result = await listStopFiles({ stateDir, sessionId: SID });
+      expect(result).toEqual([
+        join(stateDir, `${SID}${STOP_PREFIX}2026-05-06T16-20-15-123Z`),
+        join(stateDir, `${SID}${STOP_PREFIX}2026-05-06T16-20-16-000Z`),
+        join(stateDir, `${SID}${STOP_PREFIX}2027-01-01T00-00-00-000Z`),
+      ]);
+    });
+
+    it('listStopFiles for nonexistent stateDir returns []', async () => {
+      const missing = join(stateDir, 'does-not-exist');
+      expect(
+        await listStopFiles({ stateDir: missing, sessionId: SID }),
+      ).toEqual([]);
+    });
+
+    it('listStopFiles only includes files for the requested sessionId', async () => {
+      const SID2 = '5780668a-0000-4fe4-b01d-aaaaaaaaaaaa';
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: '2026-05-06T16-20-15-123Z',
+        last_assistant_message: 'a',
       });
+      await writeStopFile({
+        stateDir,
+        sessionId: SID2,
+        timestamp: '2026-05-06T16-20-16-000Z',
+        last_assistant_message: 'b',
+      });
+      const result = await listStopFiles({ stateDir, sessionId: SID });
+      expect(result).toHaveLength(1);
+      expect(result[0]).toContain(SID);
+      expect(result[0]).not.toContain(SID2);
     });
   });
 });

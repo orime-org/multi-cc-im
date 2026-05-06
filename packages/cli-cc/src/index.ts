@@ -10,41 +10,39 @@ export {
 } from './payloads.js';
 export type { ParsedHookPayload } from './payloads.js';
 
-// State-file IO for cc session lifecycle (cc-pid / ended / last-hook-at).
-// PaneAlive multi-signal (term-wezterm, future PR) consumes these.
+// State-file IO for cc session lifecycle.
+// Per-event-type files: <sid>.SessionStart / <sid>.Stop.<ts> / <sid>.SessionEnd
+// Daemon's chokidar adapter watches the directory for these patterns.
+// PaneAlive (term-wezterm) reads SessionStart/SessionEnd for liveness.
 export {
-  readCcPid,
-  readEnded,
-  readLastHookAt,
-  touchLastHookAt,
-  writeCcPid,
-  writeEnded,
+  SESSION_START_SUFFIX,
+  SESSION_END_SUFFIX,
+  STOP_PREFIX,
+  formatStopTimestamp,
+  sessionStartPath,
+  sessionEndPath,
+  stopFilePath,
+  writeSessionStartFile,
+  readSessionStartFile,
+  deleteSessionStartFile,
+  writeSessionEndFile,
+  existsSessionEndFile,
+  deleteSessionEndFile,
+  writeStopFile,
+  readStopFile,
+  deleteStopFile,
+  listStopFiles,
 } from './state-files.js';
 export type {
-  CcPidEntry,
-  CcPidIO,
-  EndedEntry,
-  EndedIO,
-  LastHookIO,
+  PerSessionIO,
+  SessionStartFile,
+  StopFile,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI
 // subcommand (future CLI package).
 export { runHookReceiver } from './hook-receiver.js';
 export type { HookDecision, RunHookReceiverOpts } from './hook-receiver.js';
-
-// Append-only event log (writer in receiver, reader in adapter).
-export {
-  appendEvent,
-  resolveEventsLogPath,
-  tailNewEvents,
-} from './events-log.js';
-export type {
-  AppendEventOpts,
-  EventsLogPath,
-  TailNewEventsOpts,
-  TailNewEventsResult,
-} from './events-log.js';
 
 // Stop-hook injection queue (bridge enqueues; receiver pops).
 export {
