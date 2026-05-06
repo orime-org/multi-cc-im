@@ -94,18 +94,26 @@ jobs:
 
       - name: Smoke — hook subcommand round-trip (Stop)
         run: |
+          set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
           PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
           echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
-          # State files written under <home>/state/<sid>.{events.jsonl,last-hook-at}
-          test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
-          test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
-          # events.jsonl contains exactly one JSON line for the Stop event.
-          # Numeric `-eq` compare (not `=`) — wc -l output is whitespace-padded
-          # on macOS / some Linux distros.
-          line_count="$(wc -l < "$MULTI_CC_IM_HOME/state/$SID.events.jsonl")"
-          [ "$line_count" -eq 1 ]
+          ls -la "$MULTI_CC_IM_HOME/state/"
+          # Stop hook writes <home>/state/<sid>.Stop.<ISO-ts>; daemon would
+          # forward + unlink, but no daemon here so the file persists.
+          shopt -s nullglob
+          stop_files=("$MULTI_CC_IM_HOME/state/$SID".Stop.*)
+          [ "${#stop_files[@]}" -eq 1 ]
+          # The Stop file content is JSON (atomicWrite uses 2-space pretty-print)
+          # so match the field name + value separately rather than rely on
+          # exact whitespace.
+          grep -q 'last_assistant_message' "${stop_files[0]}"
+          grep -q '"hi"' "${stop_files[0]}"
+          # No legacy files written.
+          ! test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
+          ! test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
+          ! test -f "$MULTI_CC_IM_HOME/state/$SID.cc-pid"
 
       - name: Smoke — bin wrapper falls back to tsx when dist absent
         run: |

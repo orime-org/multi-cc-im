@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PaneId } from '@multi-cc-im/shared';
 import {
-  touchLastHookAt,
-  writeCcPid,
-  writeEnded,
+  writeSessionEndFile,
+  writeSessionStartFile,
 } from '@multi-cc-im/cli-cc';
 import type { PidProbe, TabInfo } from '@multi-cc-im/term-wezterm';
 import { createSessionRegistry } from './session-registry.js';
@@ -70,13 +69,14 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('one alive session with paneId + matching lstart → returned', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/proj-a',
+      transcript_path: '/tmp/proj-a.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -97,15 +97,16 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('session with SessionEnd file → filtered out as dead', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
-    await writeEnded({ stateDir, sessionId: SID_A, reason: '/exit' });
+    await writeSessionEndFile({ stateDir, sessionId: SID_A });
     const reg = createSessionRegistry({
       stateDir,
       pidProbe: stubPidProbe({ alivePids: new Set([1000]), defaultLstart: 'X' }),
@@ -114,13 +115,14 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('session with PID dead → filtered out', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -130,13 +132,14 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('session with lstart MISMATCH → filtered out (PID reuse defense)', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -149,31 +152,34 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('multiple sessions: alive + dead + ended → returns alive only', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/a',
+      transcript_path: '/tmp/a.jsonl',
     });
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_B,
       pid: 2000,
       startedAt: 'X',
       paneId: 20,
       cwd: '/tmp/b',
+      transcript_path: '/tmp/b.jsonl',
     });
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_C,
       pid: 3000,
       startedAt: 'X',
       paneId: 30,
       cwd: '/tmp/c',
+      transcript_path: '/tmp/c.jsonl',
     });
-    await writeEnded({ stateDir, sessionId: SID_C, reason: '/exit' });
+    await writeSessionEndFile({ stateDir, sessionId: SID_C });
     const reg = createSessionRegistry({
       stateDir,
       pidProbe: stubPidProbe({
@@ -187,13 +193,14 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('attaches tabTitle from getTabTitles map by paneId', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -208,13 +215,14 @@ describe('createSessionRegistry — listAlive', () => {
     // Exercises the try/catch fallback in session-registry.ts:
     // wezterm cli unavailable / failure should not nuke routing — sessions
     // resolve by `$sid8` instead.
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -233,13 +241,14 @@ describe('createSessionRegistry — listAlive', () => {
     // Exercises the `tab.title.length > 0` guard — an unnamed cc tab comes
     // back as `{ title: '', ... }` from wezterm; bridge must surface that as
     // `undefined` so `displayName` falls back to `$sid8` + rename hint.
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 10,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -252,33 +261,19 @@ describe('createSessionRegistry — listAlive', () => {
   });
 
   it('session with no paneId → filtered out (not routable from bridge)', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       // no paneId — cc ran outside wezterm
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
       pidProbe: stubPidProbe({ alivePids: new Set([1000]), defaultLstart: 'X' }),
     });
-    expect(await reg.listAlive()).toEqual([]);
-  });
-
-  it('cc-pid missing + last-hook-at fresh → fallback alive (bridge restart edge)', async () => {
-    // Edge: SessionStart fired → events.jsonl appended → but bridge crashed
-    // before cc-pid got written? In practice this is rare; the fallback
-    // covers "cc-pid was deleted somehow but last-hook-at suggests recent
-    // activity". Per pane-alive DD #4 signal logic.
-    await touchLastHookAt({ stateDir, sessionId: SID_A });
-    const reg = createSessionRegistry({
-      stateDir,
-      pidProbe: stubPidProbe({}),
-      idleTimeoutMs: 30 * 60_000,
-    });
-    // Without cc-pid, no paneId/cwd → cannot route. Filter out.
     expect(await reg.listAlive()).toEqual([]);
   });
 });
@@ -303,13 +298,14 @@ describe('createSessionRegistry — paneToSession reverse lookup', () => {
   });
 
   it('get(paneId) returns sessionId after listAlive populates the cache', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 42,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -320,13 +316,14 @@ describe('createSessionRegistry — paneToSession reverse lookup', () => {
   });
 
   it('get(unknown paneId) returns null', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 42,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -337,13 +334,14 @@ describe('createSessionRegistry — paneToSession reverse lookup', () => {
   });
 
   it('after session dies, listAlive prunes paneToSession cache', async () => {
-    await writeCcPid({
+    await writeSessionStartFile({
       stateDir,
       sessionId: SID_A,
       pid: 1000,
       startedAt: 'X',
       paneId: 42,
       cwd: '/tmp/x',
+      transcript_path: '/tmp/x.jsonl',
     });
     const reg = createSessionRegistry({
       stateDir,
@@ -356,7 +354,7 @@ describe('createSessionRegistry — paneToSession reverse lookup', () => {
     expect(reg.get(42 as PaneId)).toBe(SID_A);
 
     // Simulate session ending
-    await writeEnded({ stateDir, sessionId: SID_A, reason: '/exit' });
+    await writeSessionEndFile({ stateDir, sessionId: SID_A });
     await reg.listAlive();
     expect(reg.get(42 as PaneId)).toBeNull();
   });

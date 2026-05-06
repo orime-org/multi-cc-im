@@ -6,9 +6,9 @@ import type {
   SessionId,
 } from '@multi-cc-im/shared';
 import {
-  readCcPid,
-  readEnded,
-  readLastHookAt,
+  SESSION_START_SUFFIX,
+  existsSessionEndFile,
+  readSessionStartFile,
 } from '@multi-cc-im/cli-cc';
 import {
   defaultPidProbe,
@@ -17,9 +17,6 @@ import {
 } from '@multi-cc-im/term-wezterm';
 import type { SessionInfo } from './matcher.js';
 import type { SessionRegistry } from './router.js';
-
-const CC_PID_SUFFIX = '.cc-pid';
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 
 export interface CreateSessionRegistryOpts {
   /** Where cli-cc state files live (e.g. `~/.multi-cc-im/state/`). */
@@ -34,8 +31,6 @@ export interface CreateSessionRegistryOpts {
   getTabTitles?: () => Promise<Map<number, TabInfo>>;
   /** Test seam — defaults to `defaultPidProbe` from `@multi-cc-im/term-wezterm`. */
   pidProbe?: PidProbe;
-  /** Idle-timeout fallback — propagated to per-session liveness check. */
-  idleTimeoutMs?: number;
 }
 
 /**
@@ -51,30 +46,33 @@ export interface SessionRegistryAndMap extends SessionRegistry, PaneToSessionMap
  * tab-title fetcher.
  *
  * `listAlive()` work:
- *   1. Scan `<stateDir>/*.cc-pid` files to get all sessions cc has started
- *   2. For each, run the **same 4-signal liveness check** as term-wezterm
- *      PaneAlive (SessionEnd file → PID kill -0 → ps lstart → idle-timeout
- *      fallback) — duplicated here to avoid circular dep on term-wezterm
- *      PaneAlive (which itself consumes this registry as `paneToSession`)
- *   3. Drop sessions without `paneId` (cc ran outside wezterm — not routable
- *      from bridge)
- *   4. If `getTabTitles` is provided, call it once and attach `tabTitle` to
- *      each alive `SessionInfo` from the returned `paneId → TabInfo` map
- *      (caller-provided `cc /rename` source). Empty / missing title becomes
- *      `undefined` so router fallback kicks in (`$<sid8>` + rename hint).
- *   5. Refresh internal `paneId → sessionId` cache for subsequent `get()`
+ *   1. Scan `<stateDir>/*.SessionStart` files to get all sessions cc has
+ *      started.
+ *   2. For each: skip if `<sid>.SessionEnd` exists (cc died gracefully).
+ *      Read `<sid>.SessionStart` for pid + startedAt + paneId + cwd. Run
+ *      PID liveness check (`kill -0` + `ps -o lstart=` exact-match for PID
+ *      reuse defense — same logic as term-wezterm PaneAlive, duplicated
+ *      here to avoid circular dep on PaneAlive which itself consumes this
+ *      registry).
+ *   3. Drop sessions without `paneId` (cc ran outside wezterm — not
+ *      routable from bridge).
+ *   4. If `getTabTitles` is provided, call it once and attach `tabTitle`
+ *      to each alive `SessionInfo` from the returned `paneId → TabInfo`
+ *      map (caller-provided `cc /rename` source). Empty / missing title
+ *      becomes `undefined` so router fallback kicks in (`$<sid8>` + rename
+ *      hint).
+ *   5. Refresh internal `paneId → sessionId` cache for subsequent `get()`.
  *
  * `get(paneId)` is synchronous (matches `PaneToSessionMap` contract) and
- * lookup-only — caller must `listAlive()` first to populate the cache. Empty
- * cache → returns `null` (term-wezterm PaneAlive treats `null` as "unknown
- * pane → conservative dead" per its 9-decision lattice).
+ * lookup-only — caller must `listAlive()` first to populate the cache.
+ * Empty cache → returns `null` (term-wezterm PaneAlive treats `null` as
+ * "unknown pane → conservative dead" per its decision lattice).
  */
 export function createSessionRegistry(
   opts: CreateSessionRegistryOpts,
 ): SessionRegistryAndMap {
   const stateDir = opts.stateDir;
   const pidProbe = opts.pidProbe ?? defaultPidProbe;
-  const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
 
   let paneCache = new Map<number, SessionId>();
 
@@ -98,31 +96,37 @@ export function createSessionRegistry(
       const newCache = new Map<number, SessionId>();
 
       for (const sessionId of sessionIds) {
-        const isAlive = await checkSessionAlive(sessionId, {
-          stateDir,
-          pidProbe,
-          idleTimeoutMs,
-        });
-        if (!isAlive) continue;
+        if (await existsSessionEndFile({ stateDir, sessionId })) continue;
 
-        const ccPid = await readCcPid({ stateDir, sessionId });
-        // Liveness via last-hook-at fallback may pass when ccPid is missing,
-        // but bridge needs paneId+cwd to route — drop those silently.
-        if (!ccPid || ccPid.paneId === undefined || ccPid.cwd === undefined) {
+        const startFile = await readSessionStartFile({ stateDir, sessionId });
+        if (!startFile) continue;
+
+        // PID reuse defense: kill -0 PID alive AND ps lstart matches what
+        // we captured at SessionStart. Either fails → cc died.
+        if (!pidProbe.isAlive(startFile.pid)) continue;
+        let lstart: string;
+        try {
+          lstart = await pidProbe.getLstart(startFile.pid);
+        } catch {
           continue;
         }
+        if (lstart !== startFile.startedAt) continue;
 
-        const tab = tabTitleByPaneId?.get(ccPid.paneId);
+        // Bridge needs paneId+cwd to route — drop sessions without paneId
+        // (cc ran outside wezterm — not routable from bridge).
+        if (startFile.paneId === undefined) continue;
+
+        const tab = tabTitleByPaneId?.get(startFile.paneId);
         const tabTitle =
           tab && tab.title.length > 0 ? tab.title : undefined;
 
         alive.push({
           sessionId: sessionId as SessionId,
-          paneId: ccPid.paneId as PaneId,
+          paneId: startFile.paneId as PaneId,
           tabTitle,
-          cwd: ccPid.cwd as CwdAbs,
+          cwd: startFile.cwd as CwdAbs,
         });
-        newCache.set(ccPid.paneId, sessionId as SessionId);
+        newCache.set(startFile.paneId, sessionId as SessionId);
       }
 
       paneCache = newCache;
@@ -135,7 +139,7 @@ export function createSessionRegistry(
   };
 }
 
-/** Scan stateDir for `<sessionId>.cc-pid` files and return their sessionIds. */
+/** Scan stateDir for `<sessionId>.SessionStart` files and return sessionIds. */
 async function scanSessionIds(stateDir: string): Promise<string[]> {
   let entries: string[];
   try {
@@ -145,44 +149,6 @@ async function scanSessionIds(stateDir: string): Promise<string[]> {
     throw err;
   }
   return entries
-    .filter((name) => name.endsWith(CC_PID_SUFFIX))
-    .map((name) => name.slice(0, -CC_PID_SUFFIX.length));
-}
-
-interface AliveCheckDeps {
-  stateDir: string;
-  pidProbe: PidProbe;
-  idleTimeoutMs: number;
-}
-
-/**
- * Per-session 4-signal liveness check (mirrors term-wezterm PaneAlive's
- * decision lattice). Duplication is deliberate: term-wezterm consumes this
- * registry as `paneToSession`, so this side can't depend on PaneAlive.
- */
-async function checkSessionAlive(
-  sessionId: string,
-  deps: AliveCheckDeps,
-): Promise<boolean> {
-  const { stateDir, pidProbe, idleTimeoutMs } = deps;
-
-  if (await readEnded({ stateDir, sessionId })) return false;
-
-  const ccPid = await readCcPid({ stateDir, sessionId });
-
-  if (!ccPid) {
-    const lastHookAt = await readLastHookAt({ stateDir, sessionId });
-    if (lastHookAt === null) return false;
-    return Date.now() - lastHookAt <= idleTimeoutMs;
-  }
-
-  if (!pidProbe.isAlive(ccPid.pid)) return false;
-
-  let lstart: string;
-  try {
-    lstart = await pidProbe.getLstart(ccPid.pid);
-  } catch {
-    return false;
-  }
-  return lstart === ccPid.startedAt;
+    .filter((name) => name.endsWith(SESSION_START_SUFFIX))
+    .map((name) => name.slice(0, -SESSION_START_SUFFIX.length));
 }

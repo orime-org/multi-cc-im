@@ -1,15 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runHookReceiver } from './hook-receiver.js';
 import {
-  readCcPid,
-  readEnded,
-  readLastHookAt,
+  STOP_PREFIX,
+  existsSessionEndFile,
+  formatStopTimestamp,
+  listStopFiles,
+  readSessionStartFile,
+  readStopFile,
+  sessionStartPath,
+  stopFilePath,
+  writeSessionEndFile,
+  writeStopFile,
 } from './state-files.js';
 import { enqueueInjection } from './injection-queue.js';
-import { resolveEventsLogPath } from './events-log.js';
 import type { ParsedHookPayload } from './payloads.js';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
@@ -49,6 +55,20 @@ const SESSION_END: ParsedHookPayload = {
   reason: '/exit',
 };
 
+const STUB_CAPTURE = async () => ({
+  pid: 12345,
+  startedAt: 'Tue May  4 16:38:00 2026',
+});
+
+/** Helper: list every file directly under stateDir (no recursion). */
+async function readStateDirEntries(stateDir: string): Promise<string[]> {
+  try {
+    return await readdir(stateDir);
+  } catch {
+    return [];
+  }
+}
+
 describe('runHookReceiver', () => {
   let stateDir: string;
 
@@ -60,178 +80,169 @@ describe('runHookReceiver', () => {
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  const stubCapturePid = async () => ({
-    pid: 12345,
-    startedAt: 'Tue May  4 16:38:00 2026',
-  });
-
-  it('SessionStart → writes cc-pid file with captured pid + startedAt + cwd from payload', async () => {
-    await runHookReceiver({
-      stateDir,
-      payload: SESSION_START,
-      capturePid: stubCapturePid,
-    });
-    expect(await readCcPid({ stateDir, sessionId: SID })).toEqual({
-      pid: 12345,
-      startedAt: 'Tue May  4 16:38:00 2026',
-      cwd: CWD,
-    });
-  });
-
-  it('SessionStart → captures paneId when WEZTERM_PANE is set', async () => {
-    await runHookReceiver({
-      stateDir,
-      payload: SESSION_START,
-      capturePid: async () => ({
-        pid: 12345,
-        startedAt: 'Tue May  4 16:38:00 2026',
-        paneId: 42,
-      }),
-    });
-    expect(await readCcPid({ stateDir, sessionId: SID })).toEqual({
-      pid: 12345,
-      startedAt: 'Tue May  4 16:38:00 2026',
-      paneId: 42,
-      cwd: CWD,
-    });
-  });
-
-  it('SessionStart → omits paneId when WEZTERM_PANE not set (cc outside wezterm)', async () => {
-    await runHookReceiver({
-      stateDir,
-      payload: SESSION_START,
-      capturePid: async () => ({
-        pid: 12345,
-        startedAt: 'Tue May  4 16:38:00 2026',
-        paneId: undefined,
-      }),
-    });
-    const result = await readCcPid({ stateDir, sessionId: SID });
-    expect(result?.paneId).toBeUndefined();
-    expect(result?.pid).toBe(12345);
-  });
-
-  it('SessionStart → also touches last-hook-at', async () => {
-    const before = Date.now();
-    await runHookReceiver({
-      stateDir,
-      payload: SESSION_START,
-      capturePid: stubCapturePid,
-    });
-    const ts = await readLastHookAt({ stateDir, sessionId: SID });
-    expect(ts).toBeGreaterThanOrEqual(before);
-  });
-
-  it('SessionEnd → writes ended file with reason', async () => {
-    await runHookReceiver({ stateDir, payload: SESSION_END });
-    const ended = await readEnded({ stateDir, sessionId: SID });
-    expect(ended?.reason).toBe('/exit');
-    expect(typeof ended?.endedAt).toBe('number');
-  });
-
-  it('SessionEnd → also touches last-hook-at', async () => {
-    const before = Date.now();
-    await runHookReceiver({ stateDir, payload: SESSION_END });
-    const ts = await readLastHookAt({ stateDir, sessionId: SID });
-    expect(ts).toBeGreaterThanOrEqual(before);
-  });
-
-  it('Stop → only touches last-hook-at (no other state files)', async () => {
-    await runHookReceiver({ stateDir, payload: STOP });
-    expect(await readCcPid({ stateDir, sessionId: SID })).toBeNull();
-    expect(await readEnded({ stateDir, sessionId: SID })).toBeNull();
-    expect(await readLastHookAt({ stateDir, sessionId: SID })).toBeGreaterThan(0);
-  });
-
-  it('SessionStart with capturePid throwing surfaces the error (caller logs to stderr + exits non-zero)', async () => {
-    await expect(
-      runHookReceiver({
-        stateDir,
-        payload: SESSION_START,
-        capturePid: async () => {
-          throw new Error('ps lstart failed');
-        },
-      }),
-    ).rejects.toThrow(/ps lstart failed/);
-    // cc-pid file must NOT exist on failure (no half-written state)
-    expect(await readCcPid({ stateDir, sessionId: SID })).toBeNull();
-  });
-
-  it('SessionStart without capturePid stub uses defaultCapturePid (real `ps -o lstart=`)', async () => {
-    // Integration test: verify defaultCapturePid actually works on the host.
-    // Test runner's process.ppid is some real OS process — `ps` will find it.
-    await runHookReceiver({ stateDir, payload: SESSION_START });
-    const result = await readCcPid({ stateDir, sessionId: SID });
-    expect(result).not.toBeNull();
-    expect(result?.pid).toBe(process.ppid);
-    // lstart format varies (macOS: `Tue May  4 16:38:00 2026`; Linux similar)
-    // — just check non-empty.
-    expect(result?.startedAt.length).toBeGreaterThan(0);
-  });
-
-  it('multiple sequential hooks update last-hook-at monotonically', async () => {
-    await runHookReceiver({
-      stateDir,
-      payload: SESSION_START,
-      capturePid: stubCapturePid,
-    });
-    const t1 = (await readLastHookAt({ stateDir, sessionId: SID })) ?? 0;
-    await new Promise((r) => setTimeout(r, 5));
-    await runHookReceiver({ stateDir, payload: STOP });
-    const t2 = (await readLastHookAt({ stateDir, sessionId: SID })) ?? 0;
-    expect(t2).toBeGreaterThanOrEqual(t1);
-  });
-
-  describe('events.jsonl append side-effect', () => {
-    it('every hook event appends to <sid>.events.jsonl', async () => {
-      await runHookReceiver({ stateDir, payload: STOP });
-      await runHookReceiver({ stateDir, payload: SESSION_END });
-      const filePath = resolveEventsLogPath({ stateDir, sessionId: SID });
-      const lines = (await readFile(filePath, 'utf-8'))
-        .trim()
-        .split('\n');
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!).hook_event_name).toBe('Stop');
-      expect(JSON.parse(lines[1]!).hook_event_name).toBe('SessionEnd');
-    });
-
-    it('SessionStart and SessionEnd also append events.jsonl (not just state files)', async () => {
+  describe('SessionStart', () => {
+    it('writes <sid>.SessionStart with cwd + transcript_path from payload + captured pid/startedAt', async () => {
       await runHookReceiver({
         stateDir,
         payload: SESSION_START,
-        capturePid: stubCapturePid,
+        capturePid: STUB_CAPTURE,
       });
-      await runHookReceiver({ stateDir, payload: SESSION_END });
-      const filePath = resolveEventsLogPath({ stateDir, sessionId: SID });
-      const lines = (await readFile(filePath, 'utf-8'))
-        .trim()
-        .split('\n');
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!).hook_event_name).toBe('SessionStart');
-      expect(JSON.parse(lines[1]!).hook_event_name).toBe('SessionEnd');
+      expect(
+        await readSessionStartFile({ stateDir, sessionId: SID }),
+      ).toEqual({
+        pid: 12345,
+        startedAt: 'Tue May  4 16:38:00 2026',
+        cwd: CWD,
+        transcript_path: TX,
+      });
+    });
+
+    it('respects injected paneId from capturePid stub', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: async () => ({
+          pid: 12345,
+          startedAt: 'Tue May  4 16:38:00 2026',
+          paneId: 42,
+        }),
+      });
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result?.paneId).toBe(42);
+    });
+
+    it('omits paneId when capturePid returns paneId=undefined (cc outside wezterm)', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: async () => ({
+          pid: 12345,
+          startedAt: 'Tue May  4 16:38:00 2026',
+          paneId: undefined,
+        }),
+      });
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result?.paneId).toBeUndefined();
+      expect(result?.pid).toBe(12345);
+    });
+
+    it('RESUME: pre-existing <sid>.SessionEnd is deleted before write', async () => {
+      // Simulate: previous lifecycle ended; tombstone left behind.
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(true);
+
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: STUB_CAPTURE,
+      });
+
+      // SessionEnd cleared, fresh SessionStart present.
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(false);
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result?.pid).toBe(12345);
+    });
+
+    it('RESUME: pre-existing <sid>.Stop.* files are all deleted before write', async () => {
+      // Drop 3 stale Stop files — all should be cleaned.
+      const timestamps = [
+        '2026-05-06T16-20-15-123Z',
+        '2026-05-06T16-20-16-000Z',
+        '2026-05-06T16-20-17-456Z',
+      ];
+      for (const timestamp of timestamps) {
+        await writeStopFile({
+          stateDir,
+          sessionId: SID,
+          timestamp,
+          last_assistant_message: `stale-${timestamp}`,
+        });
+      }
+      expect(
+        (await listStopFiles({ stateDir, sessionId: SID })).length,
+      ).toBe(3);
+
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: STUB_CAPTURE,
+      });
+
+      expect(
+        await listStopFiles({ stateDir, sessionId: SID }),
+      ).toEqual([]);
+      const result = await readSessionStartFile({ stateDir, sessionId: SID });
+      expect(result?.pid).toBe(12345);
+    });
+
+    it('RESUME with both stale SessionEnd + Stop files: all cleaned, fresh SessionStart written', async () => {
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: '2026-05-06T16-20-15-123Z',
+        last_assistant_message: 'stale',
+      });
+
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: STUB_CAPTURE,
+      });
+
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(false);
+      expect(
+        await listStopFiles({ stateDir, sessionId: SID }),
+      ).toEqual([]);
+      expect(
+        await readSessionStartFile({ stateDir, sessionId: SID }),
+      ).not.toBeNull();
+    });
+
+    it('SessionStart with capturePid throwing surfaces the error and writes nothing', async () => {
+      await expect(
+        runHookReceiver({
+          stateDir,
+          payload: SESSION_START,
+          capturePid: async () => {
+            throw new Error('ps lstart failed');
+          },
+        }),
+      ).rejects.toThrow(/ps lstart failed/);
+      expect(
+        await readSessionStartFile({ stateDir, sessionId: SID }),
+      ).toBeNull();
     });
   });
 
-  describe('Stop hook injection-queue', () => {
-    it('Stop with stop_hook_active=false + queued injection → returns decision:block', async () => {
-      await enqueueInjection({
+  describe('Stop', () => {
+    const FIXED_NOW = new Date('2026-05-06T16:20:15.123Z');
+    const FIXED_TS = formatStopTimestamp(FIXED_NOW);
+
+    it('writes <sid>.Stop.<ts> with last_assistant_message using injected now()', async () => {
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => FIXED_NOW,
+      });
+      expect(result).toBeUndefined();
+      const path = stopFilePath({
         stateDir,
         sessionId: SID,
-        content: 'follow-up prompt',
+        timestamp: FIXED_TS,
       });
-      const result = await runHookReceiver({ stateDir, payload: STOP });
-      expect(result).toEqual({
-        decision: 'block',
-        reason: 'follow-up prompt',
+      expect(await readStopFile(path)).toEqual({
+        last_assistant_message: 'hi',
       });
     });
 
-    it('Stop with stop_hook_active=false + empty queue → returns void (no decision)', async () => {
-      const result = await runHookReceiver({ stateDir, payload: STOP });
-      expect(result).toBeUndefined();
-    });
-
-    it('Stop with stop_hook_active=TRUE + queued injection → returns void (anti-loop guard)', async () => {
+    it('stop_hook_active=true: writes Stop file BUT skips injection-queue check (returns void)', async () => {
       await enqueueInjection({
         stateDir,
         sessionId: SID,
@@ -240,39 +251,159 @@ describe('runHookReceiver', () => {
       const result = await runHookReceiver({
         stateDir,
         payload: STOP_ACTIVE,
+        now: () => FIXED_NOW,
       });
       expect(result).toBeUndefined();
+      // Stop file still created
+      const path = stopFilePath({
+        stateDir,
+        sessionId: SID,
+        timestamp: FIXED_TS,
+      });
+      expect(await readStopFile(path)).toEqual({
+        last_assistant_message: 'hi',
+      });
+      // Queue still holds the injection — next normal Stop will pop it.
+      const followUp = await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => new Date('2026-05-06T16:20:16.000Z'),
+      });
+      expect(followUp).toEqual({
+        decision: 'block',
+        reason: 'should-not-be-popped',
+      });
     });
 
-    it('Stop with stop_hook_active=TRUE leaves queue intact for next normal Stop', async () => {
-      await enqueueInjection({ stateDir, sessionId: SID, content: 'still-queued' });
-      await runHookReceiver({ stateDir, payload: STOP_ACTIVE });
-      // Subsequent normal Stop should pop the still-queued injection
-      const result = await runHookReceiver({ stateDir, payload: STOP });
-      expect(result).toEqual({ decision: 'block', reason: 'still-queued' });
+    it('stop_hook_active=false + empty queue: writes Stop file, returns void', async () => {
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => FIXED_NOW,
+      });
+      expect(result).toBeUndefined();
+      const path = stopFilePath({
+        stateDir,
+        sessionId: SID,
+        timestamp: FIXED_TS,
+      });
+      expect(await readStopFile(path)).not.toBeNull();
     });
 
-    it('FIFO across multiple Stop fires: each pops oldest first', async () => {
-      await enqueueInjection({ stateDir, sessionId: SID, content: 'a' });
-      await enqueueInjection({ stateDir, sessionId: SID, content: 'b' });
-      const r1 = await runHookReceiver({ stateDir, payload: STOP });
-      const r2 = await runHookReceiver({ stateDir, payload: STOP });
-      const r3 = await runHookReceiver({ stateDir, payload: STOP });
-      expect(r1).toEqual({ decision: 'block', reason: 'a' });
-      expect(r2).toEqual({ decision: 'block', reason: 'b' });
-      expect(r3).toBeUndefined();
+    it('stop_hook_active=false + pending injection: writes Stop file AND returns decision:block', async () => {
+      await enqueueInjection({
+        stateDir,
+        sessionId: SID,
+        content: 'follow-up prompt',
+      });
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => FIXED_NOW,
+      });
+      expect(result).toEqual({
+        decision: 'block',
+        reason: 'follow-up prompt',
+      });
+      // Stop file still written regardless of injection-queue outcome.
+      const path = stopFilePath({
+        stateDir,
+        sessionId: SID,
+        timestamp: FIXED_TS,
+      });
+      expect(await readStopFile(path)).toEqual({
+        last_assistant_message: 'hi',
+      });
     });
 
-    it('Non-Stop events ignore the injection queue (e.g. SessionEnd)', async () => {
-      await enqueueInjection({ stateDir, sessionId: SID, content: 'x' });
+    it('multiple Stop calls: each creates a new file with different timestamp suffix', async () => {
+      const t1 = new Date('2026-05-06T16:20:15.123Z');
+      const t2 = new Date('2026-05-06T16:20:16.000Z');
+      const t3 = new Date('2026-05-06T16:20:17.456Z');
+      await runHookReceiver({ stateDir, payload: STOP, now: () => t1 });
+      await runHookReceiver({ stateDir, payload: STOP, now: () => t2 });
+      await runHookReceiver({ stateDir, payload: STOP, now: () => t3 });
+      const files = await listStopFiles({ stateDir, sessionId: SID });
+      expect(files).toHaveLength(3);
+      // Sorted ascending — t1 < t2 < t3.
+      expect(files[0]).toContain(formatStopTimestamp(t1));
+      expect(files[1]).toContain(formatStopTimestamp(t2));
+      expect(files[2]).toContain(formatStopTimestamp(t3));
+    });
+  });
+
+  describe('SessionEnd', () => {
+    it('writes 0-byte <sid>.SessionEnd tombstone, returns void', async () => {
       const result = await runHookReceiver({
         stateDir,
         payload: SESSION_END,
       });
       expect(result).toBeUndefined();
-      // Queue should still hold 'x' for future Stop.
-      const stopResult = await runHookReceiver({ stateDir, payload: STOP });
-      expect(stopResult).toEqual({ decision: 'block', reason: 'x' });
+      expect(
+        await existsSessionEndFile({ stateDir, sessionId: SID }),
+      ).toBe(true);
+      // Empty (0 bytes).
+      const stats = await stat(join(stateDir, `${SID}.SessionEnd`));
+      expect(stats.size).toBe(0);
+    });
+  });
+
+  describe('legacy state files are NOT written under any branch', () => {
+    // Old design wrote <sid>.cc-pid / <sid>.ended / <sid>.last-hook-at /
+    // <sid>.events.jsonl. None of these should appear after the rewrite.
+    const LEGACY_SUFFIXES = [
+      '.cc-pid',
+      '.ended',
+      '.last-hook-at',
+      '.events.jsonl',
+    ];
+
+    async function assertNoLegacy(): Promise<void> {
+      const entries = await readStateDirEntries(stateDir);
+      const offenders = entries.filter((name) =>
+        LEGACY_SUFFIXES.some((suffix) => name.endsWith(suffix)),
+      );
+      expect(offenders).toEqual([]);
+    }
+
+    it('SessionStart branch writes no legacy state files', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: STUB_CAPTURE,
+      });
+      await assertNoLegacy();
+    });
+
+    it('Stop branch writes no legacy state files', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => new Date('2026-05-06T16:20:15.123Z'),
+      });
+      await assertNoLegacy();
+      // And verify the Stop file is the new STOP_PREFIX form.
+      const entries = await readStateDirEntries(stateDir);
+      const stopFiles = entries.filter((n) => n.includes(STOP_PREFIX));
+      expect(stopFiles).toHaveLength(1);
+    });
+
+    it('SessionEnd branch writes no legacy state files', async () => {
+      await runHookReceiver({ stateDir, payload: SESSION_END });
+      await assertNoLegacy();
+    });
+  });
+
+  describe('SessionStart fresh path produces the canonical file location', () => {
+    it('the file is written at sessionStartPath()', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: SESSION_START,
+        capturePid: STUB_CAPTURE,
+      });
+      const expectedPath = sessionStartPath({ stateDir, sessionId: SID });
+      const stats = await stat(expectedPath);
+      expect(stats.isFile()).toBe(true);
     });
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   enqueueInjection,
-  resolveEventsLogPath,
+  sessionStartPath,
 } from '@multi-cc-im/cli-cc';
 import { runHookCommand } from './hook.js';
 
@@ -64,10 +64,13 @@ describe('runHookCommand', () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe('');
-    // Verify state file written
-    const eventsPath = resolveEventsLogPath({ stateDir, sessionId: SID });
-    const events = await readFile(eventsPath, 'utf-8');
-    expect(events).toContain('SessionStart');
+    // Verify SessionStart state file written with the captured fields.
+    const startPath = sessionStartPath({ stateDir, sessionId: SID });
+    const startBody = JSON.parse(await readFile(startPath, 'utf-8'));
+    expect(startBody.pid).toBe(12345);
+    expect(startBody.paneId).toBe(42);
+    expect(startBody.cwd).toBe(CWD);
+    expect(startBody.transcript_path).toBe(TX);
   });
 
   it('Stop with queued injection → emits decision JSON to stdout', async () => {
