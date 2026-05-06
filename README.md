@@ -86,22 +86,24 @@ cc persists the name to its session state (so `claude --resume` restores it) and
 
 **Without `/rename`**, multi-cc-im falls back to a short session-id hash like `$1813fd32` and appends a one-time hint pointing you at `/rename`. Tab title polling is real-time — rename and the new name shows up on the next IM round-trip with no daemon restart.
 
-`multi-cc-im` is a reserved name and cannot be used as a tab title (router rejects it because it conflicts with bridge command targets — see `@list` / `@help` / `@current`).
+`multi-cc-im` is a reserved name. The router refuses to match it against any cc; instead `@multi-cc-im` is the namespace for bridge commands (see below).
 
 ## Routing syntax (user perspective)
 
-Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with one update from the original DD: the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map. Behavior is otherwise identical.
+Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with two updates from the original DD: (a) the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map, (b) bridge commands are addressed via `@multi-cc-im /<cmd>` instead of bareword `@list` / `@help` / `@current` keywords (which collided with cc tab titles).
 
 | What you send in WeChat | What it does |
 |---|---|
 | `hello` | Routes to `current_session` (last-explicit-mention sticky; with a single cc, automatically = that one) |
 | `@frontend hello` | Routes to the session whose tab title is `frontend`, and sets `current` |
-| `@fr hello` | Short prefix (tmux-style 5-level fallback: `$<sid-prefix>` → `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
+| `@fr hello` | Short prefix (5-level fallback: `$<sid-prefix>` → `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
 | `@$1813fd32 hello` | Strict id-prefix match (always available even when no `/rename` was done) |
 | `@frontend @api sync` | Multi-target dispatch; **does not change `current`** |
-| `@frontend /clear` | Forwards the `/clear` slash command into the cc TUI — cc handles it as its own slash command |
+| `@frontend /clear` | Forwards `/clear` into the cc TUI — cc handles it as its own slash command |
 | `@all stop everything` | Broadcast to every live session |
-| `@list` / `@help` / `@current` | Bridge control commands; the bot echoes back without dispatching to any cc |
+| `@multi-cc-im /list` | List alive cc sessions (tab title + `$sid8` + pane id). The bot echoes; nothing dispatched to any cc |
+| `@multi-cc-im /help` | Built-in help text |
+| `@multi-cc-im /current` | Show / clear stale `current_session` |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 

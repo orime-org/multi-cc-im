@@ -259,56 +259,104 @@ describe('router — @all broadcast', () => {
   });
 });
 
-describe('router — control commands', () => {
-  it('@list → echo session list, no dispatches', async () => {
+describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
+  it('@multi-cc-im /list with active sessions → numbered list, no dispatches', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@list'), {
+    const result = await route(incoming('@multi-cc-im /list'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toContain('frontend');
-    expect(result.echo).toContain('api');
+    expect(result.echo).toContain('1. frontend');
+    expect(result.echo).toContain('2. api');
+    expect(result.echo).toContain('pane 10');
+    expect(result.echo).toContain('pane 20');
   });
 
-  it('@list with zero sessions → echo "no sessions"', async () => {
+  it('@multi-cc-im /list with zero sessions → "no active sessions"', async () => {
     const state = memState(null);
-    const result = await route(incoming('@list'), {
+    const result = await route(incoming('@multi-cc-im /list'), {
       registry: fixedRegistry([]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/no.*active/i);
+    expect(result.echo).toBe('no active sessions');
   });
 
-  it('@help → echo help text mentioning routing syntax', async () => {
+  it('@multi-cc-im /help → echo includes Bridge commands line + /rename tip + sid-prefix info', async () => {
     const state = memState(null);
-    const result = await route(incoming('@help'), {
+    const result = await route(incoming('@multi-cc-im /help'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/@<name>|@all|@list/);
+    expect(result.echo).toContain('Bridge commands: @multi-cc-im /list | /help | /current');
+    expect(result.echo).toContain('Tip: /rename inside cc TUI');
+    expect(result.echo).toContain('$<sid-prefix>');
   });
 
-  it('@current with current set → echo current name', async () => {
+  it('@multi-cc-im /current with current set + alive → echo "current = <displayName>"', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@current'), {
+    const result = await route(incoming('@multi-cc-im /current'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toContain('frontend');
+    expect(result.echo).toBe('current = frontend');
+    // current unchanged
+    expect(state.getCurrent()).toBe(FRONTEND.sessionId);
   });
 
-  it('@current with null → echo "none"', async () => {
+  it('@multi-cc-im /current with none set → "current = none"', async () => {
     const state = memState(null);
-    const result = await route(incoming('@current'), {
+    const result = await route(incoming('@multi-cc-im /current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/none|no current/i);
+    expect(result.echo).toBe('current = none');
+  });
+
+  it('@multi-cc-im /current with stale current → clears + "current = none (previous session disconnected)"', async () => {
+    const state = memState(FRONTEND.sessionId);
+    const result = await route(incoming('@multi-cc-im /current'), {
+      registry: fixedRegistry([API]),
+      state,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(state.getCurrent()).toBeNull();
+    expect(result.echo).toBe('current = none (previous session disconnected)');
+  });
+
+  it('@multi-cc-im /unknown → echo unknown bridge command error', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /unknown'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/unknown bridge command/i);
+    expect(result.echo).toContain('/unknown');
+  });
+
+  it('@multi-cc-im (no /command) → parser error surfaced', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/expects a \/<command>/);
+  });
+
+  it('@multi-cc-im @api /list (combined with another @) → parser error surfaced', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im @api /list'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/exclusive — cannot combine/);
   });
 });
 
@@ -321,16 +369,6 @@ describe('router — error & malformed input', () => {
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toMatch(/@all.*exclusive/i);
-  });
-
-  it('@list with body → parser error surfaced', async () => {
-    const state = memState(null);
-    const result = await route(incoming('@list please'), {
-      registry: fixedRegistry([FRONTEND]),
-      state,
-    });
-    expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/@list.*alone/i);
   });
 
   it('null text (image-only message) → error gracefully', async () => {

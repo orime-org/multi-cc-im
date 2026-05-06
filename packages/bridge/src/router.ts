@@ -77,8 +77,13 @@ export async function route(
     case 'error':
       return { echo: `❌ ${parsed.message}`, dispatches: [] };
 
-    case 'control':
-      return handleControl(parsed.command, sessions, opts.state);
+    case 'bridge_command':
+      return handleBridgeCommand(
+        parsed.command,
+        parsed.args,
+        sessions,
+        opts.state,
+      );
 
     case 'broadcast':
       return handleBroadcast(parsed.body, sessions, opts.state);
@@ -243,11 +248,17 @@ function handleBroadcast(
 }
 
 // ============================================================================
-// Control commands: @list / @help / @current
+// Bridge commands: @multi-cc-im /<command> [args]
 // ============================================================================
 
-function handleControl(
-  command: 'list' | 'help' | 'current',
+/**
+ * Handle bridge slash commands. Currently supports `/list`, `/help`,
+ * `/current`. Unknown commands return an error echo so users learn
+ * the right form (and can extend by adding cases here).
+ */
+function handleBridgeCommand(
+  command: string,
+  _args: string,
   sessions: readonly SessionInfo[],
   state: RouterState,
 ): RouterResult {
@@ -271,8 +282,9 @@ function handleControl(
           '  @<a> @<b> body        → multiple sessions',
           '  @all body             → all alive sessions',
           '  body (no @)           → current session',
-          'Matching: id($prefix) → =strict → exact → prefix → glob (*?)',
-          'Commands: @list / @help / @current',
+          'Matching: $<sid-prefix> → =strict → exact → prefix → glob (*?)',
+          'Bridge commands: @multi-cc-im /list | /help | /current',
+          'Tip: /rename inside cc TUI sets the @<name> identifier (real-time).',
         ].join('\n'),
         dispatches: [],
       };
@@ -293,6 +305,12 @@ function handleControl(
       }
       return { echo: `current = ${displayName(session)}`, dispatches: [] };
     }
+
+    default:
+      return {
+        echo: `❌ unknown bridge command: /${command}\n  Try @multi-cc-im /help`,
+        dispatches: [],
+      };
   }
 }
 
