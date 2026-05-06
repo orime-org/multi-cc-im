@@ -6,36 +6,31 @@ import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 
 /**
- * The 6 cc hook events multi-cc-im needs to subscribe to.
+ * The 3 cc hook events multi-cc-im needs to subscribe to.
  *
  * - `SessionStart` — captures `WEZTERM_PANE` env, populates paneToSession
- * - `UserPromptSubmit` — events.jsonl entry (analytics)
- * - `PreToolUse` / `PostToolUse` — events.jsonl entries (analytics)
  * - `Stop` — assistant turn complete; bridge forwards `last_assistant_message`
  *   to wechat origin via `lastReplyCtxBySession`
  * - `SessionEnd` — drives PaneAlive "graceful exit" signal
  *
- * `matcher` per event:
- * - `PreToolUse`/`PostToolUse` → `"*"` matches all tool names
- * - others (no tool concept) → `""` matches every invocation
+ * Earlier versions also subscribed to `PreToolUse` / `PostToolUse` /
+ * `UserPromptSubmit` for analytics, but those data are already captured by
+ * cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) — having
+ * multi-cc-im record them again was duplication with no consumer. Future
+ * analytics implementations should read cc's transcript directly via the
+ * `transcript_path` exposed in each SessionStart payload.
  *
- * Schema follows cc upstream: `hooks` is an object keyed by event name,
- * each event maps to an array of matcher groups, each group has its own
- * inner `hooks` array of handler entries. See
+ * All 3 remaining events have no tool concept, so `matcher` is `""` (matches
+ * every invocation). Schema follows cc upstream: `hooks` is an object keyed
+ * by event name, each event maps to an array of matcher groups, each group
+ * has its own inner `hooks` array of handler entries. See
  * https://code.claude.com/docs/en/hooks for the authoritative shape.
  */
 const HOOK_EVENTS = [
   'SessionStart',
-  'UserPromptSubmit',
-  'PreToolUse',
-  'PostToolUse',
   'Stop',
   'SessionEnd',
 ] as const;
-
-type HookEventName = (typeof HOOK_EVENTS)[number];
-
-const TOOL_MATCHED_EVENTS = new Set<HookEventName>(['PreToolUse', 'PostToolUse']);
 
 interface HookHandler {
   type: 'command';
@@ -171,9 +166,10 @@ export async function runSetupHooksCommand(
       type: 'command',
       command: `${wrapperPath} hook ${event}`,
     };
-    const matcher = TOOL_MATCHED_EVENTS.has(event) ? '*' : '';
+    // All 3 events (SessionStart / Stop / SessionEnd) have no tool concept —
+    // empty matcher matches every invocation.
     const groups = hooksMap[event] ?? [];
-    hooksMap[event] = [...groups, { matcher, hooks: [handler] }];
+    hooksMap[event] = [...groups, { matcher: '', hooks: [handler] }];
   }
 
   const newSettings: Record<string, unknown> = {
@@ -233,7 +229,7 @@ export async function runSetupHooksCommand(
     );
   }
   log(
-    `  ✓ added 6 multi-cc-im hooks (events: ${HOOK_EVENTS.join(', ')})`,
+    `  ✓ added ${HOOK_EVENTS.length} multi-cc-im hooks (events: ${HOOK_EVENTS.join(', ')})`,
   );
   const totalHandlers = countHandlers(hooksMap);
   const otherHandlers = totalHandlers - HOOK_EVENTS.length;

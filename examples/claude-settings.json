@@ -1,5 +1,5 @@
 {
-  "_comment": "multi-cc-im hooks template — replace ABS_PATH with the absolute path to your multi-cc-im checkout. After editing, merge the `hooks` block into ~/.claude/settings.json (cc reads from there). Schema follows cc upstream: `hooks` is an object keyed by event name, each event maps to an array of matcher groups (with their own inner `hooks` array of handlers). https://code.claude.com/docs/en/hooks. The 6 events are needed: SessionStart sets up paneToSession map; SessionEnd / PID checks drive PaneAlive; UserPromptSubmit / Stop carry events into bridge router; PreToolUse / PostToolUse populate events.jsonl for future analytics. Easier path: run `./bin/multi-cc-im setup-hooks` instead of editing this by hand. See README.md Quick Start step 4 for context.",
+  "_comment": "multi-cc-im hooks template — replace ABS_PATH with the absolute path to your multi-cc-im checkout. After editing, merge the `hooks` block into ~/.claude/settings.json (cc reads from there). Schema follows cc upstream: `hooks` is an object keyed by event name, each event maps to an array of matcher groups (with their own inner `hooks` array of handlers). https://code.claude.com/docs/en/hooks. The 3 events are needed: SessionStart sets up paneToSession map; Stop carries the assistant reply into the bridge router for forwarding to WeChat; SessionEnd drives PaneAlive graceful-exit signal. Earlier versions subscribed to UserPromptSubmit / PreToolUse / PostToolUse for analytics — those have been dropped because cc's own transcript jsonl (~/.claude/projects/<dir>/<sid>.jsonl) already records that data. Easier path: run `./bin/multi-cc-im setup-hooks` instead of editing this by hand. See README.md Quick Start step 4 for context.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,39 +8,6 @@
           {
             "type": "command",
             "command": "ABS_PATH/bin/multi-cc-im hook SessionStart"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ABS_PATH/bin/multi-cc-im hook UserPromptSubmit"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ABS_PATH/bin/multi-cc-im hook PreToolUse"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ABS_PATH/bin/multi-cc-im hook PostToolUse"
           }
         ]
       }
