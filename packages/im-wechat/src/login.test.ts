@@ -45,7 +45,7 @@ describe('loginWechat', () => {
   it('renders QR, polls for confirm, saves token + savedAt to credentialStore', async () => {
     mockStartWeixinLoginWithQr.mockResolvedValue({
       qrcodeUrl: 'https://example.com/qr/abc',
-      message: '使用微信扫描以下二维码',
+      message: 'Scan the QR code above with WeChat',
       sessionKey: 'sess-1',
     });
     mockWaitForWeixinLogin.mockResolvedValue({
@@ -54,7 +54,7 @@ describe('loginWechat', () => {
       accountId: 'bot-1',
       baseUrl: 'https://ilink.example.com',
       userId: 'wxid_owner',
-      message: '✅ 与微信连接成功！',
+      message: 'Successfully connected to WeChat!',
     });
 
     const store = makeStore();
@@ -79,8 +79,8 @@ describe('loginWechat', () => {
 
     expect(store.saved).toEqual(result);
     expect(renderedQR).toEqual(['https://example.com/qr/abc']);
-    expect(lines).toContain('使用微信扫描以下二维码');
-    expect(lines).toContain('✅ 与微信连接成功！');
+    expect(lines).toContain('Scan the QR code above with WeChat');
+    expect(lines).toContain('Successfully connected to WeChat!');
   });
 
   it('throws when startWeixinLoginWithQr returns no qrcodeUrl (initial fetch failed)', async () => {
@@ -103,12 +103,12 @@ describe('loginWechat', () => {
   it('throws when waitForWeixinLogin returns connected=false (timeout / expired)', async () => {
     mockStartWeixinLoginWithQr.mockResolvedValue({
       qrcodeUrl: 'https://example.com/qr/x',
-      message: '请扫码',
+      message: 'Please scan',
       sessionKey: 'sess-3',
     });
     mockWaitForWeixinLogin.mockResolvedValue({
       connected: false,
-      message: '登录超时，请重试。',
+      message: 'Login timed out, please retry.',
     });
     const store = makeStore();
     await expect(
@@ -116,20 +116,20 @@ describe('loginWechat', () => {
         credentialStore: store,
         output: { renderQR: () => {}, println: () => {} },
       }),
-    ).rejects.toThrow(/login failed.*登录超时/i);
+    ).rejects.toThrow(/login failed.*timed out/i);
     expect(store.saved).toBeUndefined();
   });
 
   it('throws when waitForWeixinLogin returns connected=true but no botToken (server bug)', async () => {
     mockStartWeixinLoginWithQr.mockResolvedValue({
       qrcodeUrl: 'https://example.com/qr/x',
-      message: '请扫码',
+      message: 'Please scan',
       sessionKey: 'sess-4',
     });
     mockWaitForWeixinLogin.mockResolvedValue({
       connected: true,
       botToken: undefined,
-      message: '已连接但缺 token',
+      message: 'connected but token missing',
     });
     const store = makeStore();
     await expect(

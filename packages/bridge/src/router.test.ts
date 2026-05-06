@@ -177,7 +177,7 @@ describe('router — @<name> mention (single)', () => {
 describe('router — multi @ targets', () => {
   it('@a @b body → dispatches to both, no current change', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@frontend @api 同步实现'), {
+    const result = await route(incoming('@frontend @api sync implementation'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -185,7 +185,7 @@ describe('router — multi @ targets', () => {
     const targets = result.dispatches.map((d) => d.session);
     expect(targets).toContain(FRONTEND);
     expect(targets).toContain(API);
-    expect(result.dispatches.every((d) => d.content === '同步实现')).toBe(true);
+    expect(result.dispatches.every((d) => d.content === 'sync implementation')).toBe(true);
     // Multi-target does NOT change current_session
     expect(state.getCurrent()).toBe(API.sessionId);
   });

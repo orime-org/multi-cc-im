@@ -33,15 +33,16 @@ export default defineConfig({
   clean: true,
   shims: false,
   dts: false,
-  // Bundle 全部依赖（workspace TS source + 所有 npm deps），让产物尽量自包含；
-  // 对**真**不能 inline 的少数 deps 走 external：
-  //   silk-wasm   — 含 .wasm binary，bundler 处理不了
-  //   proper-lockfile — CJS 用顶层 `require('path')`，shims 也修不动
-  // 这两个 runtime Node 通过 apps/multi-cc-im/node_modules 直接 resolve（已加进
-  // package.json deps）。
+  // Bundle all dependencies (workspace TS source + every npm dep) so the
+  // output is as self-contained as possible. The few deps that genuinely
+  // can't be inlined go via external:
+  //   silk-wasm   — ships a .wasm binary the bundler can't handle
+  //   proper-lockfile — CJS using a top-level `require('path')`; shims can't fix it
+  // These two are resolved at runtime by Node from apps/multi-cc-im/node_modules
+  // (already declared in package.json deps).
   noExternal: [/^@multi-cc-im\//, 'openclaw'],
   external: ['silk-wasm', 'proper-lockfile'],
-  // shims: __filename / __dirname / require ESM-CJS 互操作 helper（少数 dep
-  // 还是需要的，比如 some-cjs 用 module.createRequire 等）。
+  // shims: __filename / __dirname / require ESM-CJS interop helpers (still
+  // needed by a handful of deps, e.g. some-cjs using module.createRequire).
   shims: true,
 });

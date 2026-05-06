@@ -9,10 +9,11 @@ import {
 } from './state-files.js';
 
 /**
- * The single allowed `stdout` payload for cc hooks per CLAUDE.md「关键规范」
- * "受控 JSON `{decision:"block",...}` 除外". Returned by `runHookReceiver`
- * (Stop branch with non-empty queue + `stop_hook_active=false`); CLI caller
- * writes it to stdout. Mirrors `HookDecision` in `@multi-cc-im/shared`.
+ * The single allowed `stdout` payload for cc hooks per CLAUDE.md "Key
+ * conventions" exception "controlled JSON `{decision:"block",...}` only".
+ * Returned by `runHookReceiver` (Stop branch with non-empty queue +
+ * `stop_hook_active=false`); CLI caller writes it to stdout. Mirrors
+ * `HookDecision` in `@multi-cc-im/shared`.
  */
 export interface HookDecision {
   decision: 'block';
@@ -92,12 +93,14 @@ export interface RunHookReceiverOpts {
  * - Stop: if `stop_hook_active === false` AND queue has pending injection,
  *   pop the oldest line and **return** `{ decision:'block', reason }` for the
  *   CLI caller to print as the hook's stdout response. `stop_hook_active=true`
- *   skips the queue entirely (CLAUDE.md「关键规范」"idle 唤醒用 stop_hook_active
- *   防死循环"硬约束). Other events return `void`.
+ *   skips the queue entirely (CLAUDE.md "Key conventions" hard rule "use
+ *   `stop_hook_active` for idle wakeup to prevent infinite loops"). Other
+ *   events return `void`.
  *
  * **The returned `HookDecision` is the only allowed stdout payload** per
- * CLAUDE.md「关键规范」"受控 JSON `{decision:"block",...}` 除外"; CLI caller
- * writes it to stdout (other hook output goes to stderr / state files).
+ * CLAUDE.md "Key conventions" exception "controlled JSON
+ * `{decision:"block",...}` only"; CLI caller writes it to stdout (other hook
+ * output goes to stderr / state files).
  *
  * Throws on partial failure (e.g. `ps -o lstart=` fails). Hook caller is
  * expected to: log error to stderr, `process.exit(1)` — cc treats non-zero

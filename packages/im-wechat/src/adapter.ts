@@ -38,13 +38,15 @@ import { resolveAccount, type ResolvedAccount } from './accounts.js';
 import { runMonitor } from './monitor.js';
 
 /**
- * Reply context 形态（IM-specific）。Bridge core 把 IMAdapter.send 收到的
- * `replyCtx` 原样传回；adapter 内部 cast 到此 shape 取 `to` + `contextToken`
- * 调用 vendored 协议层 sendXxxWeixin。
+ * Reply context shape (IM-specific). Bridge core passes `replyCtx` received from
+ * IMAdapter.send back through verbatim; the adapter casts it internally to this
+ * shape to extract `to` + `contextToken` and call the vendored protocol layer's
+ * sendXxxWeixin functions.
  *
- * `to` = WeixinMessage.from_user_id（消息发起人 = 我们要回复的目标）
- * `contextToken` = WeixinMessage.context_token（cc-bot reply 必带，否则
- * iLink server 拒收）
+ * `to` = WeixinMessage.from_user_id (the message originator = the target we're
+ * replying to).
+ * `contextToken` = WeixinMessage.context_token (required for cc-bot replies;
+ * iLink server rejects requests without it).
  */
 export interface WeixinReplyContext {
   to: string;
@@ -52,38 +54,43 @@ export interface WeixinReplyContext {
 }
 
 export interface WeixinAdapterOpts {
-  /** ConfigStore 用于将来 [wechat] override 配置（当前未读）*/
+  /** ConfigStore reserved for future [wechat] override config (currently unread). */
   configStore: ConfigStore;
-  /** iLink long-poll cursor 持久化（重启续接） */
+  /** iLink long-poll cursor persistence (resumes after restart). */
   cursorStore: CursorStore;
   /**
-   * Wechat 凭据存储 —— 跟 Tencent OpenClaw vendor 上游一致的 0600 JSON 文件
-   * （见 [DD: credentials 持久化策略](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
-   * 与 CLAUDE.md「凭据 0600 落盘」）。`start()` 时 `load()` 取 `bot_token`，
-   * 未登录抛错引导用户跑 QR login。
+   * Wechat credential store — a 0600-mode JSON file matching the Tencent
+   * OpenClaw vendor upstream (see [DD: credentials persistence strategy](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+   * and CLAUDE.md "credentials persisted with 0600 permissions"). `start()`
+   * calls `load()` to fetch the `bot_token` and throws to guide the user to
+   * run QR login if not logged in.
    */
   credentialStore: CredentialStore<WeixinCredentials>;
   /**
-   * 入站媒体（image / voice / file / video）解密落盘的根目录。Bridge 决定
-   * 策略（通常 `~/.multi-cc-im/inbound/wechat/`）；adapter 在此目录下按 msgId
-   * 创建子目录写入解密后的字节。
+   * Root directory for inbound media (image / voice / file / video) decrypted
+   * to disk. The bridge picks the policy (typically
+   * `~/.multi-cc-im/inbound/wechat/`); the adapter creates a per-msgId
+   * subdirectory under this root and writes the decrypted bytes there.
    */
   inboundMediaDir: string;
 }
 
 /**
- * Wechat adapter 满足核心 IMAdapter + 3 项 capability：image / file / typing。
- * VoiceSender 不实现 —— iLink Bot API 没有外发语音端点（仅入站 voice + STT
- * 通过 voice_item.text 字段），bridge 用 `isVoiceSender` 守卫即可识别。
+ * The wechat adapter implements the core IMAdapter plus 3 capabilities:
+ * image / file / typing. VoiceSender is intentionally not implemented — the
+ * iLink Bot API has no outbound voice endpoint (only inbound voice with STT
+ * via `voice_item.text`); the bridge can detect this with the `isVoiceSender`
+ * type guard.
  */
 export type WeixinAdapter = IMAdapter & IMImageSender & IMFileSender & IMTypingIndicator;
 
 /**
- * 创建 wechat IMAdapter 实例。
+ * Create a wechat IMAdapter instance.
  *
- * 实施按 [adapter 接口设计 DD](../../docs/superpowers/specs/2026-04-29-adapter-interface-dd.md)
- * 锁定的 TS-first hybrid 风格 D：核心 4 method（name/start/send/stop）+
- * capability via extends（image/file/typing）。
+ * The implementation follows the TS-first hybrid style D locked in by the
+ * [adapter interface design DD](../../docs/superpowers/specs/2026-04-29-adapter-interface-dd.md):
+ * 4 core methods (name/start/send/stop) plus capabilities via `extends`
+ * (image/file/typing).
  */
 export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
   let abortController: AbortController | undefined;
@@ -135,7 +142,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
         },
         onError: (err) => {
           handler.onError?.(err).catch(() => {
-            /* fire-and-forget; bridge 自己 log */
+            /* fire-and-forget; bridge handles its own logging */
           });
         },
       }).catch(async (err) => {
@@ -211,7 +218,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
 
       const cached = await configMgr.getForUser(ctx.to, ctx.contextToken);
       if (!cached.typingTicket) {
-        // bot account 不支持 typing（getConfig 没返 ticket / 失败）→ no-op cancel.
+        // The bot account doesn't support typing (getConfig returned no ticket / failed) → no-op cancel.
         return () => {};
       }
 
@@ -226,7 +233,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
       });
 
       return () => {
-        // Fire-and-forget cancel; bridge 通过 handler.onError 接管失败。
+        // Fire-and-forget cancel; the bridge takes over failures via handler.onError.
         sendTyping({
           baseUrl: account.baseUrl,
           token: account.token,
@@ -243,7 +250,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
       abortController?.abort();
       if (runningTask) {
         await runningTask.catch(() => {
-          /* swallow — abort 时 monitor 抛出是预期 */
+          /* swallow — monitor throwing on abort is expected */
         });
       }
       abortController = undefined;
@@ -255,14 +262,19 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
 }
 
 /**
- * 入站 WeixinMessage → shared/IncomingMessage。
- * - TEXT items：append into `text`
- * - VOICE items with `voice_item.text`（iLink 自带 STT 结果）：append into `text`
- * - VOICE items 无文字：走 downloadMediaFromItem 解密 + silk transcode → `attachments`
- * - IMAGE / FILE：走 downloadMediaFromItem 解密 → `attachments`
- * - VIDEO：shared 没有 `video` kind，下载后映射为 `kind: 'file'` + `mimetype: 'video/mp4'`
+ * Inbound WeixinMessage → shared/IncomingMessage.
+ * - TEXT items: appended into `text`
+ * - VOICE items with `voice_item.text` (iLink's built-in STT result):
+ *   appended into `text`
+ * - VOICE items without text: routed through downloadMediaFromItem for
+ *   decryption + silk transcoding → `attachments`
+ * - IMAGE / FILE: routed through downloadMediaFromItem for decryption →
+ *   `attachments`
+ * - VIDEO: shared has no `video` kind, so after download we map it to
+ *   `kind: 'file'` + `mimetype: 'video/mp4'`
  *
- * 返回 null 表示该消息不路由（系统消息 / 无 from_user_id 等）。
+ * Returns null when the message should not be routed (system messages, no
+ * from_user_id, etc.).
  */
 async function weixinMessageToIncoming(
   msg: WeixinMessage,
@@ -285,7 +297,7 @@ async function weixinMessageToIncoming(
       continue;
     }
     if (item.type === MessageItemType.VOICE && item.voice_item?.text) {
-      // iLink 协议层 STT 结果：直接当文本走，不下载语音原文件。
+      // iLink protocol-layer STT result: treat as plain text, don't download the original voice file.
       textParts.push(item.voice_item.text);
       continue;
     }
@@ -362,7 +374,7 @@ async function downloadAttachment(
     return makeAttachment('file', result.decryptedFilePath, result.fileMediaType);
   }
   if (result.decryptedVideoPath) {
-    // shared 没有 'video' kind；映射为 file + video/mp4。
+    // shared has no 'video' kind; map to file + video/mp4.
     return makeAttachment('file', result.decryptedVideoPath, 'video/mp4');
   }
   return null;
@@ -379,10 +391,12 @@ function makeAttachment(
 }
 
 /**
- * 制造 SaveMediaFn —— 把 buffer 落到 `inboundMediaDir/<msgId>/<random>.<ext>`。
- * 上游 SaveMediaFn 第二参（contentType）我们当前不用来推 ext（vendored
- * downloadMediaFromItem 内部已 mime→ext 决策），把内容写入随机文件名 + 由
- * caller 提供的 originalFilename 来决定后缀（若提供）。
+ * Build a SaveMediaFn — writes the buffer to
+ * `inboundMediaDir/<msgId>/<random>.<ext>`. The upstream SaveMediaFn's second
+ * argument (contentType) is currently unused for extension inference (the
+ * vendored downloadMediaFromItem already handles mime→ext internally); we
+ * write the content under a random filename, with the suffix coming from the
+ * caller-supplied originalFilename when provided.
  */
 function makeSaveMedia(
   rootDir: string,

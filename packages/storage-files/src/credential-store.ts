@@ -12,8 +12,8 @@ export interface CredentialStoreOpts<T> {
   filePath: string;
   /**
    * zod schema validating the credentials shape on **both** load and save.
-   * Per CLAUDE.md「外部输入用 zod runtime 校验」—— credentials read from disk
-   * are external input.
+   * Per CLAUDE.md "validate external input via zod at runtime" — credentials
+   * read from disk are external input.
    */
   schema: ZodType<T>;
 }
@@ -22,8 +22,9 @@ export interface CredentialStoreOpts<T> {
  * File-backed CredentialStore. JSON serialization, atomic write at mode 0600
  * (via `atomicWrite`), schema-validated on every load and save.
  *
- * Per [DD: credentials 持久化策略](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
- * we deliberately don't use OS keychain — see CLAUDE.md「凭据 0600 落盘」.
+ * Per [DD: credentials persistence strategy](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+ * we deliberately don't use OS keychain — see CLAUDE.md "credentials persist
+ * to disk at 0600".
  */
 export function createCredentialStore<T>(
   opts: CredentialStoreOpts<T>,

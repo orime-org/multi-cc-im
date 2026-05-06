@@ -18,9 +18,10 @@ const DEFAULT_PATH_DIRS = [
 ];
 
 /**
- * Default macOS bundle candidates per architecture.md「外部 CLI 工具路径策略」.
- * Linux extensions (`/usr/bin/wezterm`, `/home/linuxbrew/.linuxbrew/bin/wezterm`)
- * already live in DEFAULT_PATH_DIRS; this list is for `.app` bundle lookups.
+ * Default macOS bundle candidates per architecture.md "External CLI tool path
+ * strategy". Linux extensions (`/usr/bin/wezterm`,
+ * `/home/linuxbrew/.linuxbrew/bin/wezterm`) already live in DEFAULT_PATH_DIRS;
+ * this list is for `.app` bundle lookups.
  */
 const DEFAULT_BUNDLE_CANDIDATES = [
   '/Applications/WezTerm.app/Contents/MacOS/wezterm',
@@ -64,9 +65,9 @@ async function isExecutable(filePath: string): Promise<boolean> {
  *   3. `bundleCandidates` (default: `/Applications/WezTerm.app/...`)
  *   4. throw fail-fast with install hint
  *
- * Per CLAUDE.md「禁止硬编码密钥 / 外部 CLI 路径」: no hardcoded absolute path is
- * baked into hooks / commands / fixtures. Caller (CLI / bridge core) calls
- * this once at startup, caches result.
+ * Per CLAUDE.md "no hardcoded secrets / external CLI paths": no hardcoded
+ * absolute path is baked into hooks / commands / fixtures. Caller (CLI /
+ * bridge core) calls this once at startup, caches result.
  */
 export async function resolveWezTermPath(
   opts: ResolveWezTermPathOpts = {},

@@ -2,7 +2,7 @@ import type { CwdAbs, SessionId, TranscriptPath } from '../types.js';
 
 /**
  * Common fields present on every cc hook stdin payload.
- * Source: hook+wezterm DD H1 实测 schema (2026-04-27).
+ * Source: hook+wezterm DD H1 observed schema (2026-04-27).
  */
 interface BaseHookPayload {
   session_id: SessionId;
@@ -61,8 +61,8 @@ export interface PostToolUsePayload extends BaseHookPayload {
  * Hook fired when cc finishes a single assistant turn (NOT session end).
  * - `stop_hook_active: true` means the current Stop is being invoked inside
  *   a `decision:'block'` injection chain. multi-cc-im MUST `return` early
- *   when this is true — see CLAUDE.md「关键规范」"idle 唤醒用 stop_hook_active
- *   防死循环".
+ *   when this is true — see CLAUDE.md "Key conventions": "use
+ *   stop_hook_active to guard idle wakeups against infinite loops".
  * - `last_assistant_message` contains the assistant's reply text — bridge
  *   can forward this to IM directly without tailing the jsonl.
  */

@@ -1,13 +1,14 @@
 /**
- * Shim for `openclaw/plugin-sdk/reply-runtime` —— 仅 type re-export。
+ * Shim for `openclaw/plugin-sdk/reply-runtime` — type re-export only.
  *
- * Vendored `messaging/send.ts` 仅访问 `payload.text` 字段。上游 ReplyPayload
- * 是含多种 outbound 消息变体的 union type，对 multi-cc-im wechat IM adapter
- * 我们仅要 text reply（其他媒体走 IMAdapter capability interfaces 处理），
- * 因此 partial type 足够。
+ * The vendored `messaging/send.ts` only accesses `payload.text`. Upstream's
+ * ReplyPayload is a union type covering several outbound message variants;
+ * for the multi-cc-im wechat IM adapter we only need text replies (other
+ * media flow through the IMAdapter capability interfaces), so the partial
+ * type below is sufficient.
  */
 
 export interface ReplyPayload {
-  /** 主文本内容（vendored send.ts 唯一访问的字段）。 */
+  /** Primary text content (the only field accessed by the vendored send.ts). */
   text?: string;
 }

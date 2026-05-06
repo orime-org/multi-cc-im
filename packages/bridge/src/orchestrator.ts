@@ -22,17 +22,17 @@ import type { RouterDispatch, RouterState, SessionRegistry } from './router.js';
 
 /**
  * DD-locked Step 1 → Step 2 paste-render delay (ms). [hook+wezterm DD W1](../../../docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)
- * 命令模板示意 `sleep 0.3` 留给 cc TUI 处理 paste 渲染。
+ * Command template uses `sleep 0.3` to give cc TUI time to render the paste.
  */
 const DEFAULT_SEND_KEYSTROKE_DELAY_MS = 300;
 
 export interface CreateOrchestratorOpts {
-  /** Wechat (or future tg / 飞书) IM adapter. */
+  /** Wechat (or future tg / Lark) IM adapter. */
   imAdapter: IMAdapter;
   /**
    * WezTerm (or future tmux) Term adapter — must satisfy `TermPaneAlive` so
-   * the orchestrator can gate every `sendText` per CLAUDE.md「禁止清单」"不
-   * 验证 cc 活性就 send-text".
+   * the orchestrator can gate every `sendText` per CLAUDE.md "forbidden list":
+   * "no send-text without verifying cc is alive".
    */
   termAdapter: TermAdapter & TermPaneAlive;
   /** Claude Code (or future codex / aider) CLI adapter. */
@@ -72,7 +72,7 @@ export interface BridgeOrchestrator {
 
 /**
  * Wire `IMAdapter` (wechat) ↔ `TermAdapter` (wezterm) ↔ `CLIAdapter` (cc) into
- * a working bridge per [DD: 路由语法 G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
+ * a working bridge per [DD: routing-syntax G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
  *
  * **Inbound (wechat → cc)**:
  *   IM.onMessage(m) → router.route(m) → for each dispatch:
@@ -103,7 +103,7 @@ export function createOrchestrator(
   const log = opts.log ?? (() => {});
 
   // ============================================================================
-  // Inbound: wechat → router → term sendText 两步法
+  // Inbound: wechat → router → term sendText (two-step send)
   // ============================================================================
 
   async function dispatchOne(d: RouterDispatch): Promise<string | null> {
@@ -155,8 +155,8 @@ export function createOrchestrator(
       log(`[wechat] router returned echo only: ${truncate(result.echo, 80)}`);
     }
 
-    // Run dispatches in parallel (each pane is independent; router 决策保证
-    // 同 pane 不会有冲突 dispatches)
+    // Run dispatches in parallel (each pane is independent; router decisions
+    // guarantee no conflicting dispatches to the same pane).
     const dispatchErrors: string[] = (
       await Promise.all(result.dispatches.map(dispatchOne))
     ).filter((e): e is string => e !== null);

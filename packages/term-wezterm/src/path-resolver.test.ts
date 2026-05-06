@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { resolveWezTermPath } from './path-resolver.js';
 
 /**
- * path-resolver enforces architecture.md「外部 CLI 工具路径策略」:
+ * path-resolver enforces architecture.md "External CLI tool path strategy":
  *   1. PATH lookup (`which wezterm` semantics)
  *   2. Apple Silicon Homebrew (`/opt/homebrew/bin/wezterm`)
  *   3. Intel Homebrew (`/usr/local/bin/wezterm`)

@@ -72,7 +72,7 @@ const STOP = {
 };
 
 describe('SessionStartPayloadSchema', () => {
-  it('accepts the H1 实测 schema verbatim', () => {
+  it('accepts the H1 verified schema verbatim', () => {
     expect(SessionStartPayloadSchema.parse(SESSION_START).source).toBe('startup');
   });
 
@@ -102,7 +102,7 @@ describe('SessionStartPayloadSchema', () => {
 });
 
 describe('UserPromptSubmitPayloadSchema', () => {
-  it('accepts the H1 实测 schema verbatim', () => {
+  it('accepts the H1 verified schema verbatim', () => {
     expect(UserPromptSubmitPayloadSchema.parse(USER_PROMPT_SUBMIT).prompt).toBe(
       '你好，回我 hi',
     );
@@ -120,7 +120,7 @@ describe('UserPromptSubmitPayloadSchema', () => {
 });
 
 describe('PreToolUsePayloadSchema / PostToolUsePayloadSchema', () => {
-  it('PreToolUse accepts the H1 实测 schema', () => {
+  it('PreToolUse accepts the H1 verified schema', () => {
     expect(PreToolUsePayloadSchema.parse(PRE_TOOL_USE).tool_name).toBe('Bash');
   });
 
@@ -139,7 +139,7 @@ describe('PreToolUsePayloadSchema / PostToolUsePayloadSchema', () => {
 });
 
 describe('StopPayloadSchema', () => {
-  it('accepts the H1 实测 schema verbatim', () => {
+  it('accepts the H1 verified schema verbatim', () => {
     const parsed = StopPayloadSchema.parse(STOP);
     expect(parsed.stop_hook_active).toBe(false);
     expect(parsed.last_assistant_message).toBe('hi');

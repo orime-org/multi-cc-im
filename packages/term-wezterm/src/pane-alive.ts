@@ -7,14 +7,18 @@ import {
 import { defaultPidProbe, type PidProbe } from './pid-probe.js';
 
 /**
- * Default idle-timeout fallback: 30 minutes. Per [pane 活性策略 DD g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)
- * 第 5 步未决问题 #2，30 min 是经验值；用户可在 `~/.multi-cc-im/config.toml`
- * 覆盖（future plumbing），bridge 直接 createIsPaneAlive 时也可以注入。
+ * Default idle-timeout fallback: 30 minutes. Per [pane-alive strategy DD section g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)
+ * step 5 open question #2, 30 min is an empirical value; users can override
+ * in `~/.multi-cc-im/config.toml` (future plumbing), and bridge can also
+ * inject when calling createIsPaneAlive directly.
  *
- * 设计权衡：
- * - 太小：cc 长思考误判 dead → 假阴 → bridge 把 wechat 消息排队不送
- * - 太大：bridge 重启后 last-hook-at 残值仍 fresh → 假阳 → 注入到已死 cc 的 pane
- *   （但 PID 检查会兜底拦住绝大多数；只在 PID 复用 + lstart 巧合一致时漏，概率乘积极低）
+ * Design tradeoffs:
+ * - Too small: long-thinking cc misjudged as dead → false negative → bridge
+ *   queues wechat messages without delivering
+ * - Too large: stale last-hook-at after bridge restart still appears fresh →
+ *   false positive → injects into pane of a dead cc (but the PID check
+ *   catches the vast majority; only leaks when PID reuse + lstart
+ *   coincidentally match, joint probability extremely low)
  */
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 
@@ -30,7 +34,7 @@ export interface CreateIsPaneAliveOpts {
 }
 
 /**
- * 4-signal `isPaneAlive(paneId)` per [pane 活性策略 DD g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md).
+ * 4-signal `isPaneAlive(paneId)` per [pane-alive strategy DD section g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md).
  *
  * Decision lattice:
  *   1. unknown pane (paneToSession.get → null)              → DEAD (conservative)
@@ -43,8 +47,9 @@ export interface CreateIsPaneAliveOpts {
  *   8. cc-pid MISSING + last-hook-at stale (> idleTimeout)  → DEAD (signal 4 — idle timeout)
  *   9. cc-pid MISSING + last-hook-at MISSING                → DEAD (no signal at all)
  *
- * Caller / bridge router enforces CLAUDE.md「禁止清单」"不验证 cc 活性就 send-text"
- * by gating every `sendText` behind this check.
+ * Caller / bridge router enforces CLAUDE.md "Forbidden list" "do not
+ * send-text without verifying cc liveness" by gating every `sendText` behind
+ * this check.
  */
 export function createIsPaneAlive(
   opts: CreateIsPaneAliveOpts,

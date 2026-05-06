@@ -1,8 +1,8 @@
 // Entry point invoked by the `bin/multi-cc-im` bash wrapper via tsx. Node
 // 22-24 default can't resolve `import './hook.js'` → `./hook.ts` for the
-// source-as-bin pattern (实测 v24.10 ERR_MODULE_NOT_FOUND); tsx handles the
-// extension rewrite. v2 will tsup-bundle to .js, at which point this file
-// could regain a `#!/usr/bin/env node` shebang directly.
+// source-as-bin pattern (verified ERR_MODULE_NOT_FOUND on v24.10); tsx
+// handles the extension rewrite. v2 will tsup-bundle to .js, at which point
+// this file could regain a `#!/usr/bin/env node` shebang directly.
 
 import qrcodeTerminal from 'qrcode-terminal';
 import { runHookCommand } from './hook.js';
@@ -101,7 +101,7 @@ async function dispatchLogin(args: string[]): Promise<number> {
       renderQR: (url) => {
         qrcodeTerminal.generate(url, { small: true });
         process.stdout.write(
-          `\n如果上面二维码未能成功展示，请用浏览器打开以下链接扫码：\n${url}\n\n`,
+          `\nIf the QR code above didn't render correctly, open this URL in a browser to scan it:\n${url}\n\n`,
         );
       },
       println: (msg) => process.stdout.write(`${msg}\n`),

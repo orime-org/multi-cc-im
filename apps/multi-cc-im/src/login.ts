@@ -26,7 +26,7 @@ export interface LoginCommandResult {
  * Implement `multi-cc-im login wechat`. Drives the full QR-login flow:
  * 1. Build a `CredentialStore<WeixinCredentials>` rooted at
  *    `<root>/credentials/wechat.json` (mode 0600, atomic write — see
- *    [DD: credentials 持久化策略](../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md))
+ *    [DD: credentials persistence strategy](../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md))
  * 2. Call `loginWechat` from `@multi-cc-im/im-wechat`, which fetches the QR,
  *    renders via the supplied `output`, long-polls `iLink` until confirmed,
  *    and saves the resulting `bot_token` to the credential store.

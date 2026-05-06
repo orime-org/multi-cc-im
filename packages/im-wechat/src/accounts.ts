@@ -6,17 +6,20 @@ import {
 import type { WeixinCredentials } from './credentials.js';
 
 /**
- * Multi-cc-im 单 account 解析。
+ * Multi-cc-im single-account resolver.
  *
- * Multi-cc-im 是 owner-only 单租户（CLAUDE.md「关键设计假设」表 ACL + 多机
- * 行硬约束 ✓），不需要 OpenClaw plugin framework 的多 account 索引/存储。
- * 每次调用返回 same `{accountId, baseUrl, cdnBaseUrl, token}` 4 元组。
+ * Multi-cc-im is owner-only single-tenant (per CLAUDE.md "Key design assumptions"
+ * — ACL + multi-machine row hard constraints), so we don't need OpenClaw plugin
+ * framework's multi-account index/storage. Every call returns the same
+ * `{accountId, baseUrl, cdnBaseUrl, token}` 4-tuple.
  *
- * - `token`: 从 `CredentialStore<WeixinCredentials>` 加载（0600 JSON 文件，
- *   见 [DD: credentials 持久化策略](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)）；
- *   未登录时 `load()` 返回 `null` → 抛错引导用户跑 QR login
- * - `baseUrl` / `cdnBaseUrl`: 默认 iLink 官方 endpoint；未来想 override 走 ConfigStore
- *   的 `[wechat]` section 扩展（暂不实施）
+ * - `token`: loaded from `CredentialStore<WeixinCredentials>` (a 0600-mode JSON
+ *   file, see [DD: credentials persistence strategy](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md));
+ *   when not logged in, `load()` returns `null` and we throw to guide the user
+ *   to run QR login.
+ * - `baseUrl` / `cdnBaseUrl`: default to the official iLink endpoint; future
+ *   overrides will go through ConfigStore's `[wechat]` section (not implemented
+ *   yet).
  */
 export interface ResolvedAccount {
   accountId: string;
@@ -26,16 +29,16 @@ export interface ResolvedAccount {
 }
 
 export interface ResolveAccountOpts {
-  /** ConfigStore 用来未来读 [wechat] override 配置；当前未访问，预留依赖 */
+  /** ConfigStore reserved for future [wechat] override config; currently unused, declared as a forward-looking dependency. */
   configStore: ConfigStore;
-  /** Credentials 存储；启动时 `load()` 取 `bot_token` */
+  /** Credentials store; `load()` is called at startup to fetch the `bot_token`. */
   credentialStore: CredentialStore<WeixinCredentials>;
 }
 
 export async function resolveAccount(
   opts: ResolveAccountOpts,
 ): Promise<ResolvedAccount> {
-  // opts.configStore 当前未读 — 未来按需扩展 [wechat] override
+  // opts.configStore is currently unread — extend on demand for [wechat] overrides in the future.
   const creds = await opts.credentialStore.load();
   if (!creds) {
     throw new Error(

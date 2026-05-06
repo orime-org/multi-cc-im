@@ -15,9 +15,10 @@ export interface RunWezTermCliOpts {
 
 /**
  * Thin `execFile` wrapper for the `wezterm` CLI. **Never spawns a shell** —
- * args are passed as an array, satisfying CLAUDE.md「禁止清单」"shell 字符串
- * 拼接执行（统一用 execFile 数组）". Existence as a separate file isolates the
- * test seam: adapter tests mock this module rather than `node:child_process`.
+ * args are passed as an array, satisfying CLAUDE.md "Forbidden list" "no
+ * shell string concatenation (use execFile arrays)". Existence as a separate
+ * file isolates the test seam: adapter tests mock this module rather than
+ * `node:child_process`.
  *
  * Errors are wrapped with stderr context — wezterm CLI prints failure reasons
  * (e.g. `pane-id 99: not found`) to stderr.

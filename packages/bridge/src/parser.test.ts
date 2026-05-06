@@ -39,10 +39,10 @@ describe('parser — plain / mention / broadcast / control', () => {
   });
 
   it('multi-mention space-separated at start → mention list + body', () => {
-    expect(parse('@frontend @api 同步实现')).toEqual({
+    expect(parse('@frontend @api sync implementation')).toEqual({
       type: 'mention',
       mentions: ['frontend', 'api'],
-      body: '同步实现',
+      body: 'sync implementation',
     });
   });
 
