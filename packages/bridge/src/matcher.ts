@@ -19,8 +19,8 @@ export type MatchResult =
   | { type: 'none' };
 
 /**
- * Resolve a `@<query>` token to a SessionInfo per [DD: 路由语法 G' tmux 4 级
- * fallback](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
+ * Resolve a `@<query>` token to a SessionInfo per [DD: routing-syntax G' tmux
+ * 4-level fallback](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
  *
  * 1. **`$<id-prefix>`** — strict, match by SessionId short hash (no fallback)
  * 2. **`=<exact>`** — strict, exact friendly_name match (no prefix / glob)

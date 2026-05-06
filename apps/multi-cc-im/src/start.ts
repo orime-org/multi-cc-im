@@ -38,10 +38,11 @@ export interface RunStartCommandOpts {
   buildOrchestrator?: () => BridgeOrchestrator;
   /**
    * Logger for pre-flight banner + ready / error lines. Default writes to
-   * `process.stderr` (CLAUDE.md「multi-cc-im hook 不许写非协议 stdout」reserves
-   * stdout for hook decision JSON; start subcommand isn't a hook but stays
-   * consistent so stderr is the default diagnostic channel). Tests inject a
-   * spy to assert log content without polluting test stdout/stderr.
+   * `process.stderr` (CLAUDE.md "multi-cc-im hook must not write non-protocol
+   * stdout" reserves stdout for hook decision JSON; the start subcommand isn't
+   * a hook but stays consistent so stderr is the default diagnostic channel).
+   * Tests inject a spy to assert log content without polluting test
+   * stdout/stderr.
    */
   log?: (line: string) => void;
 }

@@ -24,7 +24,7 @@ const defaultOutput: LoginOutput = {
   renderQR: (url) => {
     qrcodeTerminal.generate(url, { small: true });
     process.stdout.write(
-      `\n如果上面二维码未能成功展示，请用浏览器打开以下链接扫码：\n${url}\n\n`,
+      `\nIf the QR code above did not render correctly, open the following URL in a browser to scan it:\n${url}\n\n`,
     );
   },
   println: (msg) => process.stdout.write(`${msg}\n`),

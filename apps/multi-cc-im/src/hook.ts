@@ -21,9 +21,9 @@ export interface HookCommandResult {
   exitCode: number;
   /**
    * Bytes to write to `process.stdout`. Either empty (no decision) or a
-   * one-line JSON `{decision:"block",reason:"..."}` per CLAUDE.md「关键规范」
-   * "受控 JSON 除外". **Never** anything else — non-protocol stdout pollutes
-   * cc's system context.
+   * one-line JSON `{decision:"block",reason:"..."}` per the CLAUDE.md "key
+   * rules" carve-out for controlled JSON. **Never** anything else —
+   * non-protocol stdout pollutes cc's system context.
    */
   stdout: string;
   /** Bytes to write to `process.stderr` (errors / diagnostic). */

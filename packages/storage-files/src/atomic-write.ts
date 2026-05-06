@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
  * Atomically write `content` to `path`. Strategy: write to a temp file in
  * the same directory, fsync, then rename over the target.
  *
- * Same approach as cc-connect's `core/atomicwrite.go` (6573★ 实战验证).
+ * Same approach as cc-connect's `core/atomicwrite.go` (6573 stars, battle-tested).
  *
  * - Tmp in same directory ensures rename is atomic on the underlying fs
  * - fsync ensures the bytes are durable before rename publishes them

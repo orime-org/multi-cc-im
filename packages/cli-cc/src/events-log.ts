@@ -9,9 +9,9 @@ import { HookPayloadSchema, type ParsedHookPayload } from './payloads.js';
  * Handler.
  *
  * Choice of append + tail (vs. IPC server / unix socket): aligns with Storage
- * DD A 模式 file-first approach + CLAUDE.md「local-first」+ avoids the bridge
- * lifecycle issue that plagues IPC (cc hooks fire even when bridge is down;
- * file-based 自然兼容 bridge 重启)。
+ * DD pattern A file-first approach + CLAUDE.md "local-first" + avoids the
+ * bridge lifecycle issue that plagues IPC (cc hooks fire even when bridge is
+ * down; file-based is naturally compatible with bridge restarts).
  *
  * Format: one JSON-encoded `ParsedHookPayload` per line, terminated by `\n`.
  * Caller (hook receiver) ensures payload has been zod-validated upstream.

@@ -182,7 +182,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
 });
 
 describe('createOrchestrator — inbound (wechat → cc)', () => {
-  it('plain msg with single alive session → 两步法 sendText + sendKeystroke', async () => {
+  it('plain msg with single alive session → two-step sendText + sendKeystroke', async () => {
     const im = makeMockIM();
     const term = makeMockTerm();
     const orch = createOrchestrator({
@@ -248,7 +248,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     await orch.stop();
   });
 
-  it('multi-target @a @b → both panes get 两步法', async () => {
+  it('multi-target @a @b → both panes get two-step send', async () => {
     const im = makeMockIM();
     const term = makeMockTerm();
     const orch = createOrchestrator({
@@ -260,7 +260,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend @api 同步实现'));
+    await im.handler!.onMessage(incoming('@frontend @api sync implementation'));
     expect(term.sendTextCalls).toHaveLength(2);
     expect(term.sendKeystrokeCalls).toHaveLength(2);
     const panes = term.sendTextCalls.map((c) => c.paneId).sort();
@@ -287,7 +287,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     await orch.stop();
   });
 
-  it('sendText completes BEFORE sendKeystroke (两步法 ordering preserved)', async () => {
+  it('sendText completes BEFORE sendKeystroke (two-step ordering preserved)', async () => {
     const im = makeMockIM();
     const term = makeMockTerm();
     const orderLog: string[] = [];
@@ -341,11 +341,11 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       hook_event_name: 'Stop',
       permission_mode: 'default',
       stop_hook_active: false,
-      last_assistant_message: '完成了',
+      last_assistant_message: 'done',
     };
     await cli.handler!.onStop(stopPayload);
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('完成了');
+    expect(im.sent[0]?.content).toBe('done');
     expect(im.sent[0]?.replyCtx).toEqual({
       to: 'wxid_owner',
       contextToken: 'ctx-frontend',
@@ -373,7 +373,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       hook_event_name: 'Stop',
       permission_mode: 'default',
       stop_hook_active: false,
-      last_assistant_message: '不应该发出去',
+      last_assistant_message: 'should not be forwarded',
     });
     expect(im.sent).toEqual([]);
     await orch.stop();

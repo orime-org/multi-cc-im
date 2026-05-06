@@ -200,7 +200,7 @@ describe('matchSession — tmux 4-level fallback', () => {
   });
 
   describe('Edge cases', () => {
-    it('Unicode friendly_name (中文) matches exact', () => {
+    it('Unicode friendly_name (CJK) matches exact', () => {
       const a = s('aaaa', '前端');
       expect(matchSession('前端', [a])).toEqual({
         type: 'unique',

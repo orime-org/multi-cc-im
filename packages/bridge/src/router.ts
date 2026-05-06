@@ -33,14 +33,14 @@ export interface RouterDispatch {
 }
 
 export interface RouterResult {
-  /** Visible feedback to send back to the IM (per CLAUDE.md「路由 visible echo 必须有」). */
+  /** Visible feedback to send back to the IM (per CLAUDE.md "routing visible echo required"). */
   echo: string;
   /** Sessions to forward `content` to. Empty for control commands / errors. */
   dispatches: RouterDispatch[];
 }
 
 /**
- * Route a wechat IncomingMessage per [DD: 路由语法 G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
+ * Route a wechat IncomingMessage per [DD: routing-syntax G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
  *
  * High-level pipeline:
  *   1. parse text → ParsedMessage (parser.ts)

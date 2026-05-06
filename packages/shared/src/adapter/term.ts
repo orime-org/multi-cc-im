@@ -36,10 +36,11 @@ export interface Adapter {
  * Capability: probe whether a pane currently hosts a live cc TUI process
  * (vs. having returned to the user shell after `/exit`).
  *
- * Required by CLAUDE.md「关键规范」: "路由前必须验证 pane 里 cc 活着"。
+ * Required by CLAUDE.md "Key conventions": "must verify cc is alive in
+ * the pane before routing".
  * Concrete strategy (heartbeat / pid probe / SessionEnd hook) is per-impl
- * and tracked by a separate v1 implementation DD (CLAUDE.md「关键设计假设」
- * 表 "pane 活性验证策略").
+ * and tracked by a separate v1 implementation DD (CLAUDE.md "Key design
+ * assumptions" table, "pane liveness verification strategy").
  */
 export interface PaneAlive extends Adapter {
   isPaneAlive(paneId: PaneId): Promise<boolean>;

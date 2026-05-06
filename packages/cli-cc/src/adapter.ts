@@ -41,8 +41,8 @@ const EVENTS_LOG_SUFFIX = '.events.jsonl';
  * `Handler`, exposes `enqueueInjection(sid, content)` for bridge router to
  * schedule Stop-hook injections.
  *
- * Why file-based vs IPC: aligns with [Storage DD A 模式](../../../docs/superpowers/specs/2026-04-29-storage-strategy-dd.md)
- * file-first persistence, CLAUDE.md「local-first」, and avoids the
+ * Why file-based vs IPC: aligns with [Storage DD pattern A](../../../docs/superpowers/specs/2026-04-29-storage-strategy-dd.md)
+ * file-first persistence, CLAUDE.md "local-first", and avoids the
  * bridge-lifecycle / port management problems IPC brings (cc hooks fire even
  * when bridge is down; file-based is naturally restart-safe).
  *

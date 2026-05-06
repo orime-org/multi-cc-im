@@ -4,29 +4,32 @@ import { getUpdates } from '../lib/ilink/api/api.js';
 import type { WeixinMessage } from '../lib/ilink/api/types.js';
 
 /**
- * Multi-cc-im 替代 upstream `monitor/monitor.ts`（不 vendor，因深度耦合
- * OpenClaw PluginRuntime + processOneMessage）。
+ * Multi-cc-im replacement for upstream `monitor/monitor.ts` (not vendored,
+ * because it's deeply coupled to OpenClaw PluginRuntime + processOneMessage).
  *
- * 长轮询 iLink getUpdates → 每条消息回调到 onMessage handler → cursor 落到
- * CursorStore。设计上跟 IMAdapter.start(handler) 解耦：monitor 是底层泵，
- * adapter 在外层把 raw WeixinMessage 转为 shared 的 IncomingMessage。
+ * Long-polls iLink getUpdates → invokes the onMessage callback for each
+ * message → persists the cursor to CursorStore. By design this is decoupled
+ * from IMAdapter.start(handler): the monitor is the low-level pump, while the
+ * adapter sits on top and converts raw WeixinMessage into shared
+ * IncomingMessage.
  *
- * CLAUDE.md「关键规范」「iLink 长轮询必须有 timeout（35s+）+ 退避重试 +
- * cursor 持久化」均落实在此函数。
+ * The CLAUDE.md "Key conventions" rule "iLink long-poll must have timeout
+ * (35s+) + backoff retry + cursor persistence" is implemented in this
+ * function.
  */
 
 export interface MonitorOpts {
-  /** iLink endpoint，由 resolveAccount 给出 */
+  /** iLink endpoint, supplied by resolveAccount. */
   baseUrl: string;
-  /** iLink bot_token，由 keychain 取出后传入 */
+  /** iLink bot_token, supplied after retrieval from the credential store. */
   token: string;
-  /** Cursor 持久化（重启续接，不掉消息）— 来自 storage-files */
+  /** Cursor persistence (resumes after restart, never drops messages) — sourced from storage-files. */
   cursorStore: CursorStore;
-  /** 每条收到的原始 WeixinMessage 回调；adapter 层做后续转换 */
+  /** Callback for each raw WeixinMessage received; the adapter layer handles downstream conversion. */
   onMessage: (msg: WeixinMessage) => Promise<void>;
-  /** 非致命错误（网络抖动等）通知；致命错误 throw */
+  /** Notification for non-fatal errors (network jitter, etc.); fatal errors are thrown. */
   onError?: (err: Error) => void;
-  /** 给 caller 用来 stop 的 abort signal */
+  /** Abort signal the caller can use to stop the loop. */
   abortSignal?: AbortSignal;
 }
 
@@ -35,7 +38,8 @@ const BACKOFF_INITIAL_MS = 2_000;
 const BACKOFF_MAX_MS = 30_000;
 
 /**
- * 主泵循环。`abortSignal` aborted 时优雅退出。错误退避指数到 30s 上限。
+ * Main pump loop. Exits gracefully when `abortSignal` is aborted. Errors back
+ * off exponentially up to a 30-second cap.
  */
 export async function runMonitor(opts: MonitorOpts): Promise<void> {
   let backoffMs = BACKOFF_INITIAL_MS;
@@ -51,7 +55,7 @@ export async function runMonitor(opts: MonitorOpts): Promise<void> {
         timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
       });
 
-      // 业务错误（session expired 等）走 onError，不退出循环
+      // Business errors (session expired, etc.) flow through onError without exiting the loop.
       if (resp.errcode && resp.errcode !== 0) {
         opts.onError?.(
           new Error(
@@ -63,16 +67,16 @@ export async function runMonitor(opts: MonitorOpts): Promise<void> {
         continue;
       }
 
-      // 成功 → 重置 backoff
+      // Success → reset backoff.
       backoffMs = BACKOFF_INITIAL_MS;
 
-      // 推 messages
+      // Push messages downstream.
       for (const msg of resp.msgs ?? []) {
         if (opts.abortSignal?.aborted) return;
         await opts.onMessage(msg);
       }
 
-      // 持久化新 cursor（重启续接）
+      // Persist the new cursor (resumes after restart).
       if (resp.get_updates_buf !== undefined) {
         await opts.cursorStore.set(resp.get_updates_buf);
       }

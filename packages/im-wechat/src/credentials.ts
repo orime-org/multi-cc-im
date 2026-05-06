@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * Wechat credentials shape persisted at `~/.multi-cc-im/credentials/wechat.json`
- * (mode 0600). Per [DD: credentials 持久化策略](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+ * (mode 0600). Per [DD: credentials persistence strategy](../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
  * we store on disk in plain JSON behind owner-only file permissions, **not** in
  * an OS keychain — same approach as Tencent OpenClaw vendor upstream.
  *

@@ -1,6 +1,6 @@
 /**
  * Parse a wechat message text into one of 4 routing-relevant shapes per
- * [DD: 路由语法](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md)
+ * [DD: routing-syntax](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md)
  * G' lock-in:
  *
  * - `plain`     — no leading `@`; body forwarded to `current_session`

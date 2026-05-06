@@ -2,10 +2,10 @@ import { z } from 'zod';
 
 /**
  * zod schemas for cc hook stdin payloads. Source of truth: hook+wezterm DD H1
- * 实测 (2026-04-27). Mirrors the type-only definitions in
+ * verified (2026-04-27). Mirrors the type-only definitions in
  * `@multi-cc-im/shared/adapter/cli.ts`; concrete runtime validation lives here
- * because cc-hook stdin is **external input** (CLAUDE.md「TypeScript strict,
- * 禁止 any」"外部输入用 zod runtime 校验" 硬规则).
+ * because cc-hook stdin is **external input** (CLAUDE.md "TypeScript strict,
+ * no `any`" rule "validate external input via zod at runtime").
  *
  * Note: the runtime schemas validate the **same constraints** as shared's
  * branded schemas (UUID for `session_id`, absolute path for `cwd` / ending in
@@ -75,7 +75,7 @@ export const StopPayloadSchema = z.object({
 /**
  * Hook fired when cc session ends (graceful `/exit`, `/clear`, or other reasons
  * documented at https://docs.anthropic.com/en/docs/claude-code/hooks#sessionend).
- * Required by [pane 活性策略 DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
+ * Required by [pane-alive strategy DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
  * receiver writes `<sid>.ended` so term-wezterm PaneAlive can flip to dead immediately
  * on graceful exit (vs. polling for PID death).
  *
@@ -113,8 +113,8 @@ export type ParsedHookPayload = z.infer<typeof HookPayloadSchema>;
  * Raw stdin entry point: JSON.parse + zod validate. Throws ZodError /
  * SyntaxError on invalid input (caller decides whether to log + exit non-zero
  * vs. swallow — multi-cc-im hook scripts MUST log to stderr + exit non-zero;
- * `process.stdout` is reserved for protocol output per CLAUDE.md「关键规范」
- * "multi-cc-im hook 不许写非协议 stdout").
+ * `process.stdout` is reserved for protocol output per CLAUDE.md "Key
+ * conventions" rule "multi-cc-im hooks must not write non-protocol stdout").
  */
 export function parseHookPayload(rawStdin: string): ParsedHookPayload {
   return HookPayloadSchema.parse(JSON.parse(rawStdin));

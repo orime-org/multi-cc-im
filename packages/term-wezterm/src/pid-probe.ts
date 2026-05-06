@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
  * state machine. Default impl uses `process.kill(pid, 0)` + `ps -o lstart=`;
  * tests inject stubs to avoid spawning real processes.
  *
- * Per [pane 活性策略 DD g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
+ * Per [pane-alive strategy DD section g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md):
  * - `isAlive(pid)`: POSIX `kill(pid, 0)` returns true iff signal 0 reaches
  *   process pid (validates pid existence without sending a signal). Throws on
  *   ESRCH (no such process) or EPERM (process exists but not ours) — we treat

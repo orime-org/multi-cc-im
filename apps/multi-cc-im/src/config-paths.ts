@@ -12,7 +12,7 @@ export interface AppPaths {
    * + bridge persistent-state (`current-session`).
    */
   stateDir: string;
-  /** `<root>/credentials/` — per-IM 0600 JSON files (CLAUDE.md「凭据 0600 落盘」). */
+  /** `<root>/credentials/` — per-IM 0600 JSON files (see CLAUDE.md "credentials 0600 on-disk"). */
   credentialsDir: string;
   /** `<root>/inbound/` — per-IM decrypted inbound media. */
   inboundDir: string;

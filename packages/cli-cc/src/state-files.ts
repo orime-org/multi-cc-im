@@ -18,9 +18,9 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  * All writes go through `@multi-cc-im/storage-files`'s `atomicWrite` (mode 0600
  * + same-dir tmp + fsync + rename). Reads are plain `readFile`; ENOENT → null.
  *
- * Per [pane 活性策略 DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)
- * + Storage DD A 模式（state files 落 `~/.multi-cc-im/state/` + atomic write，
- * 无 SQL DB）.
+ * Per [pane-alive strategy DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)
+ * + Storage DD pattern A (state files persist to `~/.multi-cc-im/state/` +
+ * atomic write, no SQL DB).
  */
 
 function isENOENT(err: unknown): boolean {

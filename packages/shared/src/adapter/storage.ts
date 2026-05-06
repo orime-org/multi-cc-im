@@ -16,8 +16,8 @@ import { FriendlyNameSchema } from '../types.js';
 
 /**
  * Persists a single string (the iLink long-poll cursor). Re-read on bridge
- * restart so messages aren't lost. CLAUDE.md「关键规范」"iLink 长轮询必须
- * 有 cursor 持久化".
+ * restart so messages aren't lost. CLAUDE.md "Key conventions": "iLink
+ * long-polling must persist a cursor".
  */
 export interface CursorStore {
   /** Returns the last persisted cursor, or null on first-run. */
@@ -32,10 +32,10 @@ export interface CursorStore {
 
 /**
  * Persists IM-specific credentials (e.g. wechat `bot_token`) at a 0600 JSON
- * file. Per [DD: credentials 持久化策略](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+ * file. Per [DD: credentials persistence strategy](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
  * we don't use OS keychain — stays consistent with Tencent OpenClaw vendor
- * upstream, the wechat ecosystem default, and avoids the WSL / DPAPI 同用户进程
- * gotchas.
+ * upstream, the wechat ecosystem default, and avoids the WSL / DPAPI
+ * same-user-process gotchas.
  *
  * One store instance = one IM's credentials file (e.g.
  * `~/.multi-cc-im/credentials/wechat.json`). The credentials shape `T` is

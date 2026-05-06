@@ -1,7 +1,7 @@
-// Bridge core: routes wechat IncomingMessage → cc sessions per [DD: 路由语法
-// G'](../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md). This
-// package provides the pure routing logic; adapter wiring + main loop comes
-// in follow-up PRs.
+// Bridge core: routes wechat IncomingMessage → cc sessions per [DD:
+// routing-syntax G'](../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
+// This package provides the pure routing logic; adapter wiring + main loop
+// comes in follow-up PRs.
 
 export { parse } from './parser.js';
 export type { ParsedMessage } from './parser.js';

@@ -1,11 +1,13 @@
 /**
- * Shim for `openclaw/plugin-sdk/infra-runtime` —— 仅实现 vendored ilink 协议层
- * 真正调用的两个 API: `resolvePreferredOpenClawTmpDir` + `withFileLock`。
+ * Shim for `openclaw/plugin-sdk/infra-runtime` — implements only the two APIs
+ * actually called by the vendored ilink protocol layer:
+ * `resolvePreferredOpenClawTmpDir` + `withFileLock`.
  *
- * 设计来源: upstream `package/dist/account-id-CRE2SEcy.js` /
- * `tmp-openclaw-dir-CraDYfRT.js` / `file-lock-CCdyykP_.js` 行为参考；
- * 不引入 OpenClaw plugin framework 全部依赖（80MB / 36 deps），仅满足 vendored
- * code 实际访问的 API surface。
+ * Design reference: upstream `package/dist/account-id-CRE2SEcy.js` /
+ * `tmp-openclaw-dir-CraDYfRT.js` / `file-lock-CCdyykP_.js` for behavior. We
+ * deliberately avoid pulling in the full OpenClaw plugin framework dependency
+ * tree (80MB / 36 deps) and only cover the API surface the vendored code
+ * actually accesses.
  */
 
 import lockfile from 'proper-lockfile';
@@ -13,24 +15,26 @@ import { mkdirSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-/** Upstream 默认 tmp 目录路径常量。 */
+/** Upstream's default tmp directory path constant. */
 const POSIX_OPENCLAW_TMP_DIR = '/tmp/openclaw';
 
 let tmpDirInitialized = false;
 
 /**
- * 返回 OpenClaw 风格 tmp 目录路径。Multi-cc-im 单用户场景，简化为
- * `/tmp/openclaw` + 首次调用时确保存在 (mode 0700)。
+ * Returns the OpenClaw-style tmp directory path. For multi-cc-im's
+ * single-user scenario, this simplifies down to `/tmp/openclaw` plus a
+ * first-call check that ensures it exists (mode 0700).
  *
- * 上游源码（`package/dist/tmp-openclaw-dir-*.js`）含安全检查（uid match /
- * world-writable detection），对单用户 multi-cc-im 不必要。
+ * The upstream source (`package/dist/tmp-openclaw-dir-*.js`) includes
+ * additional safety checks (uid match / world-writable detection) which are
+ * unnecessary for single-user multi-cc-im.
  */
 export function resolvePreferredOpenClawTmpDir(): string {
   if (!tmpDirInitialized) {
     try {
       mkdirSync(POSIX_OPENCLAW_TMP_DIR, { recursive: true, mode: 0o700 });
     } catch {
-      // 已存在 / 权限错误 → 让下游 fs 操作报告具体错误
+      // Already exists / permission error → let downstream fs operations report the specific error.
     }
     tmpDirInitialized = true;
   }
@@ -38,9 +42,10 @@ export function resolvePreferredOpenClawTmpDir(): string {
 }
 
 /**
- * Options 对应上游 `withFileLock` 第 2 参数 —— 直接匹配 proper-lockfile 的
- * options 形态（上游 vendored 代码也用这个 shape，例如 auth/pairing.ts 的
- * `LOCK_OPTIONS = { retries: { retries: 3, factor: 2, minTimeout: 100, ... }, stale: 10_000 }`）。
+ * Options corresponding to the upstream `withFileLock` second argument —
+ * matches the proper-lockfile options shape directly (the upstream vendored
+ * code uses this same shape, e.g. auth/pairing.ts's
+ * `LOCK_OPTIONS = { retries: { retries: 3, factor: 2, minTimeout: 100, ... }, stale: 10_000 }`).
  */
 export interface FileLockOptions {
   retries?:
@@ -55,15 +60,20 @@ export interface FileLockOptions {
 }
 
 /**
- * 文件锁包装器。语义匹配上游 `withFileLock(filePath, options, fn)`：
- * 拿锁 → 跑 fn → finally 释锁。底层用 `proper-lockfile`（业界标准 file lock 库）。
+ * File lock wrapper. Semantics match the upstream
+ * `withFileLock(filePath, options, fn)`: acquire lock → run fn → release in
+ * finally. Backed by `proper-lockfile` (the de-facto standard file-lock
+ * library).
  *
- * 跟上游差异：
- * - 上游用自家 `acquireFileLock` impl；我们 delegate 到 proper-lockfile
- * - 上游对 staleMs 有更复杂的检测；proper-lockfile 内置 stale 检测，行为等价
+ * Differences from upstream:
+ * - Upstream uses its own `acquireFileLock` impl; we delegate to
+ *   proper-lockfile.
+ * - Upstream has more elaborate staleMs detection; proper-lockfile's
+ *   built-in stale detection is behaviorally equivalent.
  *
- * Vendored auth/pairing.ts 在文件可能不存在时调用此函数，我们先 touch 文件
- * （proper-lockfile 要求 path 存在）。
+ * The vendored auth/pairing.ts may call this function before the file
+ * exists, so we touch the file first (proper-lockfile requires the path to
+ * exist).
  */
 export async function withFileLock<T>(
   filePath: string,

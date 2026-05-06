@@ -51,14 +51,14 @@ describe('runLoginWechatCommand', () => {
 
   it('login failure → exit 1 + stderr contains error', async () => {
     mockLoginWechat.mockRejectedValue(
-      new Error('wechat login failed: 登录超时'),
+      new Error('wechat login failed: login timeout'),
     );
     const result = await runLoginWechatCommand({
       root,
       output: { renderQR: () => {}, println: () => {} },
     });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/登录超时|login failed/);
+    expect(result.stderr).toMatch(/login timeout|login failed/);
   });
 
   it('forwards LoginOutput to im-wechat loginWechat', async () => {
@@ -66,7 +66,7 @@ describe('runLoginWechatCommand', () => {
     const lines: string[] = [];
     mockLoginWechat.mockImplementation(async ({ output }) => {
       output.renderQR('https://example.com/qr');
-      output.println('请扫码');
+      output.println('please scan QR');
       return { token: 't', savedAt: 'x' };
     });
     await runLoginWechatCommand({
@@ -77,6 +77,6 @@ describe('runLoginWechatCommand', () => {
       },
     });
     expect(renderedQR).toEqual(['https://example.com/qr']);
-    expect(lines).toContain('请扫码');
+    expect(lines).toContain('please scan QR');
   });
 });
