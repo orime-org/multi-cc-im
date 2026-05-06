@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 
 /**
@@ -105,10 +106,14 @@ export interface SetupHooksResult {
  *   tells the user the cleanup happened.
  * - **Other top-level fields** (e.g. `mcpServers`, `model`): preserved
  *   verbatim.
+ * - **Already up-to-date** (current ABS_PATH 6 entries already present, no
+ *   stale / legacy artifacts to clean): no-op — file is not touched, no
+ *   backup is created. Avoids accumulating `.bak.*` files on repeated runs.
  *
  * Atomic write via `atomicWrite` (same-dir tmp + fsync + rename, mode 0600 —
  * matches cc's own settings.json default permission). Backup of the prior
- * settings.json is taken first to a timestamped `.bak.<iso>` sibling.
+ * settings.json is taken first to a timestamped `.bak.<iso>` sibling — only
+ * when an actual write is going to happen.
  *
  * Errors:
  * - Invalid JSON in existing settings.json → exit 1, settings.json untouched.
@@ -167,6 +172,23 @@ export async function runSetupHooksCommand(
     ...existing,
     hooks: hooksMap,
   };
+
+  // Short-circuit: if the merge would produce byte-for-byte the same content
+  // (user already has the right hooks under the current ABS_PATH and no
+  // legacy/stale entries to clean up), skip backup + write entirely. Without
+  // this, every re-run accumulates a `.bak.<ts>` file even when nothing
+  // actually changes — confusing the user and littering ~/.claude/.
+  // `isDeepStrictEqual` ignores key order which is what we want here.
+  if (isDeepStrictEqual(newSettings, existing)) {
+    log(`  ✓ already up-to-date, no changes needed`);
+    log(`  done. Test with: \`./bin/multi-cc-im start\` then start cc in any wezterm tab.`);
+    return {
+      exitCode: 0,
+      stderr: '',
+      writtenTo: ccSettingsPath,
+      hookCount: countHandlers(hooksMap),
+    };
+  }
 
   await mkdir(dirname(ccSettingsPath), { recursive: true });
 
