@@ -41,7 +41,7 @@ The terminal prints a QR code; scan + confirm in WeChat → the bridge persists 
 ./bin/multi-cc-im setup-hooks
 ```
 
-Idempotent merge — auto-detects the current state of `~/.claude/settings.json` and writes multi-cc-im's 6 hook commands (using the current repo's absolute path):
+Idempotent merge — auto-detects the current state of `~/.claude/settings.json` and writes multi-cc-im's 3 hook commands (using the current repo's absolute path):
 
 - File missing → create
 - Exists but empty `{}` or no `hooks` field → add hooks
@@ -52,7 +52,7 @@ Idempotent merge — auto-detects the current state of `~/.claude/settings.json`
 
 The bash wrapper `bin/multi-cc-im` automatically uses the workspace's `tsx` / built `dist/cli.js` (Node 22–24 default cannot resolve TS-ESM-style `import './foo.js'` → `./foo.ts`).
 
-cc must subscribe to 6 hook events: `SessionStart` populates the `paneToSession` map / `SessionEnd` drives the `PaneAlive` signal / `UserPromptSubmit` + `Stop` flow into the bridge router / `PreToolUse` + `PostToolUse` populate `events.jsonl` for future analytics.
+cc must subscribe to 3 hook events: `SessionStart` populates the `paneToSession` map, `Stop` carries the assistant reply into the bridge router for forwarding to WeChat, `SessionEnd` drives the `PaneAlive` signal. Earlier versions also subscribed to `UserPromptSubmit` / `PreToolUse` / `PostToolUse` for analytics, but cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) already records that data — multi-cc-im no longer duplicates it. Future analytics work should read cc's transcript directly via the `transcript_path` field in each `SessionStart` payload.
 
 If you'd rather edit by hand (without `setup-hooks`): copy the `hooks` block from [`examples/claude-settings.json`](examples/claude-settings.json) into `~/.claude/settings.json` and `sed`-replace `ABS_PATH`:
 
