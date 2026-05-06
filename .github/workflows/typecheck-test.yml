@@ -94,17 +94,19 @@ jobs:
 
       - name: Smoke — hook subcommand round-trip (Stop)
         run: |
+          set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
           PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
           echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
+          ls -la "$MULTI_CC_IM_HOME/state/"
           # Stop hook writes <home>/state/<sid>.Stop.<ISO-ts>; daemon would
           # forward + unlink, but no daemon here so the file persists.
-          stop_file_count="$(ls "$MULTI_CC_IM_HOME/state/" 2>/dev/null | grep -c "^$SID\.Stop\." || true)"
-          [ "$stop_file_count" -eq 1 ]
+          shopt -s nullglob
+          stop_files=("$MULTI_CC_IM_HOME/state/$SID".Stop.*)
+          [ "${#stop_files[@]}" -eq 1 ]
           # The Stop file content is JSON with last_assistant_message.
-          stop_file="$(ls "$MULTI_CC_IM_HOME/state/$SID.Stop."* | head -1)"
-          grep -q '"last_assistant_message":"hi"' "$stop_file"
+          grep -q '"last_assistant_message":"hi"' "${stop_files[0]}"
           # No legacy files written.
           ! test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
           ! test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
