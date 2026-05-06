@@ -1,34 +1,43 @@
+import { RESERVED_BRIDGE_NAME } from './matcher.js';
+
 /**
- * Parse a wechat message text into one of 4 routing-relevant shapes per
- * [DD: routing-syntax](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md)
- * G' lock-in:
+ * Parse a wechat message text into one of these routing-relevant shapes:
  *
- * - `plain`     — no leading `@`; body forwarded to `current_session`
- * - `mention`   — leading `@<name>` (one or more space-separated); body to
- *                 those targets
- * - `broadcast` — `@all` alone or with body; fan-out to all alive sessions
- * - `control`   — `@list` / `@help` / `@current`, no body
- * - `error`     — malformed (e.g. `@all` mixed with named mentions)
+ * - `plain`           — no leading `@`; body forwarded to `current_session`
+ * - `mention`         — leading `@<name>` (one or more space-separated); body
+ *                        to those targets
+ * - `broadcast`       — `@all` alone or with body; fan-out to all alive
+ *                        sessions
+ * - `bridge_command`  — `@multi-cc-im /<command> [args]`; the bridge daemon
+ *                        itself handles it (e.g. `/list`, `/help`, `/current`).
+ *                        `@multi-cc-im` is a reserved name and never resolves
+ *                        to a cc session.
+ * - `error`           — malformed (e.g. `@all` mixed with named mentions, or
+ *                        `@multi-cc-im` body that isn't a `/`-prefixed slash
+ *                        command)
  *
  * Mentions are recognized **only at message start**, separated by whitespace.
  * `@<name>` mid-message is treated as plain text (matches IM convention; cf.
  * Discord/Slack mention parsers).
+ *
+ * The original DD G' (`docs/superpowers/specs/2026-05-04-routing-syntax-dd.md`)
+ * had `@list` / `@help` / `@current` as bareword keywords. These were dropped
+ * because they collide with cc tab titles set via `/rename` — a user who
+ * /rename'd a cc to "list" would shadow the keyword. The unambiguous
+ * `@multi-cc-im /<cmd>` form replaces them.
  */
 
-const CONTROL_COMMANDS = new Set(['list', 'help', 'current'] as const);
-type ControlCommand = 'list' | 'help' | 'current';
+const ALL_TOKEN = 'all';
 
 export type ParsedMessage =
   | { type: 'plain'; body: string }
   | { type: 'mention'; mentions: string[]; body: string }
   | { type: 'broadcast'; body: string }
-  | { type: 'control'; command: ControlCommand }
+  | { type: 'bridge_command'; command: string; args: string }
   | { type: 'error'; message: string };
 
-const ALL_TOKEN = 'all';
-
 export function parse(rawText: string): ParsedMessage {
-  const text = rawText.replace(/^[\s ]+/, '');
+  const text = rawText.replace(/^[\s ]+/, '');
 
   if (text.length === 0) return { type: 'plain', body: '' };
 
@@ -64,22 +73,39 @@ export function parse(rawText: string): ParsedMessage {
     return { type: 'plain', body: rawText };
   }
 
-  // Control commands: must be alone (no other mentions, no body)
-  if (mentions.length === 1 && isControlCommand(mentions[0]!)) {
-    if (body.trim().length > 0) {
+  // Bridge command: `@multi-cc-im /<command> [args]`.
+  // The reserved name never matches any cc; if it appears with a `/`-prefixed
+  // slash command body we route to the bridge handlers. Anything else is an
+  // error so users learn the right form.
+  if (mentions.includes(RESERVED_BRIDGE_NAME)) {
+    if (mentions.length !== 1) {
       return {
         type: 'error',
-        message: `@${mentions[0]} must be alone (no body or other mentions)`,
+        message: `@${RESERVED_BRIDGE_NAME} is exclusive — cannot combine with other mentions`,
       };
     }
-    return { type: 'control', command: mentions[0] as ControlCommand };
-  }
-  if (mentions.some(isControlCommand)) {
-    const ctrl = mentions.find(isControlCommand)!;
-    return {
-      type: 'error',
-      message: `@${ctrl} must be alone (no body or other mentions)`,
-    };
+    const trimmedBody = body.trim();
+    if (!trimmedBody.startsWith('/')) {
+      return {
+        type: 'error',
+        message: `@${RESERVED_BRIDGE_NAME} expects a /<command>; e.g. \`@${RESERVED_BRIDGE_NAME} /list\` or \`@${RESERVED_BRIDGE_NAME} /help\``,
+      };
+    }
+    // Split first whitespace: `/list` → command=`list`, args=``.
+    // `/rename auth-fix` → command=`rename`, args=`auth-fix`.
+    const afterSlash = trimmedBody.slice(1);
+    const spaceIdx = afterSlash.search(/\s/);
+    const command =
+      spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
+    const args =
+      spaceIdx === -1 ? '' : afterSlash.slice(spaceIdx).trim();
+    if (command.length === 0) {
+      return {
+        type: 'error',
+        message: `@${RESERVED_BRIDGE_NAME}: empty command after \`/\``,
+      };
+    }
+    return { type: 'bridge_command', command, args };
   }
 
   // Broadcast: @all is exclusive — error if mixed with named mentions
@@ -95,8 +121,4 @@ export function parse(rawText: string): ParsedMessage {
   }
 
   return { type: 'mention', mentions, body };
-}
-
-function isControlCommand(token: string): boolean {
-  return CONTROL_COMMANDS.has(token as ControlCommand);
 }

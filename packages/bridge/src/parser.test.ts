@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parse } from './parser.js';
 
-describe('parser — plain / mention / broadcast / control', () => {
+describe('parser — plain / mention / broadcast / bridge_command', () => {
   it('empty string → plain with empty body', () => {
     expect(parse('')).toEqual({ type: 'plain', body: '' });
   });
@@ -88,29 +88,114 @@ describe('parser — plain / mention / broadcast / control', () => {
     });
   });
 
-  it('@list → control list', () => {
-    expect(parse('@list')).toEqual({ type: 'control', command: 'list' });
-  });
+  // ==========================================================================
+  // Old bareword controls (@list / @help / @current) are now plain mentions.
+  // The DD G' control-command syntax was dropped because it collided with cc
+  // tab titles set via /rename. Replaced by @multi-cc-im /<command>.
+  // These cases verify the OLD bareword form is now treated as a normal
+  // mention — router will report "not found" (expected, no cc named "list").
+  // ==========================================================================
 
-  it('@help → control help', () => {
-    expect(parse('@help')).toEqual({ type: 'control', command: 'help' });
-  });
-
-  it('@current → control current', () => {
-    expect(parse('@current')).toEqual({ type: 'control', command: 'current' });
-  });
-
-  it('control with extra body → error', () => {
-    expect(parse('@list please')).toEqual({
-      type: 'error',
-      message: expect.stringMatching(/@list.*alone/i),
+  it('@list (old bareword control) → now parses as mention', () => {
+    expect(parse('@list')).toEqual({
+      type: 'mention',
+      mentions: ['list'],
+      body: '',
     });
   });
 
-  it('@list combined with other @ → error', () => {
-    expect(parse('@list @frontend')).toEqual({
+  it('@help (old bareword control) → now parses as mention', () => {
+    expect(parse('@help')).toEqual({
+      type: 'mention',
+      mentions: ['help'],
+      body: '',
+    });
+  });
+
+  it('@current (old bareword control) → now parses as mention', () => {
+    expect(parse('@current')).toEqual({
+      type: 'mention',
+      mentions: ['current'],
+      body: '',
+    });
+  });
+
+  // ==========================================================================
+  // Bridge commands: @multi-cc-im /<command> [args]
+  // ==========================================================================
+
+  it('@multi-cc-im /list → bridge_command list', () => {
+    expect(parse('@multi-cc-im /list')).toEqual({
+      type: 'bridge_command',
+      command: 'list',
+      args: '',
+    });
+  });
+
+  it('@multi-cc-im /help → bridge_command help', () => {
+    expect(parse('@multi-cc-im /help')).toEqual({
+      type: 'bridge_command',
+      command: 'help',
+      args: '',
+    });
+  });
+
+  it('@multi-cc-im /current → bridge_command current', () => {
+    expect(parse('@multi-cc-im /current')).toEqual({
+      type: 'bridge_command',
+      command: 'current',
+      args: '',
+    });
+  });
+
+  it('@multi-cc-im /rename auth-fix → bridge_command rename with single-word args', () => {
+    expect(parse('@multi-cc-im /rename auth-fix')).toEqual({
+      type: 'bridge_command',
+      command: 'rename',
+      args: 'auth-fix',
+    });
+  });
+
+  it('@multi-cc-im /rename auth fix more args → args is everything after first whitespace', () => {
+    expect(parse('@multi-cc-im /rename auth fix more args')).toEqual({
+      type: 'bridge_command',
+      command: 'rename',
+      args: 'auth fix more args',
+    });
+  });
+
+  it('@multi-cc-im (no body) → error /expects a /<command>/', () => {
+    expect(parse('@multi-cc-im')).toEqual({
       type: 'error',
-      message: expect.stringMatching(/@list.*alone/i),
+      message: expect.stringMatching(/expects a \/<command>/),
+    });
+  });
+
+  it('@multi-cc-im hello (body without /) → error /expects a /<command>/', () => {
+    expect(parse('@multi-cc-im hello')).toEqual({
+      type: 'error',
+      message: expect.stringMatching(/expects a \/<command>/),
+    });
+  });
+
+  it('@multi-cc-im / (empty after slash) → error /empty command after `/`/', () => {
+    expect(parse('@multi-cc-im /')).toEqual({
+      type: 'error',
+      message: expect.stringMatching(/empty command after `\/`/),
+    });
+  });
+
+  it('@multi-cc-im @api /list → error (multi-cc-im is exclusive)', () => {
+    expect(parse('@multi-cc-im @api /list')).toEqual({
+      type: 'error',
+      message: expect.stringMatching(/exclusive — cannot combine/),
+    });
+  });
+
+  it('@api @multi-cc-im /list → error (multi-cc-im is exclusive even when not first)', () => {
+    expect(parse('@api @multi-cc-im /list')).toEqual({
+      type: 'error',
+      message: expect.stringMatching(/exclusive — cannot combine/),
     });
   });
 
