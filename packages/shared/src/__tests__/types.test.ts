@@ -6,7 +6,6 @@ import {
   PaneIdSchema,
   AttachmentSchema,
   IncomingMessageSchema,
-  FriendlyNameSchema,
 } from '../types.js';
 
 describe('SessionIdSchema', () => {
@@ -70,21 +69,6 @@ describe('PaneIdSchema', () => {
 
   it('rejects string', () => {
     expect(PaneIdSchema.safeParse('20').success).toBe(false);
-  });
-});
-
-describe('FriendlyNameSchema', () => {
-  it('accepts short non-empty name', () => {
-    expect(FriendlyNameSchema.parse('web')).toBe('web');
-  });
-
-  it('rejects empty string', () => {
-    expect(FriendlyNameSchema.safeParse('').success).toBe(false);
-  });
-
-  it('rejects > 64 chars', () => {
-    const longName = 'a'.repeat(65);
-    expect(FriendlyNameSchema.safeParse(longName).success).toBe(false);
   });
 });
 

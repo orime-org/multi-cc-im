@@ -8,7 +8,6 @@ export type Brand<T, B> = T & { readonly [__brand]: B };
 export type SessionId = Brand<string, 'SessionId'>;
 export type CwdAbs = Brand<string, 'CwdAbs'>;
 export type TranscriptPath = Brand<string, 'TranscriptPath'>;
-export type FriendlyName = Brand<string, 'FriendlyName'>;
 export type PaneId = Brand<number, 'PaneId'>;
 
 /** UUID v4 issued by Claude Code as session_id (hook+wezterm DD H1). */
@@ -47,13 +46,6 @@ export interface PaneToSessionMap {
   /** Returns the session_id tracked for this pane, or `null` if unknown. */
   get(paneId: PaneId): SessionId | null;
 }
-
-/** User-given short name for a session (used for `@friendly` routing). */
-export const FriendlyNameSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .transform((s) => s as FriendlyName);
 
 /** Kind of attachment that can ride on an IM message. */
 export const AttachmentKindSchema = z.enum(['image', 'file', 'voice']);

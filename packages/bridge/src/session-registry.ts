@@ -1,8 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import type {
-  ConfigStore,
   CwdAbs,
-  FriendlyName,
   PaneId,
   PaneToSessionMap,
   SessionId,
@@ -12,7 +10,11 @@ import {
   readEnded,
   readLastHookAt,
 } from '@multi-cc-im/cli-cc';
-import { defaultPidProbe, type PidProbe } from '@multi-cc-im/term-wezterm';
+import {
+  defaultPidProbe,
+  type PidProbe,
+  type TabInfo,
+} from '@multi-cc-im/term-wezterm';
 import type { SessionInfo } from './matcher.js';
 import type { SessionRegistry } from './router.js';
 
@@ -22,8 +24,14 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 export interface CreateSessionRegistryOpts {
   /** Where cli-cc state files live (e.g. `~/.multi-cc-im/state/`). */
   stateDir: string;
-  /** ConfigStore to read user-configured `[friendly_names]` from `config.toml`. */
-  configStore: ConfigStore;
+  /**
+   * Callback to fetch the latest wezterm pane → tab-title mapping. Invoked
+   * once per `listAlive()` call. The orchestrator wires this to
+   * `listAllTabs({ wezterm })` so every IM-touching event (inbound dispatch
+   * + outbound forward) sees the user's most recent `/rename`. Returning
+   * `undefined` is allowed — used in tests to skip wezterm entirely.
+   */
+  getTabTitles?: () => Promise<Map<number, TabInfo>>;
   /** Test seam — defaults to `defaultPidProbe` from `@multi-cc-im/term-wezterm`. */
   pidProbe?: PidProbe;
   /** Idle-timeout fallback — propagated to per-session liveness check. */
@@ -39,17 +47,21 @@ export interface CreateSessionRegistryOpts {
 export interface SessionRegistryAndMap extends SessionRegistry, PaneToSessionMap {}
 
 /**
- * Build a session registry from cli-cc state files + ConfigStore friendly_names.
+ * Build a session registry from cli-cc state files + (optionally) a wezterm
+ * tab-title fetcher.
  *
  * `listAlive()` work:
- *   1. Scan `<stateDir>/*.cc-pid` files to get all sessions cc has ever started
+ *   1. Scan `<stateDir>/*.cc-pid` files to get all sessions cc has started
  *   2. For each, run the **same 4-signal liveness check** as term-wezterm
  *      PaneAlive (SessionEnd file → PID kill -0 → ps lstart → idle-timeout
  *      fallback) — duplicated here to avoid circular dep on term-wezterm
  *      PaneAlive (which itself consumes this registry as `paneToSession`)
  *   3. Drop sessions without `paneId` (cc ran outside wezterm — not routable
  *      from bridge)
- *   4. Attach friendlyName from ConfigStore `[friendly_names][sessionId]`
+ *   4. If `getTabTitles` is provided, call it once and attach `tabTitle` to
+ *      each alive `SessionInfo` from the returned `paneId → TabInfo` map
+ *      (caller-provided `cc /rename` source). Empty / missing title becomes
+ *      `undefined` so router fallback kicks in (`$<sid8>` + rename hint).
  *   5. Refresh internal `paneId → sessionId` cache for subsequent `get()`
  *
  * `get(paneId)` is synchronous (matches `PaneToSessionMap` contract) and
@@ -69,8 +81,18 @@ export function createSessionRegistry(
   return {
     async listAlive(): Promise<readonly SessionInfo[]> {
       const sessionIds = await scanSessionIds(stateDir);
-      const config = await opts.configStore.load();
-      const friendlyByIdRaw = config.friendly_names as Record<string, string>;
+
+      // Fetch tab titles once per call. If the fetch throws (wezterm cli
+      // unavailable etc.), fall back to "no titles" — sessions still resolve
+      // by `$sid8`, just without friendly names this turn.
+      let tabTitleByPaneId: Map<number, TabInfo> | null = null;
+      if (opts.getTabTitles) {
+        try {
+          tabTitleByPaneId = await opts.getTabTitles();
+        } catch {
+          tabTitleByPaneId = null;
+        }
+      }
 
       const alive: SessionInfo[] = [];
       const newCache = new Map<number, SessionId>();
@@ -90,11 +112,14 @@ export function createSessionRegistry(
           continue;
         }
 
-        const friendlyName = friendlyByIdRaw[sessionId];
+        const tab = tabTitleByPaneId?.get(ccPid.paneId);
+        const tabTitle =
+          tab && tab.title.length > 0 ? tab.title : undefined;
+
         alive.push({
           sessionId: sessionId as SessionId,
           paneId: ccPid.paneId as PaneId,
-          friendlyName: friendlyName as FriendlyName | undefined,
+          tabTitle,
           cwd: ccPid.cwd as CwdAbs,
         });
         newCache.set(ccPid.paneId, sessionId as SessionId);

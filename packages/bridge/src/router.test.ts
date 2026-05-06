@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import type { CwdAbs, FriendlyName, IncomingMessage, PaneId, SessionId } from '@multi-cc-im/shared';
+import type { CwdAbs, IncomingMessage, PaneId, SessionId } from '@multi-cc-im/shared';
 import type { SessionInfo } from './matcher.js';
 import { route, type RouterState, type SessionRegistry } from './router.js';
 
 function s(
   shortIdHex: string,
-  friendlyName: string | undefined,
+  tabTitle: string | undefined,
   paneId: number,
 ): SessionInfo {
   const padded = shortIdHex.padEnd(8, '0').slice(0, 8);
@@ -13,7 +13,7 @@ function s(
   return {
     sessionId,
     paneId: paneId as PaneId,
-    friendlyName: friendlyName as FriendlyName | undefined,
+    tabTitle,
     cwd: '/tmp/proj' as CwdAbs,
   };
 }

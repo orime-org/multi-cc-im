@@ -4,6 +4,8 @@ export { resolveWezTermPath } from './path-resolver.js';
 export type { ResolveWezTermPathOpts } from './path-resolver.js';
 export { runWezTermCli } from './cli.js';
 export type { RunWezTermCliOpts } from './cli.js';
+export { listAllTabs, getTabTitleByPaneId } from './tab-title.js';
+export type { TabInfo } from './tab-title.js';
 export { createIsPaneAlive } from './pane-alive.js';
 export type { CreateIsPaneAliveOpts } from './pane-alive.js';
 export { defaultPidProbe } from './pid-probe.js';

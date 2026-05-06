@@ -3,7 +3,6 @@ import type {
   CLIAdapter,
   CLIHandler,
   CwdAbs,
-  FriendlyName,
   IMAdapter,
   IMHandler,
   IMReplyContext,
@@ -25,13 +24,13 @@ const SID_B = '22222222-3606-4fe4-b01d-bbbbbbbbbbbb' as SessionId;
 const FRONTEND: SessionInfo = {
   sessionId: SID_A,
   paneId: 10 as PaneId,
-  friendlyName: 'frontend' as FriendlyName,
+  tabTitle: 'frontend',
   cwd: '/tmp/proj-a' as CwdAbs,
 };
 const API: SessionInfo = {
   sessionId: SID_B,
   paneId: 20 as PaneId,
-  friendlyName: 'api' as FriendlyName,
+  tabTitle: 'api',
   cwd: '/tmp/proj-b' as CwdAbs,
 };
 
@@ -230,7 +229,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     const FRAME: SessionInfo = {
       sessionId: '99999999-3606-4fe4-b01d-fffffffffff0' as SessionId,
       paneId: 30 as PaneId,
-      friendlyName: 'frame' as FriendlyName,
+      tabTitle: 'frame',
       cwd: '/tmp/proj-c' as CwdAbs,
     };
     const orch = createOrchestrator({
@@ -345,7 +344,10 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     };
     await cli.handler!.onStop(stopPayload);
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('done');
+    // Outbound forward prefixes with `[<displayName>]\n<reply>` so user can
+    // tell which cc is replying when multiple are routed via the same wechat
+    // chat.
+    expect(im.sent[0]?.content).toBe('[frontend]\ndone');
     expect(im.sent[0]?.replyCtx).toEqual({
       to: 'wxid_owner',
       contextToken: 'ctx-frontend',
@@ -405,7 +407,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       last_assistant_message: 'awakened',
     });
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('awakened');
+    expect(im.sent[0]?.content).toBe('[frontend]\nawakened');
     await orch.stop();
   });
 
@@ -448,7 +450,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     });
     expect(im.sent).toHaveLength(2);
     const replies = im.sent.map((s) => s.content).sort();
-    expect(replies).toEqual(['api reply', 'frontend reply']);
+    expect(replies).toEqual(['[api]\napi reply', '[frontend]\nfrontend reply']);
     await orch.stop();
   });
 });
@@ -567,7 +569,10 @@ describe('createOrchestrator — INFO log sink', () => {
     });
     const stopLine = lines.find((l) => l.startsWith('[cc → wechat]'));
     expect(stopLine).toContain('cc replied');
-    expect(stopLine).toContain(SID_A.slice(0, 8));
+    // Log line uses the same displayName the IM body is prefixed with —
+    // tabTitle when set, `$<sid8>` fallback when unnamed. Here FRONTEND has
+    // tabTitle='frontend' so that's what shows up.
+    expect(stopLine).toContain('frontend');
     await orch.stop();
   });
 

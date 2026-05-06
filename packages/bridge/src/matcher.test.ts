@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import type { CwdAbs, FriendlyName, PaneId, SessionId } from '@multi-cc-im/shared';
-import { matchSession, type SessionInfo } from './matcher.js';
+import type { CwdAbs, PaneId, SessionId } from '@multi-cc-im/shared';
+import { matchSession, RESERVED_BRIDGE_NAME, type SessionInfo } from './matcher.js';
 
 function s(
   shortIdHex: string,
-  friendlyName: string | undefined,
+  tabTitle: string | undefined,
   paneId = 1,
 ): SessionInfo {
   // Build a UUID-shape SessionId where the first 8 hex chars match the short
@@ -14,7 +14,7 @@ function s(
   return {
     sessionId,
     paneId: paneId as PaneId,
-    friendlyName: friendlyName as FriendlyName | undefined,
+    tabTitle,
     cwd: '/tmp/proj' as CwdAbs,
   };
 }
@@ -57,16 +57,16 @@ describe('matchSession — tmux 4-level fallback', () => {
       });
     });
 
-    it('id-prefix never falls through to friendly_name (strict)', () => {
+    it('id-prefix never falls through to tabTitle (strict)', () => {
       const a = s('99999999', 'frontend');
       // $frontend looks like an id-prefix even though "frontend" matches a
-      // friendly_name — `$` mode is strict id-only.
+      // tabTitle — `$` mode is strict id-only.
       expect(matchSession('$frontend', [a])).toEqual({ type: 'none' });
     });
   });
 
-  describe('Level 2: =<exact> strict friendly_name (no fallback)', () => {
-    it('matches exact friendly_name', () => {
+  describe('Level 2: =<exact> strict tabTitle (no fallback)', () => {
+    it('matches exact tabTitle', () => {
       const a = s('aaaa', 'frontend');
       expect(matchSession('=frontend', [a])).toEqual({
         type: 'unique',
@@ -85,8 +85,8 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
   });
 
-  describe('Level 3: exact friendly_name', () => {
-    it('matches exact friendly_name (case-sensitive)', () => {
+  describe('Level 3: exact tabTitle', () => {
+    it('matches exact tabTitle (case-sensitive)', () => {
       const a = s('aaaa', 'frontend');
       const b = s('bbbb', 'api');
       expect(matchSession('frontend', [a, b])).toEqual({
@@ -103,7 +103,7 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
 
     it('exact wins over prefix when both apply', () => {
-      // Two friendly_names: "fe" exact, "front" prefix-could-match if "fe" not
+      // Two tabTitles: "fe" exact, "front" prefix-could-match if "fe" not
       // exact. Querying "fe" → exact match wins.
       const exact = s('aaaa', 'fe');
       const prefix = s('bbbb', 'front');
@@ -114,7 +114,7 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
   });
 
-  describe('Level 4: prefix friendly_name', () => {
+  describe('Level 4: prefix tabTitle', () => {
     it('matches unique prefix', () => {
       const a = s('aaaa', 'frontend');
       const b = s('bbbb', 'api');
@@ -150,7 +150,7 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
   });
 
-  describe('Level 5: glob friendly_name (fnmatch * and ?)', () => {
+  describe('Level 5: glob tabTitle (fnmatch * and ?)', () => {
     it('* glob matches multiple in middle', () => {
       const a = s('aaaa', 'frontend');
       const b = s('bbbb', 'api-frontend');
@@ -184,13 +184,13 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
   });
 
-  describe('Sessions without friendly_name fall back to id-prefix only', () => {
-    it('session with no friendly_name not matched by name query', () => {
+  describe('Sessions without tabTitle fall back to id-prefix only', () => {
+    it('session with no tabTitle not matched by name query', () => {
       const a = s('abc12345', undefined);
       expect(matchSession('frontend', [a])).toEqual({ type: 'none' });
     });
 
-    it('session with no friendly_name still matched by $ id-prefix', () => {
+    it('session with no tabTitle still matched by $ id-prefix', () => {
       const a = s('abc12345', undefined);
       expect(matchSession('$abc', [a])).toEqual({
         type: 'unique',
@@ -199,8 +199,19 @@ describe('matchSession — tmux 4-level fallback', () => {
     });
   });
 
+  describe('Reserved bridge name', () => {
+    it('reserved name multi-cc-im → never resolves to a session', () => {
+      // Even if a user manages to /rename a cc to the reserved name, the
+      // matcher must NOT resolve `multi-cc-im` to that session — the router
+      // owns that string for bridge commands.
+      expect(RESERVED_BRIDGE_NAME).toBe('multi-cc-im');
+      const a = s('aaaa', 'multi-cc-im');
+      expect(matchSession('multi-cc-im', [a])).toEqual({ type: 'none' });
+    });
+  });
+
   describe('Edge cases', () => {
-    it('Unicode friendly_name (CJK) matches exact', () => {
+    it('Unicode tabTitle (CJK) matches exact', () => {
       const a = s('aaaa', '前端');
       expect(matchSession('前端', [a])).toEqual({
         type: 'unique',
