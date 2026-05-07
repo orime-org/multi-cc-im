@@ -139,11 +139,12 @@ export async function runStartCommand(
   if (
     sweepResult.pairedCleaned +
       sweepResult.orphanStopsCleaned +
-      sweepResult.legacyCleaned >
+      sweepResult.legacyCleaned +
+      sweepResult.orphanPermissionCleaned >
     0
   ) {
     log(
-      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop file(s), ${sweepResult.legacyCleaned} legacy file(s) cleaned`,
+      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop file(s), ${sweepResult.legacyCleaned} legacy file(s), ${sweepResult.orphanPermissionCleaned} orphan Permission file(s) cleaned`,
     );
   }
 
@@ -200,6 +201,7 @@ export async function runStartCommand(
         imAdapter,
         termAdapter,
         cliAdapter,
+        stateDir: paths.stateDir,
         registry,
         state: routerState,
         log,

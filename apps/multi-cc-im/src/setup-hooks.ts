@@ -6,35 +6,58 @@ import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 
 /**
- * The 3 cc hook events multi-cc-im needs to subscribe to.
+ * The 4 cc hook events multi-cc-im needs to subscribe to.
  *
  * - `SessionStart` — captures `WEZTERM_PANE` env, populates paneToSession
+ * - `PreToolUse` — IM permission gate per [DD: permission forward](../../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+ *   Hook subprocess writes `<sid>.PermissionRequest.<id>.json`, daemon
+ *   forwards to IM, IM user replies `@<tabname> /1` (allow) / `/2` (deny),
+ *   daemon writes `<sid>.PermissionResponse.<id>.json`, hook subprocess
+ *   reads the response and emits the permission decision to cc. 30 second
+ *   timeout default-allows.
  * - `Stop` — assistant turn complete; bridge forwards `last_assistant_message`
  *   to wechat origin via `lastReplyCtxBySession`
  * - `SessionEnd` — drives PaneAlive "graceful exit" signal
  *
- * Earlier versions also subscribed to `PreToolUse` / `PostToolUse` /
- * `UserPromptSubmit` for analytics, but those data are already captured by
- * cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) — having
- * multi-cc-im record them again was duplication with no consumer. Future
- * analytics implementations should read cc's transcript directly via the
+ * Earlier versions also subscribed to `PostToolUse` / `UserPromptSubmit` for
+ * analytics, but those data are already captured by cc's own transcript
+ * jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) — having multi-cc-im record
+ * them again was duplication with no consumer. Future analytics
+ * implementations should read cc's transcript directly via the
  * `transcript_path` exposed in each SessionStart payload.
  *
- * All 3 remaining events have no tool concept, so `matcher` is `""` (matches
- * every invocation). Schema follows cc upstream: `hooks` is an object keyed
- * by event name, each event maps to an array of matcher groups, each group
- * has its own inner `hooks` array of handler entries. See
+ * Schema follows cc upstream: `hooks` is an object keyed by event name,
+ * each event maps to an array of matcher groups, each group has its own
+ * inner `hooks` array of handler entries. See
  * https://code.claude.com/docs/en/hooks for the authoritative shape.
+ *
+ * Per-event matcher + timeout:
+ * - `SessionStart` / `Stop` / `SessionEnd` — `matcher: ""` (no tool concept)
+ * - `PreToolUse` — `matcher: "*"` (match all tools) + `timeout: 30` (30s
+ *   max wait for IM user response; longer than the default 600s would block
+ *   cc TUI for too long if user is unreachable; shorter than ~10s would
+ *   defeat IM RTT)
  */
 const HOOK_EVENTS = [
   'SessionStart',
+  'PreToolUse',
   'Stop',
   'SessionEnd',
 ] as const;
 
+/** Hook entries for these events match all tool names (`matcher: "*"`). */
+const TOOL_MATCHED_EVENTS = new Set<(typeof HOOK_EVENTS)[number]>(['PreToolUse']);
+
+/** Hook entries for these events get a custom `timeout` (seconds). */
+const HOOK_TIMEOUTS: Partial<Record<(typeof HOOK_EVENTS)[number], number>> = {
+  PreToolUse: 30,
+};
+
 interface HookHandler {
   type: 'command';
   command: string;
+  /** Per-cc-hook-protocol custom timeout (seconds). Optional. */
+  timeout?: number;
 }
 
 interface MatcherGroup {
@@ -165,11 +188,15 @@ export async function runSetupHooksCommand(
     const handler: HookHandler = {
       type: 'command',
       command: `${wrapperPath} hook ${event}`,
+      ...(HOOK_TIMEOUTS[event] !== undefined
+        ? { timeout: HOOK_TIMEOUTS[event] }
+        : {}),
     };
-    // All 3 events (SessionStart / Stop / SessionEnd) have no tool concept —
-    // empty matcher matches every invocation.
+    // PreToolUse uses `matcher: "*"` (match all tools); other events have
+    // no tool concept and use `matcher: ""` (match every invocation).
+    const matcher = TOOL_MATCHED_EVENTS.has(event) ? '*' : '';
     const groups = hooksMap[event] ?? [];
-    hooksMap[event] = [...groups, { matcher: '', hooks: [handler] }];
+    hooksMap[event] = [...groups, { matcher, hooks: [handler] }];
   }
 
   const newSettings: Record<string, unknown> = {

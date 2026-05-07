@@ -34,6 +34,19 @@ export const SessionStartPayloadSchema = z.object({
   model: z.string(),
 });
 
+/**
+ * Hook fired right before cc executes a tool. Used by multi-cc-im as the
+ * permission gate per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+ */
+export const PreToolUsePayloadSchema = z.object({
+  ...baseHookPayload,
+  hook_event_name: z.literal('PreToolUse'),
+  permission_mode: z.string(),
+  tool_name: z.string(),
+  tool_input: z.record(z.string(), z.unknown()),
+  tool_use_id: z.string(),
+});
+
 export const StopPayloadSchema = z.object({
   ...baseHookPayload,
   hook_event_name: z.literal('Stop'),
@@ -65,6 +78,7 @@ export const SessionEndPayloadSchema = z.object({
  */
 export const HookPayloadSchema = z.discriminatedUnion('hook_event_name', [
   SessionStartPayloadSchema,
+  PreToolUsePayloadSchema,
   StopPayloadSchema,
   SessionEndPayloadSchema,
 ]);

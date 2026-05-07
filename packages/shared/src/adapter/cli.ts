@@ -24,6 +24,26 @@ export interface SessionStartPayload extends BaseHookPayload {
 }
 
 /**
+ * Hook fired right before cc actually executes a tool (Bash / Edit / Write /
+ * Read / WebFetch / etc.). Used by multi-cc-im as the **permission gate**
+ * per [DD: permission forward](../../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
+ * hook subprocess writes a `<sid>.PermissionRequest.<id>.json`, daemon
+ * forwards to IM, IM user replies `@<tabname> /1` (allow) / `/2` (deny),
+ * daemon writes `<sid>.PermissionResponse.<id>.json`, hook subprocess reads
+ * it + writes stdout `{permissionDecision:"allow"|"deny"}` + exits.
+ *
+ * 30s timeout (custom per `setup-hooks.ts`); on timeout cc treats as allow
+ * by default per cc PreToolUse hook protocol semantics.
+ */
+export interface PreToolUsePayload extends BaseHookPayload {
+  hook_event_name: 'PreToolUse';
+  permission_mode: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_use_id: string;
+}
+
+/**
  * Hook fired when cc finishes a single assistant turn (NOT session end).
  * - `stop_hook_active: true` means the current Stop is being invoked inside
  *   a `decision:'block'` injection chain. multi-cc-im MUST `return` early
@@ -50,7 +70,11 @@ export interface SessionEndPayload extends BaseHookPayload {
 }
 
 /** Discriminated union of every cc hook payload multi-cc-im subscribes to. */
-export type HookPayload = SessionStartPayload | StopPayload | SessionEndPayload;
+export type HookPayload =
+  | SessionStartPayload
+  | PreToolUsePayload
+  | StopPayload
+  | SessionEndPayload;
 
 /**
  * Stdout response shape that cc's Stop hook treats as an injection request.
@@ -76,6 +100,16 @@ export interface HookDecision {
  */
 export interface Handler {
   onSessionStart(p: SessionStartPayload): Promise<void>;
+  /**
+   * On PreToolUse, called by adapter when daemon sees a fresh
+   * `<sid>.PermissionRequest.<id>.json` arrive in state/. Daemon forwards
+   * to IM and waits for user response. Adapter dispatches to bridge
+   * orchestrator's onPreToolUse, which manages the IM forward + response
+   * write. The actual hook subprocess that triggered this is asleep
+   * polling for the response file — it doesn't return anything to cc here;
+   * the response file does.
+   */
+  onPreToolUse(p: PreToolUsePayload & { requestId: string }): Promise<void>;
   /**
    * On Stop, the handler may return a `HookDecision` to inject a follow-up
    * prompt. Return `void` (or undefined) to let cc end the turn normally.

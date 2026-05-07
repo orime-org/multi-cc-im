@@ -1,27 +1,63 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
+  deletePermissionRequestFile,
+  deletePermissionResponseFile,
   deleteSessionEndFile,
   deleteStopFile,
   formatStopTimestamp,
   listStopFiles,
+  permissionResponsePath,
+  readPermissionResponseFile,
+  writePermissionRequestFile,
   writeSessionEndFile,
   writeSessionStartFile,
   writeStopFile,
 } from './state-files.js';
+import { stat } from 'node:fs/promises';
 
 /**
- * The single allowed `stdout` payload for cc hooks per CLAUDE.md "Key
- * conventions" exception "controlled JSON `{decision:"block",...}` only".
- * Returned by `runHookReceiver` (Stop branch with non-empty queue +
- * `stop_hook_active=false`); CLI caller writes it to stdout. Mirrors
- * `HookDecision` in `@multi-cc-im/shared`.
+ * cc Stop hook injection-queue response: `{"decision":"block","reason":"..."}`.
+ * Returned by `runHookReceiver` (Stop branch with non-empty injection
+ * queue + `stop_hook_active=false`); CLI caller writes it to stdout.
+ *
+ * cc PreToolUse hook uses a different shape (`hookSpecificOutput.permissionDecision`)
+ * — see `PreToolUseHookOutput`.
  */
 export interface HookDecision {
   decision: 'block';
   reason: string;
 }
+
+/**
+ * cc PreToolUse hook stdout shape (cc current schema as of 2026-05-07):
+ *
+ * ```json
+ * { "hookSpecificOutput": {
+ *     "hookEventName": "PreToolUse",
+ *     "permissionDecision": "allow" | "deny" | "ask" | "defer",
+ *     "permissionDecisionReason": "human-readable reason"
+ *   } }
+ * ```
+ *
+ * Returned by `runHookReceiver` PreToolUse branch after the user's IM
+ * decision arrives or the 30s timeout fires. CLI caller writes it to
+ * stdout.
+ */
+export interface PreToolUseHookOutput {
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse';
+    permissionDecision: 'allow' | 'deny' | 'ask' | 'defer';
+    permissionDecisionReason: string;
+  };
+}
+
+/** Polling cadence + max wait for the PermissionResponse file. */
+const PERMISSION_POLL_INTERVAL_MS = 200;
+const PERMISSION_TIMEOUT_MS = 30_000;
 
 /**
  * Capture cc parent process info at SessionStart hook fire:
@@ -89,6 +125,17 @@ export interface RunHookReceiverOpts {
    * formatted via `formatStopTimestamp`.
    */
   now?: () => Date;
+  /**
+   * Override PreToolUse poll interval (ms). Tests use a small value to
+   * keep timeout tests fast. Default 200ms.
+   */
+  permissionPollIntervalMs?: number;
+  /**
+   * Override PreToolUse total wait budget (ms). Tests use a small value to
+   * exercise the timeout default-allow branch without sleeping 30s.
+   * Default 30_000ms.
+   */
+  permissionTimeoutMs?: number;
 }
 
 /**
@@ -127,7 +174,7 @@ export interface RunHookReceiverOpts {
  */
 export async function runHookReceiver(
   opts: RunHookReceiverOpts,
-): Promise<HookDecision | void> {
+): Promise<HookDecision | PreToolUseHookOutput | void> {
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
 
@@ -152,6 +199,62 @@ export async function runHookReceiver(
         transcript_path: payload.transcript_path,
       });
       return;
+    }
+
+    case 'PreToolUse': {
+      // Permission gate per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
+      //   1. Generate short request id
+      //   2. Write <sid>.PermissionRequest.<id>.json
+      //   3. Poll <sid>.PermissionResponse.<id>.json every 200ms, max 30s
+      //   4. On response: read decision → cleanup files → return hook output
+      //   5. On timeout: cleanup request file → return allow (default)
+      const requestId = randomBytes(4).toString('hex'); // 8-char hex (sufficient — single sid has ≤1 pending)
+      await writePermissionRequestFile({
+        stateDir,
+        sessionId,
+        requestId,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        createdAt: Date.now(),
+      });
+
+      const respPath = permissionResponsePath({
+        stateDir,
+        sessionId,
+        requestId,
+      });
+      const pollMs = opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
+      const timeoutMs = opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS;
+      const deadline = Date.now() + timeoutMs;
+      let decision: 'allow' | 'deny' = 'allow';
+      let reason = `${Math.round(timeoutMs / 1000)}s timeout, default allow`;
+      while (Date.now() < deadline) {
+        try {
+          await stat(respPath);
+          // File exists — read it
+          const resp = await readPermissionResponseFile(respPath);
+          if (resp && resp.requestId === requestId) {
+            decision = resp.decision;
+            reason = resp.reason || `IM user ${decision}`;
+            break;
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+        await sleep(pollMs);
+      }
+
+      // Cleanup both Request + Response files (regardless of timeout / decision)
+      await deletePermissionRequestFile({ stateDir, sessionId, requestId });
+      await deletePermissionResponseFile({ stateDir, sessionId, requestId });
+
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: decision,
+          permissionDecisionReason: reason,
+        },
+      };
     }
 
     case 'Stop': {

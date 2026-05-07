@@ -420,3 +420,79 @@ describe('router — visible echo format', () => {
     expect(result.echo).toMatch(/3.*session|all 3|broadcast/i);
   });
 });
+
+describe('router — permission_response (@<tab> /1 | /2)', () => {
+  it('@<exact> /1 → permissionResponse allow + echo, no dispatch, no current change', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@frontend /1'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+    });
+    expect(result.permissionResponse).toEqual({
+      session: FRONTEND,
+      decision: 'allow',
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('frontend');
+    expect(result.echo).toMatch(/允许|allow/i);
+    // Permission flow does NOT touch current_session.
+    expect(state.getCurrent()).toBeNull();
+  });
+
+  it('@<exact> /2 → permissionResponse deny + echo', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@api /2'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+    });
+    expect(result.permissionResponse).toEqual({
+      session: API,
+      decision: 'deny',
+    });
+    expect(result.echo).toContain('api');
+    expect(result.echo).toMatch(/拒绝|deny/i);
+  });
+
+  it('@<unique-prefix> /1 → matches via 4-level fallback', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@front /1'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+    });
+    expect(result.permissionResponse?.decision).toBe('allow');
+    expect(result.permissionResponse?.session.sessionId).toBe(FRONTEND.sessionId);
+  });
+
+  it('@<ambiguous-prefix> /1 → echo error, no permissionResponse', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@fr /1'), {
+      registry: fixedRegistry([FRONTEND, FRAME]),
+      state,
+    });
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/ambiguous/i);
+  });
+
+  it('@<no-match> /1 → echo not-found, no permissionResponse', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@nothere /1'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/not found/i);
+  });
+
+  it('current_session is preserved after permission_response (sticky)', async () => {
+    const state = memState(API.sessionId);
+    const result = await route(incoming('@frontend /1'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+    });
+    expect(result.permissionResponse?.decision).toBe('allow');
+    // Permission shortcut MUST NOT clobber the user's current pointer.
+    expect(state.getCurrent()).toBe(API.sessionId);
+  });
+});

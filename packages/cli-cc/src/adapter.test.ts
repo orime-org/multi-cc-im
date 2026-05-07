@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   CLIHandler,
+  PreToolUsePayload,
   SessionEndPayload,
   SessionId,
   SessionStartPayload,
@@ -32,20 +33,29 @@ const TX = '/Users/x/.claude/projects/-private-tmp/91215578.jsonl';
 const CWD = '/private/tmp/cc-probe';
 
 interface RecordedEvent {
-  kind: 'SessionStart' | 'Stop' | 'SessionEnd';
-  payload: SessionStartPayload | StopPayload | SessionEndPayload;
+  kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
+  payload:
+    | SessionStartPayload
+    | (PreToolUsePayload & { requestId: string })
+    | StopPayload
+    | SessionEndPayload;
 }
 
 function makeRecorder(overrides?: {
   onSessionStartThrow?: Error;
   onStopThrow?: Error;
   onSessionEndThrow?: Error;
+  onPreToolUseThrow?: Error;
 }): { events: RecordedEvent[]; handler: CLIHandler } {
   const events: RecordedEvent[] = [];
   const handler: CLIHandler = {
     async onSessionStart(p: SessionStartPayload) {
       events.push({ kind: 'SessionStart', payload: p });
       if (overrides?.onSessionStartThrow) throw overrides.onSessionStartThrow;
+    },
+    async onPreToolUse(p) {
+      events.push({ kind: 'PreToolUse', payload: p });
+      if (overrides?.onPreToolUseThrow) throw overrides.onPreToolUseThrow;
     },
     async onStop(p: StopPayload) {
       events.push({ kind: 'Stop', payload: p });
@@ -393,6 +403,9 @@ describe('createCcCliAdapter', () => {
           events.push('SessionStart');
           throw new Error('boom');
         },
+        async onPreToolUse() {
+          events.push('PreToolUse');
+        },
         async onStop() {
           events.push('Stop');
         },
@@ -459,6 +472,7 @@ describe('createCcCliAdapter', () => {
       let stopCallCompleted = false;
       const handler: CLIHandler = {
         async onSessionStart() {},
+        async onPreToolUse() {},
         async onStop() {
           await inFlight;
           stopCallCompleted = true;

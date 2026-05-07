@@ -3,6 +3,7 @@
 // because the cc hook stdin is external input requiring zod-validated entry.
 export {
   HookPayloadSchema,
+  PreToolUsePayloadSchema,
   SessionEndPayloadSchema,
   SessionStartPayloadSchema,
   StopPayloadSchema,
@@ -18,10 +19,14 @@ export {
   SESSION_START_SUFFIX,
   SESSION_END_SUFFIX,
   STOP_PREFIX,
+  PERMISSION_REQUEST_PREFIX,
+  PERMISSION_RESPONSE_PREFIX,
   formatStopTimestamp,
   sessionStartPath,
   sessionEndPath,
   stopFilePath,
+  permissionRequestPath,
+  permissionResponsePath,
   writeSessionStartFile,
   readSessionStartFile,
   deleteSessionStartFile,
@@ -32,11 +37,21 @@ export {
   readStopFile,
   deleteStopFile,
   listStopFiles,
+  writePermissionRequestFile,
+  readPermissionRequestFile,
+  deletePermissionRequestFile,
+  writePermissionResponseFile,
+  readPermissionResponseFile,
+  deletePermissionResponseFile,
+  listPermissionRequestFiles,
+  listPermissionResponseFiles,
 } from './state-files.js';
 export type {
   PerSessionIO,
   SessionStartFile,
   StopFile,
+  PermissionRequestFile,
+  PermissionResponseFile,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI

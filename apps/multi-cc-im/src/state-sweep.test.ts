@@ -108,6 +108,7 @@ describe('sweepStaleStateFiles', () => {
       pairedCleaned: 0,
       orphanStopsCleaned: 0,
       legacyCleaned: 0,
+      orphanPermissionCleaned: 0,
     });
   });
 
@@ -133,5 +134,41 @@ describe('sweepStaleStateFiles', () => {
     const r = await sweepStaleStateFiles(stateDir);
     expect(r.legacyCleaned).toBe(2);
     expect(await listStateDir()).toEqual([`${SID_A}.SessionStart`]);
+  });
+
+  it('orphan PermissionRequest/Response files for live session → deleted (subprocess gone after restart)', async () => {
+    await writeFiles({
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.PermissionRequest.req1.json`]: '{"requestId":"req1","toolName":"Bash","toolInput":{},"createdAt":0}',
+      [`${SID_A}.PermissionResponse.req2.json`]: '{"requestId":"req2","decision":"allow"}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.orphanPermissionCleaned).toBe(2);
+    expect(await listStateDir()).toEqual([`${SID_A}.SessionStart`]);
+  });
+
+  it('orphan PermissionRequest in paired (dead) session → deleted along with session files', async () => {
+    await writeFiles({
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.SessionEnd`]: '',
+      [`${SID_A}.PermissionRequest.req1.json`]: '{"requestId":"req1","toolName":"Bash","toolInput":{},"createdAt":0}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.pairedCleaned).toBe(1);
+    expect(r.orphanPermissionCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([]);
+  });
+
+  it('dry-run preserves all files (including orphan permission)', async () => {
+    await writeFiles({
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.PermissionRequest.req1.json`]: '{}',
+    });
+    const r = await sweepStaleStateFiles(stateDir, { dryRun: true });
+    expect(r.orphanPermissionCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([
+      `${SID_A}.PermissionRequest.req1.json`,
+      `${SID_A}.SessionStart`,
+    ]);
   });
 });

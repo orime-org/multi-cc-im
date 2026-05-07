@@ -257,3 +257,78 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
     });
   });
 });
+
+describe('parser — permission_response (@<tab> /1 | /2)', () => {
+  it('@<name> /1 → permission_response allow', () => {
+    expect(parse('@frontend /1')).toEqual({
+      type: 'permission_response',
+      tabName: 'frontend',
+      decision: 'allow',
+    });
+  });
+
+  it('@<name> /2 → permission_response deny', () => {
+    expect(parse('@frontend /2')).toEqual({
+      type: 'permission_response',
+      tabName: 'frontend',
+      decision: 'deny',
+    });
+  });
+
+  it('@<name> /1 with surrounding whitespace still parses as permission_response', () => {
+    expect(parse('@frontend   /1   ')).toEqual({
+      type: 'permission_response',
+      tabName: 'frontend',
+      decision: 'allow',
+    });
+  });
+
+  it('@<name> /3 → mention (not permission_response — only /1 /2 are reserved)', () => {
+    expect(parse('@frontend /3')).toEqual({
+      type: 'mention',
+      mentions: ['frontend'],
+      body: '/3',
+    });
+  });
+
+  it('@<name> /1 with extra body → mention (only exact /1 is reserved)', () => {
+    expect(parse('@frontend /1 extra')).toEqual({
+      type: 'mention',
+      mentions: ['frontend'],
+      body: '/1 extra',
+    });
+  });
+
+  it('@all /1 → broadcast (not permission — broadcast wins for @all)', () => {
+    expect(parse('@all /1')).toEqual({
+      type: 'broadcast',
+      body: '/1',
+    });
+  });
+
+  it('@a @b /1 → mention (multi-mention disqualifies permission shortcut)', () => {
+    expect(parse('@a @b /1')).toEqual({
+      type: 'mention',
+      mentions: ['a', 'b'],
+      body: '/1',
+    });
+  });
+
+  it('@multi-cc-im /1 → bridge_command "1" (reserved name takes precedence)', () => {
+    // `1` is not a defined bridge command, but parser stays at the parse layer.
+    // Router's handleBridgeCommand reports the unknown-command error.
+    expect(parse('@multi-cc-im /1')).toEqual({
+      type: 'bridge_command',
+      command: '1',
+      args: '',
+    });
+  });
+
+  it('@<name> /1 with $-prefix tabname preserved', () => {
+    expect(parse('@$abc12345 /2')).toEqual({
+      type: 'permission_response',
+      tabName: '$abc12345',
+      decision: 'deny',
+    });
+  });
+});
