@@ -35,6 +35,38 @@
 
 ---
 
+## 修订记录
+
+### 2026-05-07 — 信号网格 9 → 7（PR #45）
+
+DD 锁定时设计的是 **9 信号决策网格**（含 `last-hook-at` idle-timeout fallback 路径覆盖「cc-pid 文件缺失」case）。PR #45 的 `state/` 目录改造把 `<sid>.cc-pid` / `<sid>.last-hook-at` / `<sid>.events.jsonl` / `<sid>.ended` 4 类文件**整套替换**为 `<sid>.SessionStart` / `<sid>.Stop.<ts>` / `<sid>.SessionEnd` 3 类 monitor-only 文件，原 9 信号网格里 idle-timeout fallback 路径不再有意义（因为新模型下「`SessionStart` 文件存在」本身就是充分活性信号；缺失 = 死）。
+
+**新决策网格（7 行）**:
+
+| # | 条件 | 结果 |
+|---|---|---|
+| 1 | `paneToSession.get(paneId)` 返回 null | DEAD（保守 — 未知 pane） |
+| 2 | `<sid>.SessionEnd` 文件存在 | DEAD（graceful exit 信号） |
+| 3 | `<sid>.SessionStart` 文件不存在 | DEAD（无任何启动记录 — 之前是「cc-pid 缺失 + last-hook-at 缺失」） |
+| 4 | SessionStart 存在 + PID `kill -0` 失败 | DEAD（异常退出，hook 漏发） |
+| 5 | SessionStart 存在 + PID alive + `ps -o lstart` 跟存的 startedAt 不一致 | DEAD（PID 复用 — 同 PID 但是不同进程） |
+| 6 | SessionStart 存在 + PID alive + ps lstart 探测抛错 | DEAD（探测失败保守） |
+| 7 | SessionStart 存在 + PID alive + lstart 匹配 | ALIVE |
+
+**删除的 idle-timeout fallback 路径（原网格 7 + 8）**：
+- 原 7：「cc-pid MISSING + last-hook-at fresh → ALIVE（bridge 重启 fallback）」
+- 原 8：「cc-pid MISSING + last-hook-at stale → DEAD（idle timeout）」
+- **删除理由**：新模型下 `<sid>.SessionStart` 文件由 hook 子进程写（不依赖 daemon 在线），daemon 重启 case 不再需要 last-hook-at 兜底 —— 直接读 SessionStart 文件即可。`<sid>.last-hook-at` 整个文件机制随 events.jsonl 通信渠道一起删除。
+
+**「未解决的研究问题」之 cc 崩溃概率**：仍未量化，但新模型对此的容忍度更高 —— 即使 SessionEnd 漏发，PID kill -0 + lstart 双重锁仍能在下次路由前**同步**判 dead（idle timeout 异步等 30min 不再需要）。
+
+**实施位置**：
+- `packages/term-wezterm/src/pane-alive.ts` — `createIsPaneAlive` 7 行决策网格
+- `packages/bridge/src/session-registry.ts` — `listAlive` 共享同样信号检查（防 PaneAlive 循环依赖）
+- `packages/cli-cc/src/state-files.ts` — `readSessionStartFile` / `existsSessionEndFile` 替代旧 `readCcPid` / `readEnded` / `readLastHookAt`
+
+---
+
 ## 第 1 步：候选枚举（穷举，含"不做"作为 FIRST 候选）
 
 | ID | 候选 | 描述 |
