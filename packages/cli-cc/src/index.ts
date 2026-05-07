@@ -43,6 +43,7 @@ export {
   writePermissionResponseFile,
   readPermissionResponseFile,
   deletePermissionResponseFile,
+  deletePermissionFileByPath,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
 } from './state-files.js';

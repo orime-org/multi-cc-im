@@ -321,37 +321,52 @@ export async function deletePermissionResponseFile(
 }
 
 /**
- * List all PermissionRequest files (across all sessions). Used by daemon
- * startup sweep to clean orphans.
+ * Delete a permission Request/Response file by absolute path. Mirrors
+ * `deleteStopFile`'s API — useful when sweeping per-sid orphans returned
+ * by `listPermission*Files` without re-parsing the request id from the
+ * filename.
+ */
+export async function deletePermissionFileByPath(
+  filePath: string,
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(filePath);
+}
+
+/**
+ * List all `<sid>.PermissionRequest.*` files for a given session. Used by
+ * the PreToolUse hook subprocess to sweep orphans before writing its own
+ * Request (mirrors Stop's "clear stale before write" pattern).
  */
 export async function listPermissionRequestFiles(
-  stateDir: string,
+  opts: PerSessionIO,
 ): Promise<string[]> {
+  const prefix = `${opts.sessionId}${PERMISSION_REQUEST_PREFIX}`;
   let entries: string[];
   try {
-    entries = await readdir(stateDir);
+    entries = await readdir(opts.stateDir);
   } catch (err) {
     if (isENOENT(err)) return [];
     throw err;
   }
   return entries
-    .filter((name) => name.includes(PERMISSION_REQUEST_PREFIX))
-    .map((name) => join(stateDir, name));
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(opts.stateDir, name));
 }
 
 export async function listPermissionResponseFiles(
-  stateDir: string,
+  opts: PerSessionIO,
 ): Promise<string[]> {
+  const prefix = `${opts.sessionId}${PERMISSION_RESPONSE_PREFIX}`;
   let entries: string[];
   try {
-    entries = await readdir(stateDir);
+    entries = await readdir(opts.stateDir);
   } catch (err) {
     if (isENOENT(err)) return [];
     throw err;
   }
   return entries
-    .filter((name) => name.includes(PERMISSION_RESPONSE_PREFIX))
-    .map((name) => join(stateDir, name));
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(opts.stateDir, name));
 }
 
 // ============================================================================

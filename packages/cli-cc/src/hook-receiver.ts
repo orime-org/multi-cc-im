@@ -4,11 +4,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
+  deletePermissionFileByPath,
   deletePermissionRequestFile,
   deletePermissionResponseFile,
   deleteSessionEndFile,
   deleteStopFile,
   formatStopTimestamp,
+  listPermissionRequestFiles,
+  listPermissionResponseFiles,
   listStopFiles,
   permissionResponsePath,
   readPermissionResponseFile,
@@ -203,11 +206,25 @@ export async function runHookReceiver(
 
     case 'PreToolUse': {
       // Permission gate per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
+      //   0. Sweep stale Request/Response files for this sid (mirrors Stop's
+      //      "clear stale before write" pattern — defends against the prior
+      //      hook subprocess being killed mid-cleanup).
       //   1. Generate short request id
       //   2. Write <sid>.PermissionRequest.<id>.json
       //   3. Poll <sid>.PermissionResponse.<id>.json every 200ms, max 30s
       //   4. On response: read decision → cleanup files → return hook output
       //   5. On timeout: cleanup request file → return allow (default)
+      const staleReq = await listPermissionRequestFiles({
+        stateDir,
+        sessionId,
+      });
+      for (const f of staleReq) await deletePermissionFileByPath(f);
+      const staleResp = await listPermissionResponseFiles({
+        stateDir,
+        sessionId,
+      });
+      for (const f of staleResp) await deletePermissionFileByPath(f);
+
       const requestId = randomBytes(4).toString('hex'); // 8-char hex (sufficient — single sid has ≤1 pending)
       await writePermissionRequestFile({
         stateDir,

@@ -570,6 +570,65 @@ describe('runHookReceiver', () => {
       ).toEqual([]);
     });
 
+    it('clears pre-existing PermissionRequest/Response files for the same sid before writing the new one', async () => {
+      // Mirrors the Stop branch's stale-cleanup behavior: a prior hook
+      // subprocess that was killed mid-flow (or a daemon-down accumulation
+      // of unread Response files) should not survive into the next round.
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(stateDir, `${SID}.PermissionRequest.stale1.json`),
+        '{"requestId":"stale1","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+      await writeFile(
+        join(stateDir, `${SID}.PermissionRequest.stale2.json`),
+        '{"requestId":"stale2","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+      await writeFile(
+        join(stateDir, `${SID}.PermissionResponse.staleResp.json`),
+        '{"requestId":"staleResp","decision":"allow","reason":"old"}',
+      );
+
+      // Run a fast-timeout PreToolUse so we observe end state quickly.
+      await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 50,
+      });
+
+      const entries = await readStateDirEntries(stateDir);
+      // No `stale*` filenames remain; the just-written Request was also
+      // cleaned at the timeout cleanup step → state dir is empty for this sid.
+      expect(entries.filter((n) => n.includes('stale'))).toEqual([]);
+      expect(
+        entries.filter(
+          (n) =>
+            n.includes(PERMISSION_REQUEST_PREFIX) ||
+            n.includes(PERMISSION_RESPONSE_PREFIX),
+        ),
+      ).toEqual([]);
+    });
+
+    it('only clears Permission files for the current sid, not others', async () => {
+      const OTHER_SID = '99999999-3606-4fe4-b01d-cccccccccccc';
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(stateDir, `${OTHER_SID}.PermissionRequest.other1.json`),
+        '{"requestId":"other1","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+
+      await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 50,
+      });
+
+      const entries = await readStateDirEntries(stateDir);
+      // OTHER_SID's Request still there (sid-scoped sweep).
+      expect(entries).toContain(`${OTHER_SID}.PermissionRequest.other1.json`);
+    });
+
     it('cleans up Request file on timeout path (no Response was written)', async () => {
       await runHookReceiver({
         stateDir,
