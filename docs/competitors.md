@@ -6,7 +6,7 @@
 | 项目 | ★ | 不采用原因 | 借鉴点 |
 |---|---|---|---|
 | chenhg5/cc-connect | 6119 | spawn 模式不能托管 WezTerm tab 已有 cc；Go 项目难复用 TS 接口 | adapter 矩阵接口设计参考 |
-| Johnixr/claude-code-wechat-channel | 269 | "每 ClawBot 只接 1 agent 实例"（⚠️ 此结论源自 share，README 头我读过未见此明确表述，DD 时再核） | iLink 接入流程参考 |
+| Johnixr/claude-code-wechat-channel | 269 | 单 agent 实例绑定模型不匹配多 cc 场景 | iLink 接入流程参考 |
 | sgaofen/cli-in-wechat | 264 | `@` 切**工具种类**而非切多个同种 cc | 跨通道漫游 + `/resume` 设计 |
 | Wechat-ggGitHub/wechat-claude-code | 238 | 单 session | 斜杠命令体系完整 |
 | six-ddc/ccmux（原 ccbot） | (中) | IM=Telegram + term=tmux + Python | hook+send-keys 架构 + transcript 解析 + tool_use 配对 |
