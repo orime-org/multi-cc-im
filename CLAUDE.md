@@ -2,8 +2,8 @@
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
-> **状态**：v1 实施完成（2026-05-05）—— 6 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge）+ 1 app（apps/multi-cc-im CLI binary）全到位，56 测试文件 / 713 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD 8 篇 → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / image+voice 实测 / tg+飞书 / analytics。
-> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#23）。
+> **状态**：v1.1 实施完成（2026-05-07）—— 7 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge + openclaw shim）+ 1 app（apps/multi-cc-im CLI binary）全到位，58 测试文件 / 821 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / tg+飞书 IM adapter / analytics package。
+> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#46，6 packages 到位）→ 2026-05-07 v1.1（permission forward PR #51-#53 + voice/image 通路实施）。
 
 # 核心约束（项目第一原则）
 
@@ -64,9 +64,9 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | ACL（owner-only） | ✓ | 协议层自带过滤 |
 | 多机（仅一台） | ✓ | 协议层硬约束（getupdates cursor 全局共享） |
 | 路由语法 | ✓ | **G' 组合**：`@<name>` tmux 4 级 fallback（id / `=exact` / exact / 短前缀 / glob，歧义报错列候选）+ 空格分多目标（`@a @b ...`）+ `@all` 广播 + last-explicit-mention 粘性默认（带 visible echo）+ `@list / @help / @current` 控制命令；session 死自动 unset current；[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) |
-| 价格表来源 | ✓ | vendor LiteLLM Claude 子集（`packages/analytics/data/prices.json` ~4KB）+ `scripts/sync-prices.sh` 周期同步 + `config.toml [pricing]` user override；[DD: 价格表来源](docs/superpowers/specs/2026-04-30-pricing-table-dd.md) |
-| 语音（iLink `voice_text`） | ⚠️ | 跟协议层 DD 联动 |
-| 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
+| 价格表来源 | ✓ DD 完成 | vendor LiteLLM Claude 子集 + `scripts/sync-prices.sh` 周期同步 + `config.toml [pricing]` user override；[DD: 价格表来源](docs/superpowers/specs/2026-04-30-pricing-table-dd.md)。analytics package v2 实施时按此设计落地（v1 未实施 — Follow-up 列表）|
+| 语音（iLink `voice_text`） | ✓ | im-wechat 适配器从 VOICE item 提取 `voice_text` 注入 `IncomingMessage.text`；无 `voice_text` 时降级为 voice attachment |
+| 图片/文件（AES-128-ECB 解密） | ✓ | im-wechat 用 `aeskey` 解密 + 落 `~/.multi-cc-im/inbox/wechat/<sid>/` 后以 `attachment.localPath` 形式暴露给 cc Read |
 | pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
 | Credentials 持久化（`bot_token` 等）| ✓ | **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致；**不调 OS keychain**（微信生态零产品调 + `@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通防护有限）；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
 | Permission prompt 转发 IM 审批 | ✓ | **PreToolUse hook + file IPC**：hook 子进程写 `<sid>.PermissionRequest.<id>.json` → daemon forward IM → 用户回 `@<tabname> /1`（允许）或 `/2`（拒绝） → daemon 写 `<sid>.PermissionResponse.<id>.json` → hook 读完写 stdout `{permissionDecision: "allow"/"deny"}`。30 秒 timeout 默认 allow。不加白/黑名单。[DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) |
@@ -78,16 +78,16 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **禁止 AI 作者署名** | commit / PR / issue 一律不带 `Co-Authored-By` 或 `Generated with Claude Code` |
 | **TypeScript strict, 禁止 `any`** | 用 `unknown` 替代；外部输入用 `zod` runtime 校验（jsonl `message.content` 是 union: string \| array） |
 | **禁止 `var` / `require()`** | ESM only，`type: "module"` |
-| **公共函数必须 TSDoc** | `@param @returns @throws @example`，ESLint `eslint-plugin-tsdoc` 强制 |
+| **公共函数必须 TSDoc** | `@param @returns @throws @example`；导出函数 / 接口 / 公共类型必须有 TSDoc 块说明用途 + 约束（被测引用的 `permissionPollIntervalMs` / `now()` 这种 DI 钩子尤其要写清楚为什么） |
 | **禁止裸 catch** | 必须分类 + `pino` log；不许 `catch(e) {}` 吞错 |
 | **禁止硬编码密钥 / 外部 CLI 路径** | 密钥落 0600 JSON 文件（见下行「凭据 0600 落盘」）；外部 CLI（wezterm 等）运行时探测（[策略](docs/architecture.md#外部-cli-工具路径策略)），禁止 hardcode 绝对路径 —— 开源项目用户安装位置不一 |
-| **Local-first** | 所有用户数据落本机 SQLite + 文件，**不上传任何外部服务** |
+| **Local-first** | 所有用户数据落本机文件（toml + JSONL + 0600 凭据 + state 文件），**不上传任何外部服务**；v1 不引 SQL DB（[Storage DD](docs/superpowers/specs/2026-04-29-storage-strategy-dd.md)）|
 | **iLink 长轮询必须有** | timeout（35s+）+ 退避重试 + cursor 持久化（重启后续接，不掉消息）|
 | **send-text 注入两步法** | Step1 默认 paste 内容（任意 `\n` / 元字符 / Unicode 安全），Step2 `--no-paste $'\r'` 提交。混用 `--no-paste` 发内容 = 注入面（cc TUI 解释快捷键）|
 | **multi-cc-im hook 不许写非协议 stdout** | cc 把 SessionStart hook stdout 当 system context 注入（attachment 机制）→ 烧 token + 行为不可预测。受控 JSON（`{"decision":"block",...}`）除外，其他一律走 stderr 或文件 |
 | **idle 唤醒用 `stop_hook_active` 防死循环** | Stop hook 处理时先 `if (stdin.stop_hook_active) return;`。stdin 字段是 cc 原生防护，零 race，比文件标记可靠 |
 | **路由解析 = `WEZTERM_PANE` env** | hook env 直接给，O(1)。禁用 `wezterm cli list` 解析 cwd 反推 pane-id（O(N) + 多 cc 同 cwd 时歧义） |
-| **路由前必须验证 pane 里 cc 活着** | pane lifecycle ≠ cc lifecycle；`/exit` 后 pane 还在但里面是 zsh，盲注入会发到 shell。具体活性策略见 v1 实施前 DD |
+| **路由前必须验证 pane 里 cc 活着** | pane lifecycle ≠ cc lifecycle；`/exit` 后 pane 还在但里面是 zsh，盲注入会发到 shell。多信号组合见 [DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
 | **路由 visible echo 必须有** | bot 把消息派给 cc 前后必须给微信端可见反馈（`→ frontend received` / `📌 current = frontend` / `⚠️ frontend disconnected, current cleared`），否则 last-explicit-mention 粘性的 current_session 状态跟用户脑模型会错配（[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) 第 4 步理由 3） |
 | **路由 key 用 `CLAUDE_PROJECT_DIR` 或 `stdin.cwd`** | 已 realpath；不要用 `PWD` env（macOS `/tmp` vs `/private/tmp` 不一致） |
 | **不修改 cc 自己的 jsonl** | `~/.claude/projects/**/*.jsonl` 只读；任何写入都是 bug |
@@ -97,7 +97,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 
 # 禁止清单
 
-托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置 | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串 | 同步阻塞 hook > 1s | adapter 间直接 import | service 层依赖 framework | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）| 自动 last-reply-to 粘性（cc 最后回复的 session 自动当下次 current_session — Cline #3514 用户反弹证伪）| 路由 `@<前缀>` 歧义时自动挑第一个（须报错列候选 — tmux/screen/Vim/aider 全行业拒绝）
+托管 / spawn cc 进程 | 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）| 用非官方 / 灰产 / iPad 协议（仅腾讯 iLink）| 公网传输用户 prompt（含外部图床）| shell 字符串拼接执行（统一用 execFile 数组）| 动态代码求值 | bot_token 写 git / 日志 / console / toml / 任何非 0600 凭据文件位置 | 不带 cursor 的长轮询 | "[执行命令]" 注入字段直接落 cc | TS `any` | 裸 SQL 字符串（v1 无 SQL，v2 引入时仍走参数化）| 同步阻塞 hook > 1s | adapter 间直接 import | 把 share 对话当 ground truth | 跳过 DD 直接选型 | hook 写非协议 stdout（污染 cc context）| 用 `PWD` 做路由 key（须用 `CLAUDE_PROJECT_DIR`）| 用 `wezterm cli list` 解析 cwd 反推 pane-id（须用 `WEZTERM_PANE` env）| send-text 单步带回车（须分两步）| 不验证 cc 活性就 send-text | hardcode 外部 CLI 绝对路径（wezterm 等须运行时探测）| 自动 last-reply-to 粘性（cc 最后回复的 session 自动当下次 current_session — Cline #3514 用户反弹证伪）| 路由 `@<前缀>` 歧义时自动挑第一个（须报错列候选 — tmux/screen/Vim/aider 全行业拒绝）
 
 # 编码行为准则
 
@@ -153,13 +153,14 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 - cc Hook + wezterm cli 行为实测（**已完成**）: [`docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md`](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)
 
 **工程文档**:
-- [`docs/architecture.md`](docs/architecture.md) — 架构图 / 包依赖 / 目录结构 / SQLite schema / 外部 CLI 路径策略
+- [`docs/architecture.md`](docs/architecture.md) — 架构图 / 包依赖 / 目录结构 / 数据存储（toml + 0600 凭据 + state files）/ 外部 CLI 路径策略
 - [`docs/competitors.md`](docs/competitors.md) — 不直接采用的端到端项目
-- [`docs/dev.md`](docs/dev.md) — 开发命令
+- [`docs/dev.md`](docs/dev.md) — 开发命令 / TDD 节奏 / 调试技巧
 
 **上游文档**:
-- iLink 协议接口（社区逆向）: `hao-ji-xing/openclaw-weixin/weixin-bot-api.md`
-- Claude Code Hook: https://docs.anthropic.com/en/docs/claude-code/hooks
+- iLink 协议接口（vendored Tencent/openclaw-weixin v2.1.7）: [`packages/im-wechat/lib/ilink/VENDOR.md`](packages/im-wechat/lib/ilink/VENDOR.md)
+- Claude Code Hook: https://code.claude.com/docs/en/hooks
+- Claude Code Permissions: https://code.claude.com/docs/en/permissions
 - WezTerm CLI: https://wezterm.org/cli/cli/index.html | send-text: https://wezterm.org/cli/cli/send-text.html
 
 **输入材料归档**（gitignored，**不作 ground truth**）:
