@@ -65,7 +65,8 @@ export async function runCleanupCommand(
     result.pairedCleaned +
       result.orphanStopsCleaned +
       result.legacyCleaned +
-      result.orphanPermissionCleaned ===
+      result.orphanPermissionCleaned +
+      result.orphanIMOriginCleaned ===
     0
   ) {
     log(`  ✓ already clean — nothing to do.`);
@@ -75,6 +76,7 @@ export async function runCleanupCommand(
     log(`    - ${result.orphanStopsCleaned} orphan Stop file(s)`);
     log(`    - ${result.legacyCleaned} legacy file(s)`);
     log(`    - ${result.orphanPermissionCleaned} orphan Permission file(s)`);
+    log(`    - ${result.orphanIMOriginCleaned} orphan IMOrigin file(s)`);
   }
 
   if (dryRun) {

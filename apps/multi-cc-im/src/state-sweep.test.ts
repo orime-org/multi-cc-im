@@ -109,6 +109,7 @@ describe('sweepStaleStateFiles', () => {
       orphanStopsCleaned: 0,
       legacyCleaned: 0,
       orphanPermissionCleaned: 0,
+      orphanIMOriginCleaned: 0,
     });
   });
 
@@ -170,5 +171,47 @@ describe('sweepStaleStateFiles', () => {
       `${SID_A}.PermissionRequest.req1.json`,
       `${SID_A}.SessionStart`,
     ]);
+  });
+
+  it('IMOrigin for paired (dead) cc → cleaned', async () => {
+    await writeFiles({
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.SessionEnd`]: '',
+      [`${SID_A}.IMOrigin`]: '{"contextToken":"tk"}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.pairedCleaned).toBe(1);
+    expect(r.orphanIMOriginCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([]);
+  });
+
+  it('IMOrigin for live cc (lone SessionStart) → KEPT (cleanup A scheme — do not clobber active IM ctx)', async () => {
+    await writeFiles({
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.IMOrigin`]: '{"contextToken":"tk"}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.orphanIMOriginCleaned).toBe(0);
+    expect(await listStateDir()).toEqual([
+      `${SID_A}.IMOrigin`,
+      `${SID_A}.SessionStart`,
+    ]);
+  });
+
+  it('IMOrigin for sid with no SessionStart → cleaned (orphan)', async () => {
+    await writeFiles({
+      [`${SID_A}.IMOrigin`]: '{"contextToken":"tk"}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.orphanIMOriginCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([]);
+  });
+
+  it('top-level IMWork file is NOT swept (cleanup must not clobber user IM-mode toggle)', async () => {
+    await writeFiles({
+      IMWork: '',
+    });
+    await sweepStaleStateFiles(stateDir);
+    expect(await listStateDir()).toContain('IMWork');
   });
 });

@@ -27,6 +27,17 @@ export interface RouterState {
 export interface RouterOpts {
   registry: SessionRegistry;
   state: RouterState;
+  /**
+   * Whether `<stateDir>/IMWork` exists at the moment of routing. Per
+   * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md):
+   *   - `false` (default if omitted) → "talk to cc" messages (mention / plain /
+   *     broadcast) are rejected with "IMWork off — please /start" hint
+   *   - `true` → normal dispatch
+   *
+   * Bridge commands (`@multi-cc-im /...`) and permission responses
+   * (`@<tab> /1` `/2`) always work regardless of IMWork state.
+   */
+  imWorkOn?: boolean;
 }
 
 export interface RouterDispatch {
@@ -53,6 +64,12 @@ export interface RouterResult {
   dispatches: RouterDispatch[];
   /** Set when the IM message was a `@<tabname> /1` or `/2` permission response. */
   permissionResponse?: RouterPermissionResponse;
+  /**
+   * Set when the IM user invoked `@multi-cc-im /start` or `/stop`. Orchestrator
+   * acts on it after `route()` returns: writes / deletes `<stateDir>/IMWork`.
+   * Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+   */
+  imWorkAction?: 'enable' | 'disable';
 }
 
 /**
@@ -85,6 +102,23 @@ export async function route(
     return { echo: '', dispatches: [] };
   }
   const parsed = parse(text);
+  const imWorkOn = opts.imWorkOn ?? false;
+
+  // IMWork gate: "talk to cc" message types require IMWork on. Bridge
+  // commands (`@multi-cc-im /...`) + permission responses (`@<tab> /1` `/2`)
+  // + parse errors always pass through. Per [DD: IMWork+IMOrigin].
+  if (
+    !imWorkOn &&
+    (parsed.type === 'mention' ||
+      parsed.type === 'plain' ||
+      parsed.type === 'broadcast')
+  ) {
+    return {
+      echo:
+        '❌ IMWork off — 请先发 `@multi-cc-im /start` 开启 IM 模式',
+      dispatches: [],
+    };
+  }
 
   switch (parsed.type) {
     case 'error':
@@ -96,6 +130,7 @@ export async function route(
         parsed.args,
         sessions,
         opts.state,
+        imWorkOn,
       );
 
     case 'broadcast':
@@ -302,8 +337,8 @@ function handleBroadcast(
 // ============================================================================
 
 /**
- * Handle bridge slash commands. Currently supports `/list`, `/help`,
- * `/current`. Unknown commands return an error echo so users learn
+ * Handle bridge slash commands. Supports `/list`, `/help`, `/current`,
+ * `/start`, `/stop`. Unknown commands return an error echo so users learn
  * the right form (and can extend by adding cases here).
  */
 function handleBridgeCommand(
@@ -311,6 +346,7 @@ function handleBridgeCommand(
   _args: string,
   sessions: readonly SessionInfo[],
   state: RouterState,
+  imWorkOn: boolean,
 ): RouterResult {
   switch (command) {
     case 'list':
@@ -333,7 +369,8 @@ function handleBridgeCommand(
           '  @all body             → all alive sessions',
           '  body (no @)           → current session',
           'Matching: $<sid-prefix> → =strict → exact → prefix → glob (*?)',
-          'Bridge commands: @multi-cc-im /list | /help | /current',
+          'Bridge commands: /list | /help | /current | /start | /stop',
+          'Permission: @<tab> /1 (allow) | @<tab> /2 (deny) — 10s default allow',
           'Tip: /rename inside cc TUI sets the @<name> identifier (real-time).',
         ].join('\n'),
         dispatches: [],
@@ -341,20 +378,67 @@ function handleBridgeCommand(
 
     case 'current': {
       const id = state.getCurrent();
+      const imWorkLine = `IMWork = ${imWorkOn ? 'ON' : 'OFF'}`;
       if (id === null) {
-        return { echo: 'current = none', dispatches: [] };
+        return {
+          echo: `current = none\n${imWorkLine}`,
+          dispatches: [],
+        };
       }
       const session = sessions.find((s) => s.sessionId === id);
       if (!session) {
         // Stale current — clear it and report
         state.setCurrent(null);
         return {
-          echo: 'current = none (previous session disconnected)',
+          echo: `current = none (previous session disconnected)\n${imWorkLine}`,
           dispatches: [],
         };
       }
-      return { echo: `current = ${displayName(session)}`, dispatches: [] };
+      return {
+        echo: `current = ${displayName(session)}\n${imWorkLine}`,
+        dispatches: [],
+      };
     }
+
+    case 'start':
+      // /start: enable IM mode. Idempotent — re-running when already on
+      // refreshes the cc-list echo (lets user re-check cc inventory).
+      if (imWorkOn) {
+        return {
+          echo: [
+            'ℹ️ IMWork already ON',
+            '',
+            ...formatSessionInventory(sessions),
+          ].join('\n'),
+          dispatches: [],
+        };
+      }
+      return {
+        echo: [
+          '✓ IMWork ON',
+          '',
+          ...formatSessionInventory(sessions),
+          '',
+          '⚠️ 规则：',
+          '  - 只处理从 IM 发出的消息',
+          '  - cc 调工具时 IM 收到提示，10 秒内回复 /1 (允许) 或 /2 (拒绝)',
+          '  - 超过 10 秒默认放行',
+          '  - 终端 cc TUI 直接打字的对话不会 forward 到 IM',
+        ].join('\n'),
+        dispatches: [],
+        imWorkAction: 'enable',
+      };
+
+    case 'stop':
+      // /stop: disable IM mode. Idempotent.
+      if (!imWorkOn) {
+        return { echo: 'ℹ️ IMWork already OFF', dispatches: [] };
+      }
+      return {
+        echo: '✓ IMWork OFF — cc 工具问题在终端 TUI 处理',
+        dispatches: [],
+        imWorkAction: 'disable',
+      };
 
     default:
       return {
@@ -362,6 +446,22 @@ function handleBridgeCommand(
         dispatches: [],
       };
   }
+}
+
+/** Render the cc-list block shown by `/start` echo (numbered, with pane id and rename hint). */
+function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
+  if (sessions.length === 0) {
+    return ['当前可用 cc sessions: (无 — 请先在 wezterm tab 启动 cc)'];
+  }
+  const lines = ['当前可用 cc sessions:'];
+  sessions.forEach((s, i) => {
+    const renameHint =
+      s.tabTitle && s.tabTitle.length > 0 ? '' : ', 未 /rename';
+    lines.push(
+      `  ${i + 1}. ${displayName(s)} (pane ${s.paneId}${renameHint})`,
+    );
+  });
+  return lines;
 }
 
 // ============================================================================

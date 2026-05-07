@@ -32,6 +32,7 @@ interface SidGroup {
   stopFiles: string[];
   legacyFiles: string[];
   permissionFiles: string[];
+  imOriginFile: string | null;
 }
 
 const LEGACY_SUFFIXES = [
@@ -54,6 +55,16 @@ export interface SweepStaleStateFilesResult {
    * subprocess crashed or the daemon died mid-flow.
    */
   orphanPermissionCleaned: number;
+  /**
+   * Number of `<sid>.IMOrigin` files deleted. Per [DD: IMWork+IMOrigin] —
+   * sweep runs at daemon start (always cleans) and from `multi-cc-im cleanup`
+   * (cleans only IMOrigin for sids that already have SessionEnd, i.e. cc
+   * already dead — running cleanup with a live cc must NOT clobber its
+   * pending reply ctx). IMWork file itself is **NOT** swept here (A scheme):
+   * cleanup leaves user's manual IM-mode toggle intact; only `daemon start`
+   * separately deletes IMWork.
+   */
+  orphanIMOriginCleaned: number;
 }
 
 export interface SweepStaleStateFilesOpts {
@@ -88,6 +99,7 @@ export async function sweepStaleStateFiles(
         orphanStopsCleaned: 0,
         legacyCleaned: 0,
         orphanPermissionCleaned: 0,
+        orphanIMOriginCleaned: 0,
       };
     }
     throw err;
@@ -116,6 +128,7 @@ export async function sweepStaleStateFiles(
         stopFiles: [],
         legacyFiles: [],
         permissionFiles: [],
+        imOriginFile: null,
       };
       groups.set(sid, group);
     }
@@ -133,6 +146,8 @@ export async function sweepStaleStateFiles(
       // they're meaningless on a fresh daemon (the polling subprocess is
       // gone) so always drop.
       group.permissionFiles.push(join(stateDir, name));
+    } else if (rest === '.IMOrigin') {
+      group.imOriginFile = join(stateDir, name);
     } else if (LEGACY_SUFFIXES.some((suf) => rest === suf)) {
       group.legacyFiles.push(join(stateDir, name));
     }
@@ -142,6 +157,7 @@ export async function sweepStaleStateFiles(
   let orphanStopsCleaned = 0;
   let legacyCleaned = topLevelLegacyCount;
   let orphanPermissionCleaned = 0;
+  let orphanIMOriginCleaned = 0;
 
   for (const group of groups.values()) {
     // Always cleanup legacy files regardless of paired/lone state.
@@ -158,26 +174,44 @@ export async function sweepStaleStateFiles(
     }
 
     if (group.hasStart && group.hasEnd) {
-      // Completed session — delete the 3-set (start + end + leftover stops).
+      // Completed session — delete the 3-set (start + end + leftover stops)
+      // PLUS any IMOrigin (cc dead → no further forwards needed).
       await remove(join(stateDir, `${group.sid}.SessionStart`));
       await remove(join(stateDir, `${group.sid}.SessionEnd`));
       for (const f of group.stopFiles) await remove(f);
+      if (group.imOriginFile !== null) {
+        await remove(group.imOriginFile);
+        orphanIMOriginCleaned++;
+      }
       pairedCleaned++;
       orphanStopsCleaned += group.stopFiles.length;
     } else if (group.hasStart && !group.hasEnd) {
       // cc still alive (probably) but daemon-down accumulated Stop files
-      // can't be forwarded — wechat replyCtx is in-memory and was lost.
-      // Delete them so they don't replay forever.
+      // can't be forwarded — replyCtx is in-memory and was lost. Delete
+      // Stop files so they don't replay forever. IMOrigin is **kept** —
+      // cc is alive, so the next IM dispatch may reuse it. (For daemon
+      // start sweep, callers explicitly clean ALL IMOrigin via separate
+      // step in start.ts; cleanup command must NOT clobber a live cc's
+      // pending IM ctx, so the kept-here logic protects that case.)
       for (const f of group.stopFiles) await remove(f);
       orphanStopsCleaned += group.stopFiles.length;
     } else if (!group.hasStart && group.hasEnd) {
       // Orphan SessionEnd (shouldn't happen — defensive cleanup).
       await remove(join(stateDir, `${group.sid}.SessionEnd`));
+      if (group.imOriginFile !== null) {
+        await remove(group.imOriginFile);
+        orphanIMOriginCleaned++;
+      }
     } else {
       // No SessionStart, no SessionEnd, possibly some Stop files from a
-      // very stale daemon-down state. Drop them.
+      // very stale daemon-down state. Drop them. IMOrigin without any
+      // SessionStart marker → the cc that owned it is gone; clean it.
       for (const f of group.stopFiles) await remove(f);
       orphanStopsCleaned += group.stopFiles.length;
+      if (group.imOriginFile !== null) {
+        await remove(group.imOriginFile);
+        orphanIMOriginCleaned++;
+      }
     }
   }
 
@@ -186,6 +220,7 @@ export async function sweepStaleStateFiles(
     orphanStopsCleaned,
     legacyCleaned,
     orphanPermissionCleaned,
+    orphanIMOriginCleaned,
   };
 }
 

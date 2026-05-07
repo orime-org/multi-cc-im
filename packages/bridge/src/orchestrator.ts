@@ -18,6 +18,15 @@ import type {
 } from '@multi-cc-im/shared';
 import {
   PERMISSION_REQUEST_PREFIX,
+  deleteIMOriginFile,
+  deleteIMWorkFile,
+  deletePermissionFileByPath,
+  existsIMWorkFile,
+  permissionRequestPath,
+  permissionResponsePath,
+  readIMOriginFile,
+  writeIMOriginFile,
+  writeIMWorkFile,
   writePermissionResponseFile,
 } from '@multi-cc-im/cli-cc';
 import { readdir } from 'node:fs/promises';
@@ -53,6 +62,14 @@ export interface CreateOrchestratorOpts {
   state: RouterState;
   /** Step 1 → Step 2 paste-render delay (ms). Default 300 per DD W1. */
   sendKeystrokeDelayMs?: number;
+  /**
+   * Daemon reaper window (ms) — schedule unlink of orphan
+   * `<sid>.PermissionRequest/Response.<id>.json` files this long after
+   * chokidar surfaces a new Request. Default `10_000` matches the hook
+   * subprocess's PERMISSION_TIMEOUT_MS so reaper runs *just after* the hook
+   * would normally have cleaned up itself. Tests inject a small value.
+   */
+  reaperDelayMs?: number;
   /**
    * Non-fatal error sink (IM / Term failures during routing). Default:
    * silently swallow. Bridge main entry passes its `pino` logger.
@@ -93,29 +110,39 @@ export interface BridgeOrchestrator {
  *   visible echo (router result + dispatch errors) → IM.send(replyCtx)
  *
  * **Outbound (cc Stop → wechat)**:
- *   CLI.onStop(p) → look up `pendingReplyCtxBySession[p.session_id]` → if
- *   set, IM.send(p.last_assistant_message, replyCtx) and **delete the
- *   pending entry**. No-op when no pending wechat origin.
+ *   CLI.onStop(p) → check `<sid>.IMOrigin` file → if exists, IM.send(reply, ctx)
+ *   and **delete the file**. ONE-SHOT semantic: subsequent Stops without a
+ *   fresh IM dispatch (e.g. user typing directly in cc TUI) skip forward.
  *
- * **Pending reply-ctx tracking (one-shot)**:
- *   On every successful inbound dispatch, store `incoming.replyCtx` keyed
- *   by target sessionId. The next cc Stop forwards the assistant reply to
- *   that ctx and **clears the pending**. Subsequent Stops without a fresh
- *   wechat dispatch (e.g. the user typing directly into the cc TUI from
- *   a wezterm tab) skip forward — they're not wechat-bound.
+ * **IMOrigin tracking (per-session, B2 overwrite)**:
+ *   Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+ *   On every IM dispatch, write/overwrite `<sid>.IMOrigin` with msg.replyCtx
+ *   (newest ctx wins → cc reply threads to user's most recent IM message).
+ *   cc Stop forward → delete IMOrigin (one-shot). Multi-target / @all writes
+ *   the same ctx for every dispatched session.
  *
- *   Multi-target / @all inbound store the same ctx for every dispatched
- *   session. Bridge restart resets the map (in-memory only; iLink
- *   contextToken is short-lived so persisting wouldn't help anyway).
+ *   IMOrigin lives on disk so the hook subprocess (a different process from
+ *   daemon) can also stat it for the E3 early-return check.
+ *
+ * **IMWork (global manual switch)**:
+ *   `<stateDir>/IMWork` 0-byte tombstone. User toggles via `@multi-cc-im /start`
+ *   (write file) and `/stop` (delete file). When off, daemon refuses IM-to-cc
+ *   dispatches (router-level gate) and refuses cc-to-IM forwards (handleStop
+ *   gate). daemon start auto-resets to off.
  */
 export function createOrchestrator(
   opts: CreateOrchestratorOpts,
 ): BridgeOrchestrator {
   const sendKeystrokeDelayMs =
     opts.sendKeystrokeDelayMs ?? DEFAULT_SEND_KEYSTROKE_DELAY_MS;
-  const pendingReplyCtxBySession = new Map<SessionId, IMReplyContext>();
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
+
+  // Reaper timers per request id — track to allow stop() to clear them.
+  const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Reaper window — should match hook subprocess timeout (10s, see DD). */
+  const DEFAULT_REAPER_DELAY_MS = 10_000;
+  const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
 
   // ============================================================================
   // Inbound: wechat → router → term sendText (two-step send)
@@ -150,10 +177,36 @@ export function createOrchestrator(
   }
 
   async function handleInbound(msg: IncomingMessage): Promise<void> {
+    // Read IMWork state once per inbound — router uses it to gate
+    // mention/plain/broadcast types and to render /current / /start / /stop echoes.
+    const imWorkOn = await existsIMWorkFile(opts.stateDir).catch((err) => {
+      onError(err, { phase: 'existsIMWorkFile' });
+      return false;
+    });
+
     const result = await route(msg, {
       registry: opts.registry,
       state: opts.state,
+      imWorkOn,
     });
+
+    // IMWork toggle: /start / /stop sets `imWorkAction` on the result.
+    // Apply the file IO here in the orchestrator (router stays IO-free).
+    if (result.imWorkAction === 'enable') {
+      try {
+        await writeIMWorkFile(opts.stateDir);
+        log('[IMWork] enabled by /start');
+      } catch (err) {
+        onError(err, { phase: 'writeIMWork' });
+      }
+    } else if (result.imWorkAction === 'disable') {
+      try {
+        await deleteIMWorkFile(opts.stateDir);
+        log('[IMWork] disabled by /stop');
+      } catch (err) {
+        onError(err, { phase: 'deleteIMWork' });
+      }
+    }
 
     // Permission response path: IM user replied `@<tabname> /1` (allow) or
     // `/2` (deny). Find the session's pending PermissionRequest file (one
@@ -171,9 +224,23 @@ export function createOrchestrator(
     // Empty result (text=null / image-only) — orchestrator no-op for text path.
     if (result.echo === '' && result.dispatches.length === 0) return;
 
-    // Store replyCtx for each dispatched session (so cc Stop can route back)
+    // For each dispatched session, persist the replyCtx as <sid>.IMOrigin
+    // (B2 — newest ctx wins, overwrites any prior). hook subprocess reads
+    // this via `existsIMOriginFile` to decide whether to forward IM, and
+    // `handleStop` reads it to forward cc's reply.
     for (const d of result.dispatches) {
-      pendingReplyCtxBySession.set(d.session.sessionId, msg.replyCtx);
+      try {
+        await writeIMOriginFile({
+          stateDir: opts.stateDir,
+          sessionId: d.session.sessionId,
+          replyCtx: msg.replyCtx,
+        });
+      } catch (err) {
+        onError(err, {
+          phase: 'writeIMOrigin',
+          sessionId: d.session.sessionId,
+        });
+      }
     }
 
     if (result.dispatches.length > 0) {
@@ -224,17 +291,38 @@ export function createOrchestrator(
 
   async function handleStop(p: StopPayload): Promise<HookDecision | void> {
     const sid8 = p.session_id.slice(0, 8);
-    const replyCtx = pendingReplyCtxBySession.get(p.session_id);
-    if (!replyCtx) {
-      log(`[Stop ${sid8}] no pending wechat origin, skip forward`);
-      return; // not from wechat (e.g. user typed into the cc TUI directly)
+
+    // IMWork is the master switch. When off, completely silent — even if
+    // <sid>.IMOrigin somehow exists (race between /stop and a still-running
+    // IM dispatch), we don't forward. User explicitly chose local mode.
+    if (!(await existsIMWorkFile(opts.stateDir))) {
+      log(`[Stop ${sid8}] IMWork off, skip forward`);
+      return;
     }
-    // ONE-SHOT semantic: clear pending immediately so subsequent Stops
-    // without a fresh wechat dispatch (e.g. user types directly into cc
-    // TUI from a wezterm tab) are NOT forwarded as if they were
-    // wechat-bound. The user has to actively send another `@<name> body`
-    // from wechat to bind a new replyCtx.
-    pendingReplyCtxBySession.delete(p.session_id);
+
+    // Read IMOrigin (per-session ctx). Missing → cc Stop is from a session
+    // not bound to any IM thread (cc autonomous activity, or user typed
+    // directly in TUI). Skip forward — we have no reply anchor.
+    const replyCtx = (await readIMOriginFile({
+      stateDir: opts.stateDir,
+      sessionId: p.session_id,
+    })) as IMReplyContext | null;
+    if (replyCtx === null) {
+      log(`[Stop ${sid8}] no IMOrigin, skip forward`);
+      return;
+    }
+
+    // ONE-SHOT: delete IMOrigin immediately so subsequent Stops without a
+    // fresh IM dispatch (e.g. user types directly in cc TUI between IM
+    // turns) are NOT forwarded. User must `@<name> <body>` again to rebind.
+    try {
+      await deleteIMOriginFile({
+        stateDir: opts.stateDir,
+        sessionId: p.session_id,
+      });
+    } catch (err) {
+      onError(err, { phase: 'deleteIMOrigin', sessionId: p.session_id });
+    }
 
     if (p.last_assistant_message.length === 0) {
       log(`[Stop ${sid8}] empty assistant message, skip forward`);
@@ -336,13 +424,30 @@ export function createOrchestrator(
     p: PreToolUsePayload & { requestId: string },
   ): Promise<void> {
     const sid8 = p.session_id.slice(0, 8);
-    const replyCtx = pendingReplyCtxBySession.get(p.session_id);
 
-    if (!replyCtx) {
-      // No wechat origin recorded for this session — there's no IM user to
-      // ask. The hook subprocess will time out after 30s and default-allow.
+    // Schedule reaper FIRST regardless of forward outcome — even if the hook
+    // subprocess crashes / gets kill -9 between writing Request and our
+    // unlink, this timer cleans up. unlinkOrIgnoreENOENT is idempotent so
+    // racing with the hook's own cleanup is safe.
+    scheduleReaper({ sessionId: p.session_id, requestId: p.requestId });
+
+    // Read IMOrigin (per-session ctx). hook E3 already short-circuits when
+    // IMOrigin is missing, so this should always be present in practice.
+    // Defensive null-handling for race / corruption.
+    const replyCtx = (await readIMOriginFile({
+      stateDir: opts.stateDir,
+      sessionId: p.session_id,
+    }).catch((err) => {
+      onError(err, { phase: 'readIMOrigin', sessionId: p.session_id });
+      return null;
+    })) as IMReplyContext | null;
+
+    if (replyCtx === null) {
+      // Defensive: hook decided to write Request, but daemon doesn't see
+      // IMOrigin. Could happen if /stop fired between hook E3 check and
+      // hook Request write. Skip forward — hook 10s timeout will default-allow.
       log(
-        `[PreToolUse ${sid8}] no wechat origin — IM permission gate skipped (hook will default-allow after 30s)`,
+        `[PreToolUse ${sid8}] no IMOrigin (race with /stop?) — skip forward`,
       );
       return;
     }
@@ -360,7 +465,7 @@ export function createOrchestrator(
     const summary = summarizeToolInput(p.tool_name, p.tool_input);
     const body =
       `[${tabName}] 准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
-      `⏳ 30 秒内回复，否则默认放行:\n` +
+      `⏳ 10 秒内回复，否则默认放行:\n` +
       `  @${tabName} /1   = 允许\n` +
       `  @${tabName} /2   = 拒绝`;
 
@@ -370,6 +475,49 @@ export function createOrchestrator(
     } catch (err) {
       onError(err, { phase: 'preToolUseAsk', sessionId: p.session_id });
     }
+  }
+
+  // ============================================================================
+  // Reaper: backstop unlink for orphan PermissionRequest/Response files.
+  // hook subprocess normally cleans up (10s timeout or success path), but if
+  // it dies abnormally (kill -9 / OOM / wezterm tab closed mid-poll), the
+  // files leak. Schedule a setTimeout to delete them after 10s; hook's own
+  // unlink (when alive) wins the race, our late unlink ENOENT-silent.
+  // Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+  // ============================================================================
+
+  function scheduleReaper(opts2: {
+    sessionId: SessionId;
+    requestId: string;
+  }): void {
+    const key = `${opts2.sessionId}:${opts2.requestId}`;
+    // If somehow already scheduled (shouldn't happen — sid+reqId is unique),
+    // clear the prior timer.
+    const prev = reaperTimers.get(key);
+    if (prev !== undefined) clearTimeout(prev);
+
+    const timer = setTimeout(async () => {
+      reaperTimers.delete(key);
+      const reqPath = permissionRequestPath({
+        stateDir: opts.stateDir,
+        sessionId: opts2.sessionId,
+        requestId: opts2.requestId,
+      });
+      const respPath = permissionResponsePath({
+        stateDir: opts.stateDir,
+        sessionId: opts2.sessionId,
+        requestId: opts2.requestId,
+      });
+      try {
+        await deletePermissionFileByPath(reqPath);
+        await deletePermissionFileByPath(respPath);
+      } catch (err) {
+        // unlinkOrIgnoreENOENT inside delete fn already swallows ENOENT;
+        // anything else is a genuine fs error worth surfacing.
+        onError(err, { phase: 'reaper', sessionId: opts2.sessionId });
+      }
+    }, reaperDelayMs);
+    reaperTimers.set(key, timer);
   }
 
   const cliHandler: CLIHandler = {
@@ -389,12 +537,18 @@ export function createOrchestrator(
       return handleStop(p);
     },
     async onSessionEnd(p: SessionEndPayload): Promise<void> {
-      // Drop in-memory wechat reply context — a future cc that happens to
-      // reuse this UUID (e.g. resume after long delay) shouldn't inherit a
-      // stale reply target.
+      // Drop the IMOrigin file — a future cc that happens to reuse this UUID
+      // (e.g. resume after long delay) shouldn't inherit a stale reply target.
       const sid8 = p.session_id.slice(0, 8);
       log(`[SessionEnd ${sid8}] reason=${p.reason}`);
-      pendingReplyCtxBySession.delete(p.session_id);
+      try {
+        await deleteIMOriginFile({
+          stateDir: opts.stateDir,
+          sessionId: p.session_id,
+        });
+      } catch (err) {
+        onError(err, { phase: 'sessionEndDeleteIMOrigin', sessionId: p.session_id });
+      }
       await opts.registry.listAlive().catch((err) => {
         onError(err, { phase: 'sessionEndRefresh' });
       });
@@ -428,7 +582,10 @@ export function createOrchestrator(
       await opts.cliAdapter.stop().catch((err) => {
         onError(err, { phase: 'stop:cli' });
       });
-      pendingReplyCtxBySession.clear();
+      // Cancel any pending reaper timers — daemon is shutting down so the
+      // orphan files (if any) will be cleaned by daemon start sweep next time.
+      for (const t of reaperTimers.values()) clearTimeout(t);
+      reaperTimers.clear();
     },
   };
 }

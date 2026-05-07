@@ -2,8 +2,8 @@
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
-> **状态**：v1.1 实施完成（2026-05-07）—— 7 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge + openclaw shim）+ 1 app（apps/multi-cc-im CLI binary）全到位，58 测试文件 / 821 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / tg+飞书 IM adapter / analytics package。
-> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#46，6 packages 到位）→ 2026-05-07 v1.1（permission forward PR #51-#53 + voice/image 通路实施）。
+> **状态**：v1.2 实施完成（2026-05-08）—— 7 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge + openclaw shim）+ 1 app（apps/multi-cc-im CLI binary）全到位，58 测试文件 / 870 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / tg+飞书 IM adapter / analytics package。
+> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#46，6 packages 到位）→ 2026-05-07 v1.1（permission forward PR #51-#53 + voice/image 通路实施）→ 2026-05-08 v1.2（IMWork + IMOrigin + read-only 白名单 + reaper PR #55+：解 PR-D 真集成发现的 4 个问题）。
 
 # 核心约束（项目第一原则）
 
@@ -69,7 +69,8 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 图片/文件（AES-128-ECB 解密） | ✓ | im-wechat 用 `aeskey` 解密 + 落 `~/.multi-cc-im/inbox/wechat/<sid>/` 后以 `attachment.localPath` 形式暴露给 cc Read |
 | pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
 | Credentials 持久化（`bot_token` 等）| ✓ | **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致；**不调 OS keychain**（微信生态零产品调 + `@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通防护有限）；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
-| Permission prompt 转发 IM 审批 | ✓ | **PreToolUse hook + file IPC**：hook 子进程写 `<sid>.PermissionRequest.<id>.json` → daemon forward IM → 用户回 `@<tabname> /1`（允许）或 `/2`（拒绝） → daemon 写 `<sid>.PermissionResponse.<id>.json` → hook 读完写 stdout `{permissionDecision: "allow"/"deny"}`。30 秒 timeout 默认 allow。不加白/黑名单。[DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) |
+| Permission prompt 转发 IM 审批 | ✓ | **PreToolUse hook + file IPC**：hook 子进程写 `<sid>.PermissionRequest.<id>.json` → daemon forward IM → 用户回 `@<tabname> /1`（允许）或 `/2`（拒绝） → daemon 写 `<sid>.PermissionResponse.<id>.json` → hook 读完写 stdout `{permissionDecision: "allow"/"deny"}`。10 秒 timeout 默认 allow。[DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) |
+| IM 模式总开关 (IMWork) + per-session ctx (IMOrigin) + read-only 工具白名单 | ✓ | **三层组合**：`state/IMWork` 0-byte tombstone（用户 `@multi-cc-im /start /stop` 显式控制；daemon start 自动重置为 OFF）+ `state/<sid>.IMOrigin` 每次 IM dispatch 覆盖 ctx + cc Stop forward 完即删 + Read/Grep/Glob/NotebookRead 自动 allow 不打扰 IM。hook 三个前置 early-return：read-only → allow / 无 IMWork → ask（cc TUI 接管）/ 无 IMOrigin → ask。daemon reaper 10s 兜底删孤儿 PermissionRequest/Response。[DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) |
 
 # 关键规范（MANDATORY）
 

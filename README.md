@@ -123,8 +123,10 @@ The state/ directory is **monitor-only** — it never accumulates cc conversatio
 | `<sid>.SessionStart` | cc startup → cleanup sweep | Read at SessionStart hook; tells daemon paneId + transcript_path |
 | `<sid>.Stop.<ts>` | <100 ms (daemon reads + forwards + unlinks) | Bridge for cc → WeChat reply forwarding |
 | `<sid>.SessionEnd` | cc exit → cleanup sweep (0-byte tombstone) | Marks cc dead so daemon stops routing to it |
-| `<sid>.PermissionRequest.<id>.json` | PreToolUse fire → hook subprocess cleanup (≤30s) | Hook subprocess writes; daemon reads + forwards prompt to IM |
+| `<sid>.PermissionRequest.<id>.json` | PreToolUse fire → hook subprocess cleanup (≤10s) | Hook subprocess writes; daemon reads + forwards prompt to IM |
 | `<sid>.PermissionResponse.<id>.json` | IM user replies → hook subprocess cleanup | Daemon writes after `@<tab> /1` or `/2`; hook subprocess polls to unblock |
+| `<sid>.IMOrigin` | each IM dispatch → cc Stop forward | IMReplyContext snapshot. cc reply threads to user's most recent IM message |
+| `IMWork` (top-level) | `@multi-cc-im /start` → `/stop` or daemon restart | 0-byte tombstone marking "user is in IM mode" |
 | `wechat-cursor` | persistent | iLink long-poll cursor (don't lose messages on restart) |
 
 Daemon startup runs a sweep that deletes paired `SessionStart` + `SessionEnd` (= cc lifecycle complete), orphan `Stop.<ts>` (= daemon-down accumulation that can't be forwarded), orphan permission files (= hook subprocess killed mid-flow), and any legacy state files from pre-redesign installs. To trigger the same sweep manually:
@@ -173,21 +175,39 @@ Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.
 | `@frontend /2` | **Permission deny** |
 | `@multi-cc-im /list` | List alive cc sessions (tab title + `$sid8` + pane id). The bot echoes; nothing dispatched to any cc |
 | `@multi-cc-im /help` | Built-in help text |
-| `@multi-cc-im /current` | Show / clear stale `current_session` |
+| `@multi-cc-im /current` | Show `current_session` + IMWork status |
+| `@multi-cc-im /start` | **Enable IM mode** (cc tool prompts will forward to WeChat) |
+| `@multi-cc-im /stop` | **Disable IM mode** (cc tool prompts shown in cc TUI) |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 
 ---
 
+## IM mode toggle: `/start` and `/stop` (manual switch)
+
+Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
+
+```
+@multi-cc-im /start    →  IM mode ON (cc tool prompts forward to WeChat)
+@multi-cc-im /stop     →  IM mode OFF (cc tool prompts handled in TUI)
+@multi-cc-im /current  →  show current target + IMWork status
+```
+
+- **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote.
+- When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 @multi-cc-im /start 开启 IM 模式"`. Bridge commands and permission responses still work.
+- When **ON**, the `/start` echo lists currently alive cc sessions and the rules so you know what's available.
+
+This is the master switch. The per-session forwarding behavior (next section) only kicks in when IMWork is on.
+
 ## Tool permission gate (PreToolUse → IM forward)
 
-Per [DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md). When a cc session needs your approval to run a tool (e.g. `Bash`, `Edit`, `Write`), the bridge forwards the prompt to WeChat instead of blocking on the cc TUI:
+Per [DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) + [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). When IMWork is on **and** you've recently chatted with a cc from WeChat, that cc's tool approval prompts forward to WeChat:
 
 ```
 [frontend] 准备跑工具:
   Bash(rm -rf node_modules)
 
-⏳ 30 秒内回复，否则默认放行:
+⏳ 10 秒内回复，否则默认放行:
   @frontend /1   = 允许
   @frontend /2   = 拒绝
 ```
@@ -198,9 +218,20 @@ You reply with two characters:
 |---|---|
 | `@frontend /1` | Allow — cc proceeds with the tool call |
 | `@frontend /2` | Deny — cc cancels and asks you for an alternative |
-| (no reply within 30s) | Default allow — cc proceeds |
+| (no reply within 10s) | Default allow — cc proceeds |
 
-This works only when the most recent message **to that cc** came from WeChat (i.e. you bound a wechat reply context by `@frontend <body>` recently). If you typed directly into the cc TUI, the gate is silently skipped: the hook still fires, hits the 30s timeout, and default-allows. The 30-second window is fixed — long enough to read the prompt on phone, short enough not to block cc indefinitely if your phone is unreachable.
+The hook decision tree (in order):
+
+1. **Read-only tool** (`Read` / `Grep` / `Glob` / `NotebookRead`) → auto-allow, no IM forward (cc itself doesn't show TUI menu for these — forwarding would just spam IM).
+2. **IMWork off** → cc TUI shows its native permission menu (the 3-option `Yes / Yes don't ask again / No`). You decide locally on the keyboard.
+3. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → also falls back to cc TUI menu.
+4. **Otherwise** → forward to WeChat with 10s window.
+
+So one cc can flip between "cc TUI menu" and "IM round-trip" turn-by-turn:
+
+- You're at the office, type directly in cc TUI → IMWork off → menu in TUI ✓
+- You step out, send `@multi-cc-im /start` then `@frontend run tests` → IMWork on + IMOrigin set → next tool prompt comes to your phone ✓
+- cc finishes a turn → IMOrigin auto-deletes → if cc autonomously calls another tool → no IMOrigin → falls back to TUI menu (you're still on phone but cc has no thread to reply to)
 
 **No allowlist / blocklist by design.** If you want to make cc stop asking about a particular command, do it in the cc TUI (option 2 — "Yes, and don't ask again for similar commands in `<cwd>`"). cc TUI writes the rule to project-local `.claude/settings.local.json`. multi-cc-im won't replicate this remotely (would mean the daemon writing user dotfiles based on remote IM input — too risky).
 
@@ -337,13 +368,19 @@ multi-cc-im routes by **wezterm tab title**, not by directory. If your tab is st
 
 You can always fall back to the session id prefix: `@$1813fd32 hello` works even without `/rename`.
 
-### `@frontend /1` doesn't unblock the cc tool prompt
+### IM doesn't receive tool permission prompts (`@frontend /1` never gets asked for)
 
-Three common causes (in order of likelihood):
+Four common causes (in order of likelihood):
 
-1. **No wechat origin bound for that cc**. The permission forward only works when your most recent message **to that cc** came from WeChat. If you typed directly into the cc TUI and then cc decided to call a tool, no replyCtx exists in the daemon → daemon logs "no wechat origin" → hook 30s timeout default-allows. **Fix**: send `@frontend ping` from WeChat once to bind, then future PreToolUse prompts will reach you.
-2. **You replied past the 30-second window**. Hook already exited with default-allow. Your `/1` is lost (no polling subprocess to read the response file — daemon's startup sweep cleans the orphan).
-3. **You forgot the tab name**. Bare `/1` with no `@<tabname>` is treated as plain content, not a permission response. Even with one cc running, `@<tabname> /1` is required.
+1. **You haven't `/start`'d**. Daemon starts in local mode by default (cc TUI handles approvals). **Fix**: send `@multi-cc-im /start` from WeChat once.
+2. **No IM thread bound for that cc**. Even with IMWork on, you must have **chatted with that specific cc from WeChat at least once** in the current turn. If cc autonomously calls a tool without you ever `@<tab>`'ing it, the hook falls back to cc TUI menu. **Fix**: send `@frontend ping` once to bind a thread.
+3. **The tool is read-only**. cc calls Read / Grep / Glob / NotebookRead and similar without needing approval — multi-cc-im also auto-allows these to keep IM uncluttered. Only "destructive" tools (Bash / Edit / Write / WebFetch / etc.) trigger the IM forward.
+4. **You replied past the 10-second window**. Hook already exited with default-allow. Your `/1` is lost (the polling subprocess gone — daemon reaper cleans up the orphan files within 10s).
+
+### `@frontend /1` reply doesn't take effect
+
+- **Forgot the tab name**: bare `/1` with no `@<tabname>` is treated as plain content, not a permission response. Even with one cc running, `@<tabname> /1` is required.
+- **Past the window**: same as #4 above — 10s default-allow already fired.
 
 ### setup-hooks complains about existing hooks
 

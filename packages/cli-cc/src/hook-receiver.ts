@@ -9,6 +9,8 @@ import {
   deletePermissionResponseFile,
   deleteSessionEndFile,
   deleteStopFile,
+  existsIMOriginFile,
+  existsIMWorkFile,
   formatStopTimestamp,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
@@ -58,9 +60,30 @@ export interface PreToolUseHookOutput {
   };
 }
 
-/** Polling cadence + max wait for the PermissionResponse file. */
+/**
+ * Polling cadence + max wait for the PermissionResponse file. Per
+ * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
+ * timeout reduced from 30s → 10s — empirically 30s blocks cc TUI too long
+ * when user is at the keyboard, 10s is a balanced default-allow window.
+ */
 const PERMISSION_POLL_INTERVAL_MS = 200;
-const PERMISSION_TIMEOUT_MS = 30_000;
+const PERMISSION_TIMEOUT_MS = 10_000;
+
+/**
+ * cc tools that are read-only by design — Read / Grep / Glob / NotebookRead.
+ * cc itself does NOT show a TUI permission menu for these (docs:
+ * "Read-only — File reads, Grep — Approval required: No"), so forwarding a
+ * PreToolUse approval prompt to IM for these is pure noise. Per
+ * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
+ * the hook fast-allows them and skips the IM round-trip.
+ *
+ * NOT included: `Bash`. cc has its own internal allow-list of read-only Bash
+ * commands (`ls / cat / head / tail / grep / find / wc / diff / stat / cd / git status` ...)
+ * but the list is not public and includes shell wrapper handling we cannot
+ * accurately replicate. We forward all `Bash` invocations to IM — over-noisy
+ * but never under-asks for approval.
+ */
+const READ_ONLY_TOOL_NAMES = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
 
 /**
  * Capture cc parent process info at SessionStart hook fire:
@@ -205,15 +228,54 @@ export async function runHookReceiver(
     }
 
     case 'PreToolUse': {
-      // Permission gate per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
-      //   0. Sweep stale Request/Response files for this sid (mirrors Stop's
-      //      "clear stale before write" pattern — defends against the prior
-      //      hook subprocess being killed mid-cleanup).
-      //   1. Generate short request id
-      //   2. Write <sid>.PermissionRequest.<id>.json
-      //   3. Poll <sid>.PermissionResponse.<id>.json every 200ms, max 30s
-      //   4. On response: read decision → cleanup files → return hook output
-      //   5. On timeout: cleanup request file → return allow (default)
+      // Permission gate per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
+      // (refines [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)):
+      //
+      //   Early-return order (each guards an independent failure mode):
+      //   E1. read-only tool (Read/Grep/Glob/NotebookRead) → allow + exit
+      //       (cc itself doesn't show TUI for these; IM forward = pure noise)
+      //   E2. !IMWork → ask + exit (cc TUI takes over with native menu)
+      //   E3. !IMOrigin for this sid → ask + exit (no IM thread to reply to)
+      //   Otherwise: write Request, poll Response (10s default-allow), emit decision.
+
+      // E1: read-only tool whitelist
+      if (READ_ONLY_TOOL_NAMES.has(payload.tool_name)) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason:
+              '[multi-cc-im] read-only tool, auto-allow',
+          },
+        };
+      }
+
+      // E2: IMWork off → cc TUI native menu handles it
+      if (!(await existsIMWorkFile(stateDir))) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'ask',
+            permissionDecisionReason: '[multi-cc-im] local mode',
+          },
+        };
+      }
+
+      // E3: IMWork on but no IM thread bound for this cc → cc TUI takes over
+      if (!(await existsIMOriginFile({ stateDir, sessionId }))) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'ask',
+            permissionDecisionReason:
+              '[multi-cc-im] no IM thread for this cc',
+          },
+        };
+      }
+
+      // Sweep stale Request/Response files for this sid before writing the
+      // new Request (mirrors Stop branch's stale-cleanup; defends against
+      // a prior hook subprocess killed mid-cleanup).
       const staleReq = await listPermissionRequestFiles({
         stateDir,
         sessionId,

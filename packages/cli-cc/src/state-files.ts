@@ -47,6 +47,10 @@ export const SESSION_END_SUFFIX = '.SessionEnd';
 export const STOP_PREFIX = '.Stop.';
 export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
 export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
+/** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
+export const IM_WORK_FILE_NAME = 'IMWork';
+/** Per the same DD — per-session IMReplyContext snapshot. */
+export const IM_ORIGIN_SUFFIX = '.IMOrigin';
 
 /**
  * Convert a Date to a filesystem-safe ISO-style timestamp:
@@ -367,6 +371,94 @@ export async function listPermissionResponseFiles(
   return entries
     .filter((name) => name.startsWith(prefix))
     .map((name) => join(opts.stateDir, name));
+}
+
+// ============================================================================
+// IMWork: global tombstone — file exists ⇔ user is in IM mode (manual switch
+// via @multi-cc-im /start /stop). Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+//
+// Contents: 0-byte tombstone (file existence IS the signal). Lifecycle:
+//   - daemon writes on `@multi-cc-im /start`
+//   - daemon deletes on `@multi-cc-im /stop`
+//   - daemon deletes on every daemon start (auto-reset to local mode)
+// ============================================================================
+
+export function imWorkPath(stateDir: string): string {
+  return join(stateDir, IM_WORK_FILE_NAME);
+}
+
+export async function writeIMWorkFile(stateDir: string): Promise<void> {
+  // 0-byte tombstone — content is intentionally empty.
+  await atomicWrite(imWorkPath(stateDir), '');
+}
+
+export async function existsIMWorkFile(stateDir: string): Promise<boolean> {
+  try {
+    await readFile(imWorkPath(stateDir));
+    return true;
+  } catch (err) {
+    if (isENOENT(err)) return false;
+    throw err;
+  }
+}
+
+export async function deleteIMWorkFile(stateDir: string): Promise<void> {
+  await unlinkOrIgnoreENOENT(imWorkPath(stateDir));
+}
+
+// ============================================================================
+// IMOrigin: per-session IMReplyContext snapshot. Tracks "the most recent IM
+// dispatch ctx for this cc". Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+//
+// Contents: opaque IMReplyContext JSON — bridge stores adapter-defined value
+// without inspecting it (mirrors `ReplyContext = unknown` design in shared).
+// Lifecycle:
+//   - daemon writes/overwrites on every IM dispatch to this cc (B2 — newest ctx wins)
+//   - daemon deletes after cc Stop forward (one-shot)
+//   - daemon start sweep (orphan cleanup)
+// ============================================================================
+
+export function imOriginPath(opts: PerSessionIO): string {
+  return join(opts.stateDir, `${opts.sessionId}${IM_ORIGIN_SUFFIX}`);
+}
+
+export async function writeIMOriginFile(
+  opts: PerSessionIO & { replyCtx: unknown },
+): Promise<void> {
+  // Overwrite semantic — newest ctx wins (B2 per DD).
+  await atomicWrite(imOriginPath(opts), JSON.stringify(opts.replyCtx, null, 2));
+}
+
+export async function readIMOriginFile(opts: PerSessionIO): Promise<unknown> {
+  return readJsonOrNull<unknown>(imOriginPath(opts));
+}
+
+export async function existsIMOriginFile(opts: PerSessionIO): Promise<boolean> {
+  try {
+    await readFile(imOriginPath(opts));
+    return true;
+  } catch (err) {
+    if (isENOENT(err)) return false;
+    throw err;
+  }
+}
+
+export async function deleteIMOriginFile(opts: PerSessionIO): Promise<void> {
+  await unlinkOrIgnoreENOENT(imOriginPath(opts));
+}
+
+/** List all `<sid>.IMOrigin` files in the state dir (used by daemon start sweep). */
+export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.endsWith(IM_ORIGIN_SUFFIX))
+    .map((name) => join(stateDir, name));
 }
 
 // ============================================================================
