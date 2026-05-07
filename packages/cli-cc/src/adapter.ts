@@ -153,9 +153,24 @@ export function createCcCliAdapter(
       });
       watcher = w;
 
+      // chokidar's initial scan emits 'add' for each pre-existing file in
+      // OS-dependent order (fs.readdir order, not lex). For backlog Stop
+      // files this would scramble per-session timestamp ordering. Buffer
+      // all pre-'ready' add events, then drain in basename-sorted order so
+      // `<sid>.Stop.<ts1>` dispatches before `<sid>.Stop.<ts2>` regardless
+      // of how the FS reported them. Live (post-'ready') events are
+      // dispatched immediately — there's no parallel-write race because
+      // hook subprocess writes are serial per cc.
+      let initialScanComplete = false;
+      const backlog: ClassifiedFile[] = [];
+
       const onAdd = (filePath: string): void => {
         const classified = classifyStateFile(filePath, basename(filePath));
         if (!classified) return;
+        if (!initialScanComplete) {
+          backlog.push(classified);
+          return;
+        }
         scheduleDispatch(classified);
       };
       w.on('add', onAdd);
@@ -163,12 +178,23 @@ export function createCcCliAdapter(
       // chokidar sees that as 'add'), but subscribe defensively.
       w.on('change', onAdd);
 
-      // Wait for chokidar's initial scan to complete (fires 'add' for each
-      // pre-existing state file). Then await all in-flight chains so backlog
-      // dispatch finishes before start() resolves.
       await new Promise<void>((resolve) => {
         w.once('ready', () => resolve());
       });
+      initialScanComplete = true;
+
+      // Drain backlog in deterministic order: basename ascending. The
+      // timestamp-suffixed Stop filenames are FS-safe ISO and therefore
+      // lex-sortable = chronological. SessionStart / SessionEnd basenames
+      // sort cleanly relative to Stop files (Stop. > SessionEnd > SessionStart
+      // is irrelevant — they're independent file kinds).
+      backlog.sort((a, b) =>
+        basename(a.filePath).localeCompare(basename(b.filePath)),
+      );
+      for (const c of backlog) scheduleDispatch(c);
+
+      // Await all in-flight chains so backlog dispatch finishes before
+      // start() resolves.
       await Promise.all(sessionChains.values());
     },
 
