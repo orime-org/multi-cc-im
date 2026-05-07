@@ -15,6 +15,8 @@ import {
   readStopFile,
   sessionStartPath,
   stopFilePath,
+  writeIMOriginFile,
+  writeIMWorkFile,
   writePermissionResponseFile,
   writeSessionEndFile,
   writeStopFile,
@@ -393,7 +395,7 @@ describe('runHookReceiver', () => {
     });
   });
 
-  describe('PreToolUse — IM permission gate', () => {
+  describe('PreToolUse — IM permission gate (forward path)', () => {
     const PRE_TOOL_USE: ParsedHookPayload = {
       session_id: SID as never,
       transcript_path: TX as never,
@@ -404,6 +406,18 @@ describe('runHookReceiver', () => {
       tool_use_id: 'tu_abc',
       permission_mode: 'default',
     } as ParsedHookPayload;
+
+    // Forward-path tests below require IMWork on + IMOrigin set for the sid,
+    // otherwise the early-returns (E2/E3) skip the polling path entirely.
+    // Setup once per test so each test starts in the "forward path" state.
+    beforeEach(async () => {
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { to: 'wxid_owner', contextToken: 'tk-test' },
+      });
+    });
 
     it('writes <sid>.PermissionRequest.<id>.json with tool_name + tool_input', async () => {
       // Use a short timeout so we're not blocked. Daemon writes Response
@@ -640,6 +654,150 @@ describe('runHookReceiver', () => {
       expect(
         entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX)),
       ).toEqual([]);
+    });
+  });
+
+  describe('PreToolUse — early-return paths (no Request file written)', () => {
+    // These paths short-circuit BEFORE the polling loop. No PermissionRequest
+    // file should ever appear, no daemon round-trip needed.
+
+    function payloadWithTool(toolName: string): ParsedHookPayload {
+      return {
+        session_id: SID as never,
+        transcript_path: TX as never,
+        cwd: CWD as never,
+        hook_event_name: 'PreToolUse',
+        tool_name: toolName,
+        tool_input: { foo: 'bar' },
+        tool_use_id: 'tu_abc',
+        permission_mode: 'default',
+      } as ParsedHookPayload;
+    }
+
+    it('E1 read-only Read tool → permissionDecision: allow + reason "read-only" + no Request file', async () => {
+      // Even with IMWork on + IMOrigin set (forward path conditions met),
+      // read-only tools take precedence and bypass forward.
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Read'),
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: '[multi-cc-im] read-only tool, auto-allow',
+        },
+      });
+      // No Request file ever written
+      const entries = await readStateDirEntries(stateDir);
+      expect(entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toEqual([]);
+    });
+
+    it.each(['Read', 'Grep', 'Glob', 'NotebookRead'])(
+      'E1 read-only tool %s → allow + no Request',
+      async (toolName) => {
+        const result = await runHookReceiver({
+          stateDir,
+          payload: payloadWithTool(toolName),
+        });
+        expect(
+          (result as { hookSpecificOutput: { permissionDecision: string } })
+            .hookSpecificOutput.permissionDecision,
+        ).toBe('allow');
+        const entries = await readStateDirEntries(stateDir);
+        expect(entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toEqual([]);
+      },
+    );
+
+    it('Bash is NOT in the read-only whitelist (E1 does not match) — falls through to E2/E3 or polling', async () => {
+      // No IMWork → falls through E1 (Bash not whitelisted) to E2 (no IMWork → ask)
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecision,
+      ).toBe('ask');
+      expect(
+        (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecisionReason,
+      ).toContain('local mode');
+    });
+
+    it('E2 IMWork file missing → permissionDecision: ask + reason "local mode" + no Request file', async () => {
+      // No IMWork file, no IMOrigin file
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'ask',
+          permissionDecisionReason: '[multi-cc-im] local mode',
+        },
+      });
+      const entries = await readStateDirEntries(stateDir);
+      expect(entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toEqual([]);
+    });
+
+    it('E3 IMWork on but IMOrigin missing → permissionDecision: ask + reason "no IM thread" + no Request file', async () => {
+      await writeIMWorkFile(stateDir);
+      // Don't write IMOrigin
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'ask',
+          permissionDecisionReason: '[multi-cc-im] no IM thread for this cc',
+        },
+      });
+      const entries = await readStateDirEntries(stateDir);
+      expect(entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toEqual([]);
+    });
+
+    it('E1 takes precedence over E2 / E3 (read-only allowed even when IMWork off)', async () => {
+      // No IMWork, no IMOrigin — but Read tool wins by E1 first-check
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Read'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecision: string } })
+          .hookSpecificOutput.permissionDecision,
+      ).toBe('allow');
+    });
+
+    it('E2 takes precedence over E3 (IMWork off + IMOrigin set → still says local mode)', async () => {
+      // IMOrigin set without IMWork — should still emit "local mode" not "no IM thread"
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecisionReason,
+      ).toContain('local mode');
     });
   });
 

@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  writeIMOriginFile,
+  writeIMWorkFile,
+  existsIMOriginFile,
+  existsIMWorkFile,
+} from '@multi-cc-im/cli-cc';
 import type {
   CLIAdapter,
   CLIHandler,
@@ -21,10 +27,11 @@ import { createOrchestrator } from './orchestrator.js';
 import type { SessionInfo } from './matcher.js';
 import type { RouterState, SessionRegistry } from './router.js';
 
-// State dir for createOrchestrator's PermissionResponse-write path. Tests
-// create per-suite tmpdir so concurrent vitest runs don't collide. Most
-// tests don't trigger the permission flow so this is just a placeholder.
-const testStateDir = mkdtempSync(join(tmpdir(), 'orch-test-'));
+// Per-test state dir (refreshed in beforeEach below). Most tests assume
+// IMWork is on (i.e. user is in remote mode) — beforeEach pre-writes the
+// IMWork tombstone so handleInbound + handleStop forward path is reachable.
+// Tests that need IMWork off explicitly delete the file in their setup.
+let testStateDir: string;
 
 const SID_A = '11111111-3606-4fe4-b01d-aaaaaaaaaaaa' as SessionId;
 const SID_B = '22222222-3606-4fe4-b01d-bbbbbbbbbbbb' as SessionId;
@@ -150,6 +157,12 @@ function incoming(text: string, replyCtx: IMReplyContext = { to: 'wxid_owner', c
     timestamp: Date.now(),
   };
 }
+
+// Global setup: fresh state dir + IMWork on by default (most tests assume IM mode).
+beforeEach(async () => {
+  testStateDir = mkdtempSync(join(tmpdir(), 'orch-test-'));
+  await writeIMWorkFile(testStateDir);
+});
 
 describe('createOrchestrator — start/stop lifecycle', () => {
   it('start() subscribes IM + CLI + Term handlers in order', async () => {
@@ -686,7 +699,9 @@ describe('createOrchestrator — INFO log sink', () => {
     await orch.stop();
   });
 
-  it('cc Stop without stored replyCtx emits skip-forward line', async () => {
+  it('cc Stop with no IMOrigin emits skip-forward line', async () => {
+    // IMWork is on (beforeEach pre-writes it) but there's no IMOrigin for
+    // this sid → no IM thread bound → daemon should log skip + not send.
     const cli = makeMockCLI();
     const lines: string[] = [];
     const orch = createOrchestrator({
@@ -709,7 +724,7 @@ describe('createOrchestrator — INFO log sink', () => {
       stop_hook_active: false,
       last_assistant_message: 'lone reply',
     });
-    expect(lines.some((l) => l.includes('no pending wechat origin'))).toBe(true);
+    expect(lines.some((l) => l.includes('no IMOrigin'))).toBe(true);
     await orch.stop();
   });
 
@@ -768,11 +783,13 @@ describe('createOrchestrator — INFO log sink', () => {
 
 describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () => {
   let permStateDir: string;
-  beforeEach(() => {
+  beforeEach(async () => {
     permStateDir = mkdtempSync(join(tmpdir(), 'orch-perm-'));
+    // IMWork on by default for these forward-path tests.
+    await writeIMWorkFile(permStateDir);
   });
 
-  it('onPreToolUse with replyCtx → IM prompt sent listing tabname + tool + /1 /2', async () => {
+  it('onPreToolUse with IMOrigin set → IM prompt sent listing tabname + tool + /1 /2 + 10s window', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
@@ -786,7 +803,8 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     });
     await orch.start();
 
-    // Bind a wechat replyCtx to FRONTEND first by sending @frontend body
+    // Bind IM ctx to FRONTEND by sending @frontend body — handleInbound
+    // writes <SID_A>.IMOrigin under permStateDir.
     await im.handler!.onMessage(incoming('@frontend please run a tool'));
     im.sent.length = 0; // reset
 
@@ -809,11 +827,11 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     expect(body).toContain('rm -rf /important');
     expect(body).toContain('@frontend /1');
     expect(body).toContain('@frontend /2');
-    expect(body).toMatch(/30/); // mentions the timeout window
+    expect(body).toMatch(/10/); // mentions the 10s timeout window
     await orch.stop();
   });
 
-  it('onPreToolUse without replyCtx → log only, no IM send', async () => {
+  it('onPreToolUse without IMOrigin → log only, no IM send (defensive race-with-/stop path)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const lines: string[] = [];
@@ -829,6 +847,8 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     });
     await orch.start();
 
+    // No IM dispatch first → no IMOrigin file. Hook E3 normally handles
+    // this, but if it raced with /stop we may still hit daemon. Defensive.
     await cli.handler!.onPreToolUse({
       session_id: SID_A,
       transcript_path: '/tmp/x.jsonl' as never,
@@ -842,7 +862,7 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     });
 
     expect(im.sent.length).toBe(0);
-    expect(lines.some((l) => l.includes('no wechat origin'))).toBe(true);
+    expect(lines.some((l) => l.includes('no IMOrigin'))).toBe(true);
     await orch.stop();
   });
 
@@ -945,5 +965,378 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     const allSent = im.sent.map((s) => s.content).join('\n');
     expect(allSent).toMatch(/没在等审批|no pending|无效/);
     await orch.stop();
+  });
+});
+
+describe('createOrchestrator — IMWork manual toggle (/start /stop)', () => {
+  let toggleStateDir: string;
+  beforeEach(() => {
+    toggleStateDir = mkdtempSync(join(tmpdir(), 'orch-toggle-'));
+    // NB: do NOT pre-write IMWork — these tests verify the toggle flow.
+  });
+
+  it('@multi-cc-im /start when IMWork off → writes IMWork file + IM echo includes "ON" + cc list', async () => {
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
+
+    await im.handler!.onMessage(incoming('@multi-cc-im /start'));
+
+    expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
+    const echo = im.sent.map((s) => s.content).join('\n');
+    expect(echo).toContain('IMWork ON');
+    expect(echo).toContain('frontend');
+    expect(echo).toContain('10 秒内回复');
+    await orch.stop();
+  });
+
+  it('@multi-cc-im /stop when IMWork on → deletes IMWork file + IM echo includes "OFF"', async () => {
+    await writeIMWorkFile(toggleStateDir);
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
+
+    await im.handler!.onMessage(incoming('@multi-cc-im /stop'));
+
+    expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
+    const echo = im.sent.map((s) => s.content).join('\n');
+    expect(echo).toContain('IMWork OFF');
+    await orch.stop();
+  });
+
+  it('IM mention with IMWork off → daemon refuses, no dispatch, no IMOrigin written', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm();
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    await im.handler!.onMessage(incoming('@frontend hello'));
+
+    // term sendText not called
+    expect(term.sendTextCalls).toEqual([]);
+    // IMOrigin not written
+    expect(
+      await existsIMOriginFile({
+        stateDir: toggleStateDir,
+        sessionId: SID_A,
+      }),
+    ).toBe(false);
+    // Echo back to user with "IMWork off" hint
+    const echo = im.sent.map((s) => s.content).join('\n');
+    expect(echo).toContain('IMWork off');
+    await orch.stop();
+  });
+
+  it('handleInbound writes <sid>.IMOrigin (B2 overwrite) on every IM dispatch', async () => {
+    await writeIMWorkFile(toggleStateDir);
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    // First dispatch
+    await im.handler!.onMessage(
+      incoming('@frontend first', { to: 'wxid_owner', contextToken: 'tok-A' }),
+    );
+    expect(
+      await existsIMOriginFile({
+        stateDir: toggleStateDir,
+        sessionId: SID_A,
+      }),
+    ).toBe(true);
+
+    // Second dispatch — IMOrigin gets overwritten with new ctx (B2)
+    await im.handler!.onMessage(
+      incoming('@frontend second', { to: 'wxid_owner', contextToken: 'tok-B' }),
+    );
+    const { readIMOriginFile } = await import('@multi-cc-im/cli-cc');
+    const ctx = await readIMOriginFile({
+      stateDir: toggleStateDir,
+      sessionId: SID_A,
+    });
+    expect((ctx as { contextToken: string }).contextToken).toBe('tok-B');
+
+    await orch.stop();
+  });
+
+  it('handleStop with IMWork off → skip forward + no IMOrigin delete (already none)', async () => {
+    // IMWork explicitly off
+    const cli = makeMockCLI();
+    const im = makeMockIM();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+
+    await cli.handler!.onStop({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: 'reply',
+    });
+
+    expect(im.sent.length).toBe(0);
+    expect(lines.some((l) => l.includes('IMWork off, skip forward'))).toBe(true);
+    await orch.stop();
+  });
+
+  it('SessionEnd deletes IMOrigin (cc cleanup hygiene)', async () => {
+    await writeIMWorkFile(toggleStateDir);
+    await writeIMOriginFile({
+      stateDir: toggleStateDir,
+      sessionId: SID_A,
+      replyCtx: { contextToken: 'tk' },
+    });
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: toggleStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    expect(
+      await existsIMOriginFile({
+        stateDir: toggleStateDir,
+        sessionId: SID_A,
+      }),
+    ).toBe(true);
+
+    await cli.handler!.onSessionEnd({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'SessionEnd',
+      reason: '/exit',
+    });
+
+    expect(
+      await existsIMOriginFile({
+        stateDir: toggleStateDir,
+        sessionId: SID_A,
+      }),
+    ).toBe(false);
+    await orch.stop();
+  });
+});
+
+describe('createOrchestrator — daemon reaper (PermissionRequest/Response orphan cleanup)', () => {
+  let reaperStateDir: string;
+  beforeEach(async () => {
+    reaperStateDir = mkdtempSync(join(tmpdir(), 'orch-reaper-'));
+    await writeIMWorkFile(reaperStateDir);
+    await writeIMOriginFile({
+      stateDir: reaperStateDir,
+      sessionId: SID_A,
+      replyCtx: { to: 'wxid_owner', contextToken: 'tk' },
+    });
+  });
+
+  it('handlePreToolUse schedules a reaper that unlinks Request + Response after timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { writeFile } = await import('node:fs/promises');
+      const { readPermissionResponseFile } = await import('@multi-cc-im/cli-cc');
+
+      const requestId = 'reaper-test-1';
+      // Pre-create the Request file as the hook subprocess would have
+      const reqPath = join(
+        reaperStateDir,
+        `${SID_A}.PermissionRequest.${requestId}.json`,
+      );
+      await writeFile(
+        reqPath,
+        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
+      );
+
+      const cli = makeMockCLI();
+      const im = makeMockIM();
+      const orch = createOrchestrator({
+        stateDir: reaperStateDir,
+        imAdapter: im,
+        termAdapter: makeMockTerm(),
+        cliAdapter: cli,
+        registry: fixedRegistry([FRONTEND]),
+        state: memState(),
+        sendKeystrokeDelayMs: 0,
+      });
+      await orch.start();
+
+      await cli.handler!.onPreToolUse({
+        session_id: SID_A,
+        transcript_path: '/tmp/x.jsonl' as never,
+        cwd: '/tmp/proj-a' as never,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu',
+        permission_mode: 'default',
+        requestId,
+      });
+
+      // Before the reaper fires, the Request file is still there (hook
+      // would normally cleanup at its own pace, here we left it).
+      const { existsSync } = await import('node:fs');
+      expect(existsSync(reqPath)).toBe(true);
+
+      // Advance fake timers past the 10s reaper window
+      await vi.advanceTimersByTimeAsync(11_000);
+
+      // Reaper has unlinked
+      expect(existsSync(reqPath)).toBe(false);
+
+      await orch.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reaper unlink is idempotent (hook subprocess cleanup wins → reaper finds ENOENT, no error)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { writeFile, unlink } = await import('node:fs/promises');
+      const requestId = 'reaper-test-2';
+      const reqPath = join(
+        reaperStateDir,
+        `${SID_A}.PermissionRequest.${requestId}.json`,
+      );
+      await writeFile(
+        reqPath,
+        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
+      );
+
+      const cli = makeMockCLI();
+      const errors: { err: unknown; ctx: { phase: string } }[] = [];
+      const orch = createOrchestrator({
+        stateDir: reaperStateDir,
+        imAdapter: makeMockIM(),
+        termAdapter: makeMockTerm(),
+        cliAdapter: cli,
+        registry: fixedRegistry([FRONTEND]),
+        state: memState(),
+        sendKeystrokeDelayMs: 0,
+        onError: (err, ctx) => errors.push({ err, ctx }),
+      });
+      await orch.start();
+
+      await cli.handler!.onPreToolUse({
+        session_id: SID_A,
+        transcript_path: '/tmp/x.jsonl' as never,
+        cwd: '/tmp/proj-a' as never,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu',
+        permission_mode: 'default',
+        requestId,
+      });
+
+      // Simulate hook subprocess winning the race: it cleans up first
+      await unlink(reqPath);
+
+      // Reaper fires later — should silently no-op on ENOENT
+      await vi.advanceTimersByTimeAsync(11_000);
+
+      const reaperErrors = errors.filter((e) => e.ctx.phase === 'reaper');
+      expect(reaperErrors).toEqual([]);
+      await orch.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('orchestrator.stop() clears pending reaper timers (no leaked timeouts)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { writeFile } = await import('node:fs/promises');
+      const requestId = 'reaper-test-3';
+      await writeFile(
+        join(
+          reaperStateDir,
+          `${SID_A}.PermissionRequest.${requestId}.json`,
+        ),
+        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
+      );
+
+      const cli = makeMockCLI();
+      const orch = createOrchestrator({
+        stateDir: reaperStateDir,
+        imAdapter: makeMockIM(),
+        termAdapter: makeMockTerm(),
+        cliAdapter: cli,
+        registry: fixedRegistry([FRONTEND]),
+        state: memState(),
+        sendKeystrokeDelayMs: 0,
+      });
+      await orch.start();
+      await cli.handler!.onPreToolUse({
+        session_id: SID_A,
+        transcript_path: '/tmp/x.jsonl' as never,
+        cwd: '/tmp/proj-a' as never,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_use_id: 'tu',
+        permission_mode: 'default',
+        requestId,
+      });
+
+      // Stop clears timers
+      await orch.stop();
+
+      // Even after timer window, no error fires (timer was cleared)
+      await vi.advanceTimersByTimeAsync(15_000);
+      // No assertion on file existence — daemon just shouldn't crash from
+      // a fired-after-stop timer.
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

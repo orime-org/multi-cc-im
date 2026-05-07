@@ -113,9 +113,14 @@ multi-cc-im/
 │                                            # （[DD: credentials 持久化策略](superpowers/specs/2026-05-03-keychain-library-dd.md)）
 ├── state/                                   # daemon 运行时状态 + cc hook ↔ daemon IPC
 │   ├── wechat-cursor                        # iLink getupdates cursor（重启续接）
+│   ├── IMWork                               # 0-byte tombstone：存在 = IM 模式 ON
+│   │                                        #   用户 @multi-cc-im /start 创建，/stop 删
+│   │                                        #   daemon 启动自动重置为 OFF
 │   ├── <sid>.SessionStart                   # cc 启动；含 pid/lstart/paneId/cwd/transcript_path
 │   ├── <sid>.Stop.<ts>                      # cc 每轮回复；daemon 读+forward+unlink (~100ms)
 │   ├── <sid>.SessionEnd                     # 0-byte tombstone；cc 死
+│   ├── <sid>.IMOrigin                       # IMReplyContext JSON；每次 IM dispatch 覆盖
+│   │                                        #   cc Stop forward 完即删（one-shot）
 │   ├── <sid>.PermissionRequest.<id>.json    # PreToolUse hook → daemon（IM 审批 in-flight）
 │   └── <sid>.PermissionResponse.<id>.json   # daemon → PreToolUse hook（IM 用户回 /1 /2）
 ├── inbox/wechat/<sid>/                      # 微信图片/文件 AES 解密后落盘（cc Read 用）
@@ -165,34 +170,48 @@ chokidar add event → cli-cc adapter.dispatchOne(StopFile)
 
 ### 3. Permission gate（PreToolUse → IM 审批）
 
-详见 [DD: permission forward](superpowers/specs/2026-05-07-permission-forward-dd.md)。
+详见 [DD: permission forward](superpowers/specs/2026-05-07-permission-forward-dd.md) + [DD: IMWork+IMOrigin](superpowers/specs/2026-05-08-imwork-imorigin-dd.md)（refines 前一份）。
 
 ```
-cc wants to call Bash → cc fires PreToolUse hook
+cc wants to call <tool> → cc fires PreToolUse hook
    → multi-cc-im hook PreToolUse（hook subprocess）
-   → sweep stale Permission*.json for sid
-   → write <sid>.PermissionRequest.<reqId>.json
-   → poll <sid>.PermissionResponse.<reqId>.json every 200ms, max 30s
-                          
+   → 三个前置 early-return：
+       E1. tool ∈ {Read, Grep, Glob, NotebookRead}：
+              emit { permissionDecision: "allow", reason: "read-only tool" }
+              exit  ← 不写 Request 文件，IM 不被打扰
+       E2. !exists(state/IMWork)：
+              emit { permissionDecision: "ask", reason: "local mode" }
+              exit  ← cc TUI 显示原生 3 选项菜单
+       E3. !exists(state/<sid>.IMOrigin)：
+              emit { permissionDecision: "ask", reason: "no IM thread for this cc" }
+              exit  ← 同上
+   → 否则走 PR-D forward 路径：
+       sweep stale Permission*.json for sid
+       write <sid>.PermissionRequest.<reqId>.json
+       poll <sid>.PermissionResponse.<reqId>.json every 200ms, max 10s
+
 chokidar add event → cli-cc adapter dispatches PreToolUse
    → orchestrator.handlePreToolUse(p)
-       → look up pendingReplyCtxBySession[sid]
-       → if exists: imAdapter.send("[<tab>] 准备跑工具:\n  Bash(...)\n@<tab> /1 /2", replyCtx)
-       → if missing: log "no wechat origin — hook will default-allow after 30s"
-                          
+       → schedule reaper(setTimeout 10s) 兜底删 Request + Response
+       → read <sid>.IMOrigin → IMReplyContext
+       → if exists: imAdapter.send("[<tab>] 准备跑工具:\n  <Tool>(...)\n@<tab> /1 /2", ctx)
+       → if missing (race with /stop): log + skip forward
+
 wechat user replies "@frontend /1" → router parses → permission_response branch
    → orchestrator.handlePermissionResponseFromIM(sid, decision, replyCtx)
        → write <sid>.PermissionResponse.<reqId>.json
-                          
+
 hook subprocess polling → reads PermissionResponse → decision wins
    → unlink Request + Response files
    → write stdout: { hookSpecificOutput: { permissionDecision: "allow"|"deny", ... } }
    → exit 0
-                          
+
 cc reads hook stdout → applies decision → continues / cancels tool call
 ```
 
-30s timeout（hook subprocess 端）→ default allow + reason "30s timeout, default allow"。
+10s timeout（hook subprocess 端）→ default allow + reason "10s timeout, default allow"。
+
+daemon reaper：每个 chokidar add(PermissionRequest) 都 schedule 一个 `setTimeout(10s)` 在 daemon 进程里。hook 正常 cleanup 时已 unlink → reaper 触发时 ENOENT 静默；hook 异常死亡时 → reaper 兜底删（unlinkOrIgnoreENOENT 幂等）。
 
 ## 外部 CLI 工具路径策略
 

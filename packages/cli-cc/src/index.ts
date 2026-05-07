@@ -46,6 +46,18 @@ export {
   deletePermissionFileByPath,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
+  IM_WORK_FILE_NAME,
+  IM_ORIGIN_SUFFIX,
+  imWorkPath,
+  imOriginPath,
+  writeIMWorkFile,
+  existsIMWorkFile,
+  deleteIMWorkFile,
+  writeIMOriginFile,
+  readIMOriginFile,
+  existsIMOriginFile,
+  deleteIMOriginFile,
+  listIMOriginFiles,
 } from './state-files.js';
 export type {
   PerSessionIO,

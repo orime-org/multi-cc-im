@@ -6,7 +6,7 @@ import {
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
 import type { RouterState } from '@multi-cc-im/bridge';
-import { createCcCliAdapter } from '@multi-cc-im/cli-cc';
+import { createCcCliAdapter, deleteIMWorkFile } from '@multi-cc-im/cli-cc';
 import {
   createWeixinAdapter,
   WeixinCredentialsSchema,
@@ -133,20 +133,39 @@ export async function runStartCommand(
   // ===== 1c. Sweep stale state files BEFORE chokidar starts watching =====
   // Cleans paired SessionStart+SessionEnd from completed sessions, orphan
   // Stop files (daemon-down accumulation that can't be forwarded — replyCtx
-  // is in-memory only), and any legacy state files from pre-redesign
-  // installs (cc-pid / events.jsonl / ended / last-hook-at / current-session).
+  // is in-memory only), orphan Permission Request/Response files (hook
+  // subprocess died mid-flow), all IMOrigin files (per [DD: IMWork+IMOrigin]
+  // — daemon start always resets per-session ctx), and any legacy state
+  // files from pre-redesign installs.
   const sweepResult = await sweepStaleStateFiles(paths.stateDir);
   if (
     sweepResult.pairedCleaned +
       sweepResult.orphanStopsCleaned +
       sweepResult.legacyCleaned +
-      sweepResult.orphanPermissionCleaned >
+      sweepResult.orphanPermissionCleaned +
+      sweepResult.orphanIMOriginCleaned >
     0
   ) {
     log(
-      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop file(s), ${sweepResult.legacyCleaned} legacy file(s), ${sweepResult.orphanPermissionCleaned} orphan Permission file(s) cleaned`,
+      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop, ${sweepResult.legacyCleaned} legacy, ${sweepResult.orphanPermissionCleaned} orphan Permission, ${sweepResult.orphanIMOriginCleaned} orphan IMOrigin cleaned`,
     );
   }
+
+  // ===== 1d. Reset IMWork to OFF on every daemon start =====
+  // Per [DD: IMWork+IMOrigin](../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
+  // §5.3 — daemon start auto-resets IM mode to off, forcing user to re-issue
+  // `@multi-cc-im /start` from IM if they want remote mode again. Safer than
+  // honoring stale "user was in IM mode last week" state.
+  try {
+    await deleteIMWorkFile(paths.stateDir);
+  } catch (err) {
+    log(
+      `  ⚠️  failed to reset IMWork on start: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  log(
+    `  ✓ IMWork: OFF (run \`@multi-cc-im /start\` from IM to enable)`,
+  );
 
   // ===== 2. Build adapters =====
   const credentialStore = createCredentialStore<WeixinCredentials>({

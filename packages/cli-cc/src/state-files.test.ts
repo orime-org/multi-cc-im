@@ -3,20 +3,32 @@ import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  IM_ORIGIN_SUFFIX,
+  IM_WORK_FILE_NAME,
   SESSION_END_SUFFIX,
   SESSION_START_SUFFIX,
   STOP_PREFIX,
+  deleteIMOriginFile,
+  deleteIMWorkFile,
   deleteSessionEndFile,
   deleteSessionStartFile,
   deleteStopFile,
+  existsIMOriginFile,
+  existsIMWorkFile,
   existsSessionEndFile,
   formatStopTimestamp,
+  imOriginPath,
+  imWorkPath,
+  listIMOriginFiles,
   listStopFiles,
+  readIMOriginFile,
   readSessionStartFile,
   readStopFile,
   sessionEndPath,
   sessionStartPath,
   stopFilePath,
+  writeIMOriginFile,
+  writeIMWorkFile,
   writeSessionEndFile,
   writeSessionStartFile,
   writeStopFile,
@@ -232,6 +244,145 @@ describe('state-files', () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toContain(SID);
       expect(result[0]).not.toContain(SID2);
+    });
+  });
+
+  describe('IMWork file (global IM-mode tombstone)', () => {
+    it('writeIMWorkFile creates a 0-byte file at <stateDir>/IMWork', async () => {
+      await writeIMWorkFile(stateDir);
+      const stats = await stat(imWorkPath(stateDir));
+      expect(stats.isFile()).toBe(true);
+      expect(stats.size).toBe(0);
+    });
+
+    it('existsIMWorkFile returns false before write, true after', async () => {
+      expect(await existsIMWorkFile(stateDir)).toBe(false);
+      await writeIMWorkFile(stateDir);
+      expect(await existsIMWorkFile(stateDir)).toBe(true);
+    });
+
+    it('deleteIMWorkFile is idempotent (ENOENT-safe)', async () => {
+      await deleteIMWorkFile(stateDir);
+      await writeIMWorkFile(stateDir);
+      await deleteIMWorkFile(stateDir);
+      await deleteIMWorkFile(stateDir);
+      expect(await existsIMWorkFile(stateDir)).toBe(false);
+    });
+
+    it('IM_WORK_FILE_NAME is "IMWork" (no .suffix — it lives at top level not per-session)', () => {
+      expect(IM_WORK_FILE_NAME).toBe('IMWork');
+      expect(imWorkPath(stateDir)).toBe(join(stateDir, 'IMWork'));
+    });
+
+    it('existsIMWorkFile returns false when stateDir itself is missing', async () => {
+      const missing = join(stateDir, 'does-not-exist');
+      expect(await existsIMWorkFile(missing)).toBe(false);
+    });
+  });
+
+  describe('IMOrigin file (per-session IMReplyContext snapshot)', () => {
+    it('writeIMOriginFile persists JSON ctx, readIMOriginFile reads it back verbatim', async () => {
+      const ctx = { to: 'wxid_owner', contextToken: 'abc123' };
+      await writeIMOriginFile({ stateDir, sessionId: SID, replyCtx: ctx });
+      expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual(ctx);
+    });
+
+    it('writeIMOriginFile overwrites prior content (B2 — newest ctx wins)', async () => {
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'first' },
+      });
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'second' },
+      });
+      expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual({
+        contextToken: 'second',
+      });
+    });
+
+    it('readIMOriginFile returns null when file does not exist', async () => {
+      expect(
+        await readIMOriginFile({ stateDir, sessionId: SID }),
+      ).toBeNull();
+    });
+
+    it('existsIMOriginFile returns false before write, true after', async () => {
+      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(false);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { foo: 'bar' },
+      });
+      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(true);
+    });
+
+    it('deleteIMOriginFile is idempotent (ENOENT-safe)', async () => {
+      await deleteIMOriginFile({ stateDir, sessionId: SID });
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { x: 1 },
+      });
+      await deleteIMOriginFile({ stateDir, sessionId: SID });
+      await deleteIMOriginFile({ stateDir, sessionId: SID });
+      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(false);
+    });
+
+    it('opaque ctx — bridge stores any JSON-serializable shape (forward compat for tg/lark)', async () => {
+      // Schema is adapter-defined; bridge layer must NOT inspect it.
+      // Test with three different shapes.
+      const wechat = { to: 'wxid_owner', contextToken: 'tk123' };
+      const telegram = { chatId: 12345, messageId: 678 };
+      const lark = { openId: 'ou_xxx', chatId: 'oc_yyy' };
+      for (const ctx of [wechat, telegram, lark]) {
+        await writeIMOriginFile({ stateDir, sessionId: SID, replyCtx: ctx });
+        expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual(ctx);
+      }
+    });
+
+    it('listIMOriginFiles returns absolute paths of all <sid>.IMOrigin files', async () => {
+      const SID2 = 'aaaaaaaa-0000-4fe4-b01d-bbbbbbbbbbbb';
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { x: 1 },
+      });
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID2,
+        replyCtx: { y: 2 },
+      });
+      const result = await listIMOriginFiles(stateDir);
+      expect(result).toHaveLength(2);
+      expect(result.some((p) => p.includes(SID))).toBe(true);
+      expect(result.some((p) => p.includes(SID2))).toBe(true);
+      expect(result.every((p) => p.endsWith(IM_ORIGIN_SUFFIX))).toBe(true);
+    });
+
+    it('listIMOriginFiles for nonexistent stateDir returns []', async () => {
+      const missing = join(stateDir, 'does-not-exist');
+      expect(await listIMOriginFiles(missing)).toEqual([]);
+    });
+
+    it('listIMOriginFiles does not include other state file types', async () => {
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { x: 1 },
+      });
+      await writeSessionEndFile({ stateDir, sessionId: SID });
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: '2026-05-08T10-00-00-000Z',
+        last_assistant_message: 'hi',
+      });
+      const result = await listIMOriginFiles(stateDir);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toContain(IM_ORIGIN_SUFFIX);
     });
   });
 });

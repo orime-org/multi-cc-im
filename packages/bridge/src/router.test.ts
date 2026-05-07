@@ -24,6 +24,19 @@ function fixedRegistry(sessions: SessionInfo[]): SessionRegistry {
   };
 }
 
+/**
+ * Test helper: run `route()` with IMWork **on** by default. Most existing
+ * tests describe "user sent IM message in IM mode" scenarios, which require
+ * IMWork on. The new `IMWork off → reject` behavior is tested in its own
+ * describe block by passing `route()` directly with `imWorkOn: false`.
+ */
+async function routeOn(
+  msg: ReturnType<typeof incoming>,
+  opts: { registry: SessionRegistry; state: RouterState },
+) {
+  return route(msg, { ...opts, imWorkOn: true });
+}
+
 function memState(initial: SessionId | null = null): RouterState {
   let current = initial;
   return {
@@ -51,7 +64,7 @@ const FRAME = s('aaa33333', 'frame', 30);
 describe('router — plain message + current_session', () => {
   it('plain + current set → dispatches to current', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -65,7 +78,7 @@ describe('router — plain message + current_session', () => {
 
   it('plain + current unset + single alive session → auto-current to that one', async () => {
     const state = memState(null);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -76,7 +89,7 @@ describe('router — plain message + current_session', () => {
 
   it('plain + current unset + multiple alive → error with @list hint', async () => {
     const state = memState(null);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -86,7 +99,7 @@ describe('router — plain message + current_session', () => {
 
   it('plain + current set but session not alive → unset current + error', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([API]),
       state,
     });
@@ -97,7 +110,7 @@ describe('router — plain message + current_session', () => {
 
   it('plain + zero alive → error', async () => {
     const state = memState(null);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([]),
       state,
     });
@@ -109,7 +122,7 @@ describe('router — plain message + current_session', () => {
 describe('router — @<name> mention (single)', () => {
   it('@<exact> matches → dispatches + sets current', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@frontend hello'), {
+    const result = await routeOn(incoming('@frontend hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -122,7 +135,7 @@ describe('router — @<name> mention (single)', () => {
 
   it('@<unique-prefix> matches → dispatches + sets current', async () => {
     const state = memState(null);
-    const result = await route(incoming('@fr hello'), {
+    const result = await routeOn(incoming('@fr hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -132,7 +145,7 @@ describe('router — @<name> mention (single)', () => {
 
   it('@<ambiguous-prefix> → error with candidate list, no dispatch, no current change', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@fr hello'), {
+    const result = await routeOn(incoming('@fr hello'), {
       registry: fixedRegistry([FRONTEND, FRAME]),
       state,
     });
@@ -143,7 +156,7 @@ describe('router — @<name> mention (single)', () => {
 
   it('@<no-match> → error listing all sessions', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@xyz hello'), {
+    const result = await routeOn(incoming('@xyz hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -154,7 +167,7 @@ describe('router — @<name> mention (single)', () => {
 
   it('@<name> with empty body → error (nothing to dispatch)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend'), {
+    const result = await routeOn(incoming('@frontend'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -166,7 +179,7 @@ describe('router — @<name> mention (single)', () => {
 
   it('@$<id-prefix> matches by session id', async () => {
     const state = memState(null);
-    const result = await route(incoming('@$abc1 hello'), {
+    const result = await routeOn(incoming('@$abc1 hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -177,7 +190,7 @@ describe('router — @<name> mention (single)', () => {
 describe('router — multi @ targets', () => {
   it('@a @b body → dispatches to both, no current change', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@frontend @api sync implementation'), {
+    const result = await routeOn(incoming('@frontend @api sync implementation'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -192,7 +205,7 @@ describe('router — multi @ targets', () => {
 
   it('any one @ ambiguous → entire message rejected', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@fr @api hello'), {
+    const result = await routeOn(incoming('@fr @api hello'), {
       registry: fixedRegistry([FRONTEND, FRAME, API]),
       state,
     });
@@ -203,7 +216,7 @@ describe('router — multi @ targets', () => {
 
   it('any one @ unmatched → entire message rejected', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@xyz @api hello'), {
+    const result = await routeOn(incoming('@xyz @api hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -214,7 +227,7 @@ describe('router — multi @ targets', () => {
 
   it('@a @b empty body → error', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend @api'), {
+    const result = await routeOn(incoming('@frontend @api'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -226,7 +239,7 @@ describe('router — multi @ targets', () => {
 describe('router — @all broadcast', () => {
   it('@all body → dispatches to all alive', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@all stop everything'), {
+    const result = await routeOn(incoming('@all stop everything'), {
       registry: fixedRegistry([FRONTEND, API, FRAME]),
       state,
     });
@@ -240,7 +253,7 @@ describe('router — @all broadcast', () => {
 
   it('@all with zero alive → error', async () => {
     const state = memState(null);
-    const result = await route(incoming('@all hello'), {
+    const result = await routeOn(incoming('@all hello'), {
       registry: fixedRegistry([]),
       state,
     });
@@ -250,7 +263,7 @@ describe('router — @all broadcast', () => {
 
   it('@all with empty body → error', async () => {
     const state = memState(null);
-    const result = await route(incoming('@all'), {
+    const result = await routeOn(incoming('@all'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -262,7 +275,7 @@ describe('router — @all broadcast', () => {
 describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
   it('@multi-cc-im /list with active sessions → numbered list, no dispatches', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('@multi-cc-im /list'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -275,7 +288,7 @@ describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
 
   it('@multi-cc-im /list with zero sessions → "no active sessions"', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('@multi-cc-im /list'), {
       registry: fixedRegistry([]),
       state,
     });
@@ -283,54 +296,69 @@ describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
     expect(result.echo).toBe('no active sessions');
   });
 
-  it('@multi-cc-im /help → echo includes Bridge commands line + /rename tip + sid-prefix info', async () => {
+  it('@multi-cc-im /help → echo includes Bridge commands + /start /stop + permission gate hint', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /help'), {
+    const result = await routeOn(incoming('@multi-cc-im /help'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toContain('Bridge commands: @multi-cc-im /list | /help | /current');
+    expect(result.echo).toContain('/list | /help | /current | /start | /stop');
+    expect(result.echo).toContain('Permission: @<tab> /1');
     expect(result.echo).toContain('Tip: /rename inside cc TUI');
     expect(result.echo).toContain('$<sid-prefix>');
   });
 
-  it('@multi-cc-im /current with current set + alive → echo "current = <displayName>"', async () => {
+  it('@multi-cc-im /current with current set + alive → echo "current = <displayName>" + IMWork status', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('@multi-cc-im /current'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toBe('current = frontend');
+    expect(result.echo).toBe('current = frontend\nIMWork = ON');
     // current unchanged
     expect(state.getCurrent()).toBe(FRONTEND.sessionId);
   });
 
-  it('@multi-cc-im /current with none set → "current = none"', async () => {
+  it('@multi-cc-im /current with none set → "current = none" + IMWork status', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('@multi-cc-im /current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toBe('current = none');
+    expect(result.echo).toBe('current = none\nIMWork = ON');
   });
 
-  it('@multi-cc-im /current with stale current → clears + "current = none (previous session disconnected)"', async () => {
+  it('@multi-cc-im /current with stale current → clears + "current = none (previous session disconnected)" + IMWork status', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('@multi-cc-im /current'), {
       registry: fixedRegistry([API]),
       state,
     });
     expect(result.dispatches).toEqual([]);
     expect(state.getCurrent()).toBeNull();
-    expect(result.echo).toBe('current = none (previous session disconnected)');
+    expect(result.echo).toBe(
+      'current = none (previous session disconnected)\nIMWork = ON',
+    );
+  });
+
+  it('@multi-cc-im /current shows IMWork = OFF when imWorkOn=false', async () => {
+    // Bridge commands always pass through the IMWork gate; /current shows
+    // current+IMWork status independently.
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /current'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).toBe('current = none\nIMWork = OFF');
   });
 
   it('@multi-cc-im /unknown → echo unknown bridge command error', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /unknown'), {
+    const result = await routeOn(incoming('@multi-cc-im /unknown'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -341,7 +369,7 @@ describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
 
   it('@multi-cc-im (no /command) → parser error surfaced', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im'), {
+    const result = await routeOn(incoming('@multi-cc-im'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -351,7 +379,7 @@ describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
 
   it('@multi-cc-im @api /list (combined with another @) → parser error surfaced', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im @api /list'), {
+    const result = await routeOn(incoming('@multi-cc-im @api /list'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -363,7 +391,7 @@ describe('router — bridge commands (@multi-cc-im /<cmd>)', () => {
 describe('router — error & malformed input', () => {
   it('@all @frontend mixed → parser error surfaced', async () => {
     const state = memState(null);
-    const result = await route(incoming('@all @frontend hi'), {
+    const result = await routeOn(incoming('@all @frontend hi'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -385,7 +413,7 @@ describe('router — error & malformed input', () => {
 describe('router — visible echo format', () => {
   it('plain + current → echo includes current target name', async () => {
     const state = memState(FRONTEND.sessionId);
-    const result = await route(incoming('hello'), {
+    const result = await routeOn(incoming('hello'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -394,7 +422,7 @@ describe('router — visible echo format', () => {
 
   it('@switch → echo confirms switch + current update', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@frontend hello'), {
+    const result = await routeOn(incoming('@frontend hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -403,7 +431,7 @@ describe('router — visible echo format', () => {
 
   it('multi-@ echo lists all targets', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend @api hi'), {
+    const result = await routeOn(incoming('@frontend @api hi'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -413,7 +441,7 @@ describe('router — visible echo format', () => {
 
   it('@all echo announces broadcast count', async () => {
     const state = memState(null);
-    const result = await route(incoming('@all hi'), {
+    const result = await routeOn(incoming('@all hi'), {
       registry: fixedRegistry([FRONTEND, API, FRAME]),
       state,
     });
@@ -424,7 +452,7 @@ describe('router — visible echo format', () => {
 describe('router — permission_response (@<tab> /1 | /2)', () => {
   it('@<exact> /1 → permissionResponse allow + echo, no dispatch, no current change', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend /1'), {
+    const result = await routeOn(incoming('@frontend /1'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -441,7 +469,7 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
 
   it('@<exact> /2 → permissionResponse deny + echo', async () => {
     const state = memState(null);
-    const result = await route(incoming('@api /2'), {
+    const result = await routeOn(incoming('@api /2'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -455,7 +483,7 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
 
   it('@<unique-prefix> /1 → matches via 4-level fallback', async () => {
     const state = memState(null);
-    const result = await route(incoming('@front /1'), {
+    const result = await routeOn(incoming('@front /1'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -465,7 +493,7 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
 
   it('@<ambiguous-prefix> /1 → echo error, no permissionResponse', async () => {
     const state = memState(null);
-    const result = await route(incoming('@fr /1'), {
+    const result = await routeOn(incoming('@fr /1'), {
       registry: fixedRegistry([FRONTEND, FRAME]),
       state,
     });
@@ -476,7 +504,7 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
 
   it('@<no-match> /1 → echo not-found, no permissionResponse', async () => {
     const state = memState(null);
-    const result = await route(incoming('@nothere /1'), {
+    const result = await routeOn(incoming('@nothere /1'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -487,7 +515,7 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
 
   it('current_session is preserved after permission_response (sticky)', async () => {
     const state = memState(API.sessionId);
-    const result = await route(incoming('@frontend /1'), {
+    const result = await routeOn(incoming('@frontend /1'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -496,3 +524,131 @@ describe('router — permission_response (@<tab> /1 | /2)', () => {
     expect(state.getCurrent()).toBe(API.sessionId);
   });
 });
+
+describe('router — IMWork gate (@multi-cc-im /start /stop)', () => {
+  it('IMWork off (default): mention → reject + echo "请先发 /start"', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@frontend hello'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/IMWork off/);
+    expect(result.echo).toMatch(/\/start/);
+  });
+
+  it('IMWork off: plain → reject', async () => {
+    const state = memState(FRONTEND.sessionId);
+    const result = await route(incoming('hello'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/IMWork off/);
+  });
+
+  it('IMWork off: @all body → reject', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@all hi'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/IMWork off/);
+  });
+
+  it('IMWork off: bridge command /list → still works (always passes IMWork gate)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /list'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).toContain('frontend');
+  });
+
+  it('IMWork off: permission response /1 → still works (always passes IMWork gate)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@frontend /1'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.permissionResponse?.decision).toBe('allow');
+  });
+
+  it('/start while IMWork off → echo cc list + rules + imWorkAction = enable', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.imWorkAction).toBe('enable');
+    expect(result.echo).toContain('✓ IMWork ON');
+    expect(result.echo).toContain('frontend');
+    expect(result.echo).toContain('api');
+    expect(result.echo).toContain('10 秒内回复');
+    expect(result.echo).toContain('只处理从 IM 发出的消息');
+  });
+
+  it('/start while IMWork already on → echo "already ON" + cc list, no imWorkAction', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+    });
+    expect(result.imWorkAction).toBeUndefined();
+    expect(result.echo).toContain('already ON');
+    expect(result.echo).toContain('frontend');
+  });
+
+  it('/start with zero cc → echo includes "无" hint', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.imWorkAction).toBe('enable');
+    expect(result.echo).toContain('当前可用 cc sessions: (无');
+  });
+
+  it('/start: cc without /rename shows "未 /rename" hint', async () => {
+    const UNNAMED = s('eeee5555', undefined, 40);
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([UNNAMED]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).toContain('未 /rename');
+  });
+
+  it('/stop while IMWork on → echo "OFF" + imWorkAction = disable', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /stop'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+    });
+    expect(result.imWorkAction).toBe('disable');
+    expect(result.echo).toContain('✓ IMWork OFF');
+  });
+
+  it('/stop while IMWork already off → echo "already OFF", no imWorkAction', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /stop'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.imWorkAction).toBeUndefined();
+    expect(result.echo).toContain('already OFF');
+  });
+});
+
