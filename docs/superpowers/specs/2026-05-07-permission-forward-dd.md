@@ -3,7 +3,7 @@
 **Topic**: cc TUI 在调用某些 tool（典型: `Bash(rm -rf ...)`、`Edit(...)`、`WebFetch(...)`）前会弹「Do you want to proceed? 1.Yes / 2.No」让用户审批。multi-cc-im 把这个决策点**转发给 IM 端用户**，IM 端选「允许 / 拒绝」后传回 cc TUI 让 tool 真的跑（或拒）。
 **Scope**: cc 跑 hook 子进程 / multi-cc-im daemon 长跑进程之间的 permission 决策协议；不涉及 IM 协议层。
 **Date**: 2026-05-07
-**Status**: ⏳ 待用户决定
+**Status**: ✅ 已锁定（2026-05-07 用户拍板）
 
 > 本 DD 报告响应 CLAUDE.md「重大决策 DD 流程」5 步走完。触发启发式：「影响安全模型（cc 工具调用决策权）」+「影响多 package 接口（cli-cc / bridge / hook 协议子集）」+「反悔成本 > 1 周（permission 协议一旦上线对外用户依赖）」。
 >
@@ -11,14 +11,47 @@
 
 ---
 
-## 决策摘要（草稿，待用户拍板）
+## 决策摘要（已锁定）
 
-| 候选 | 推荐 |
+| 候选 | 决策 |
 |---|---|
-| **d PreToolUse hook + file IPC（30s timeout 默认 allow）** | ✅ 推荐 |
+| **d PreToolUse hook + file IPC（30s timeout 默认 allow）** | ✅ **锁定** |
 | a 不做（保持 cc settings.json 配 acceptEdits / 默认）| ❌ 排除 — 用户明确不接受 trust 全部，需要真审批 |
 | b 截屏 + pattern match（wezterm get-text + 模拟键盘注入） | ❌ 排除 — fragile：cc 升级 prompt UI / wording 就挂；race window 注入风险 |
 | c MCP permission server（`--permission-prompt-tool`） | ❌ 排除（次优）— 协议干净但工程量 3-4× d；用 file IPC 已能拿到等价语义 |
+
+### 最终决策（2026-05-07 用户拍板）
+
+| 决策点 | 锁定值 |
+|---|---|
+| 方向 | **d**（PreToolUse hook + file IPC） |
+| timeout 默认行为 | **30 秒，超时默认 allow**（同 cc `acceptEdits` 安全等级，便利优先） |
+| 白名单 / 黑名单 | **不启用**（KISS — DD 报告内提议的 multi-cc-im config.toml `[permission]` 段不实施） |
+| IM 端响应 UX | **`@<tabname> /1`（允许）/ `@<tabname> /2`（拒绝）** |
+| c MCP 实测验证 | **不做**（接受 d 推荐结论，c 路径在本项目内永久排除） |
+
+### IM UX 选 `/1` `/2` 的理由
+
+| 维度 | `/allow` `/deny`（DD 草拟方案） | **`/1` `/2`（最终选定）** |
+|---|---|---|
+| 跟 cc 命名空间冲突可能 | 低（cc 没 /allow /deny） | **极低**（cc/插件几乎不会用纯数字 slash，反 Unix 命名习惯） |
+| 跟 cc TUI prompt UI 对齐 | 不对应 | **完美对齐**（cc TUI 弹「1. Yes / 2. No」，IM 回 `/1` `/2` 直觉关联） |
+| 抗未来 cc 升级 fragility | 中（cc 真加 `/allow` 内置 slash 概率不为 0） | **强**（数字 slash 几乎不可能被 cc 团队/插件占用） |
+| 用户记忆负担 | 要记 allow/deny 单词 | 看 IM prompt 文案敲数字即可 |
+| 长度 | 长 | 短 |
+
+**user 拍板决策语**: 「数字也知道肯定是 tool，而不是用户的 stop 回复」+「即使以后 CC 变动或者其他的插件的 command 都不会出问题」。
+
+### IM 端 prompt 文案（实施时按此模板）
+
+```
+[<tabname>] 准备跑工具:
+  <tool_name>(<tool_input 概要>)
+
+⏳ 30 秒内回复，否则默认放行:
+  @<tabname> /1   = 允许
+  @<tabname> /2   = 拒绝
+```
 
 **d 的具体形态**:
 
