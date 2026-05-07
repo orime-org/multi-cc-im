@@ -4,6 +4,7 @@ import type {
   CLIAdapter,
   CLIHandler,
   CwdAbs,
+  PreToolUsePayload,
   SessionEndPayload,
   SessionId,
   SessionStartPayload,
@@ -12,10 +13,12 @@ import type {
 } from '@multi-cc-im/shared';
 import { enqueueInjection } from './injection-queue.js';
 import {
+  PERMISSION_REQUEST_PREFIX,
   SESSION_END_SUFFIX,
   SESSION_START_SUFFIX,
   STOP_PREFIX,
   deleteStopFile,
+  readPermissionRequestFile,
   readSessionStartFile,
   readStopFile,
 } from './state-files.js';
@@ -34,7 +37,10 @@ export interface CreateCcCliAdapterOpts {
    */
   onHandlerError?: (
     err: unknown,
-    context: { kind: 'SessionStart' | 'Stop' | 'SessionEnd'; sessionId: string },
+    context: {
+      kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
+      sessionId: string;
+    },
   ) => void;
 }
 
@@ -47,8 +53,10 @@ const SID_PATTERN =
 
 interface ClassifiedFile {
   sid: string;
-  kind: 'SessionStart' | 'Stop' | 'SessionEnd';
+  kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
   filePath: string;
+  /** Set when kind === 'PreToolUse' — the request id from filename suffix. */
+  requestId?: string;
 }
 
 /** Classify a state-dir basename into one of the 3 event types or null. */
@@ -65,6 +73,14 @@ function classifyStateFile(
   if (rest === SESSION_END_SUFFIX)
     return { sid, kind: 'SessionEnd', filePath };
   if (rest.startsWith(STOP_PREFIX)) return { sid, kind: 'Stop', filePath };
+  if (rest.startsWith(PERMISSION_REQUEST_PREFIX)) {
+    // Filename: <sid>.PermissionRequest.<requestId>.json
+    const tail = rest.slice(PERMISSION_REQUEST_PREFIX.length);
+    if (!tail.endsWith('.json')) return null;
+    const requestId = tail.slice(0, -'.json'.length);
+    if (!requestId) return null;
+    return { sid, kind: 'PreToolUse', filePath, requestId };
+  }
   return null;
 }
 
@@ -251,6 +267,31 @@ async function dispatchOne(
         model: '',
       };
       await handler.onSessionStart(payload);
+      return;
+    }
+
+    case 'PreToolUse': {
+      const file = await readPermissionRequestFile(classified.filePath);
+      if (!file) return; // ENOENT — file already cleaned up
+      const payload: PreToolUsePayload & { requestId: string } = {
+        session_id: classified.sid as unknown as SessionId,
+        transcript_path: '' as unknown as TranscriptPath,
+        cwd: '' as unknown as CwdAbs,
+        hook_event_name: 'PreToolUse',
+        permission_mode: '',
+        tool_name: file.toolName,
+        tool_input: file.toolInput,
+        tool_use_id: '',
+        requestId: file.requestId,
+      };
+      await handler.onPreToolUse(payload);
+      // Daemon does NOT unlink the PermissionRequest file. The hook
+      // subprocess that wrote it is polling for a matching
+      // PermissionResponse file; once it sees the response (or hits its
+      // own 30s timeout), it deletes both Request and Response itself.
+      // This keeps unlink ownership co-located with the writer (hook)
+      // and avoids a 3-way race between daemon, hook polling, and
+      // chokidar.
       return;
     }
 

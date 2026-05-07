@@ -4,14 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runHookReceiver } from './hook-receiver.js';
 import {
+  PERMISSION_REQUEST_PREFIX,
+  PERMISSION_RESPONSE_PREFIX,
   STOP_PREFIX,
   existsSessionEndFile,
   formatStopTimestamp,
   listStopFiles,
+  readPermissionRequestFile,
   readSessionStartFile,
   readStopFile,
   sessionStartPath,
   stopFilePath,
+  writePermissionResponseFile,
   writeSessionEndFile,
   writeStopFile,
 } from './state-files.js';
@@ -386,6 +390,256 @@ describe('runHookReceiver', () => {
       expect(
         (await listStopFiles({ stateDir, sessionId: OTHER_SID })).length,
       ).toBe(1);
+    });
+  });
+
+  describe('PreToolUse — IM permission gate', () => {
+    const PRE_TOOL_USE: ParsedHookPayload = {
+      session_id: SID as never,
+      transcript_path: TX as never,
+      cwd: CWD as never,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hi', description: 'greet' },
+      tool_use_id: 'tu_abc',
+      permission_mode: 'default',
+    } as ParsedHookPayload;
+
+    it('writes <sid>.PermissionRequest.<id>.json with tool_name + tool_input', async () => {
+      // Use a short timeout so we're not blocked. Daemon writes Response
+      // shortly after; here we drop the Response in-line before the loop
+      // ticks so the test stays deterministic.
+      let observedRequestId: string | null = null;
+
+      // Race: simultaneously start the hook AND poll for the request file
+      // so we can capture the requestId, then write the matching response.
+      const hookPromise = runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 5,
+        permissionTimeoutMs: 2_000,
+      });
+
+      // Poll for the request file (≤200ms)
+      for (let i = 0; i < 40; i++) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${SID}${PERMISSION_REQUEST_PREFIX}`),
+        );
+        if (reqFile) {
+          // Filename: <sid>.PermissionRequest.<id>.json
+          const m = reqFile.match(
+            new RegExp(`^${SID}\\${PERMISSION_REQUEST_PREFIX}([^.]+)\\.json$`),
+          );
+          if (m) observedRequestId = m[1] ?? null;
+          // Verify content
+          const content = await readPermissionRequestFile(
+            join(stateDir, reqFile),
+          );
+          expect(content?.toolName).toBe('Bash');
+          expect(content?.toolInput).toEqual({
+            command: 'echo hi',
+            description: 'greet',
+          });
+          expect(content?.requestId).toBe(observedRequestId);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(observedRequestId).not.toBeNull();
+
+      // Drop the matching Response
+      await writePermissionResponseFile({
+        stateDir,
+        sessionId: SID,
+        requestId: observedRequestId!,
+        decision: 'allow',
+        reason: 'IM user allowed',
+      });
+
+      const result = await hookPromise;
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: 'IM user allowed',
+        },
+      });
+    });
+
+    it('Response with decision=deny → returns deny + reason', async () => {
+      const hookPromise = runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 5,
+        permissionTimeoutMs: 2_000,
+      });
+
+      // Wait for request file, capture requestId, write deny
+      let requestId: string | null = null;
+      for (let i = 0; i < 40 && requestId === null; i++) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${SID}${PERMISSION_REQUEST_PREFIX}`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(
+            new RegExp(`^${SID}\\${PERMISSION_REQUEST_PREFIX}([^.]+)\\.json$`),
+          );
+          requestId = m?.[1] ?? null;
+        }
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(requestId).not.toBeNull();
+
+      await writePermissionResponseFile({
+        stateDir,
+        sessionId: SID,
+        requestId: requestId!,
+        decision: 'deny',
+        reason: 'user said no',
+      });
+
+      const result = await hookPromise;
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'user said no',
+        },
+      });
+    });
+
+    it('timeout (no Response) → default allow + timeout reason', async () => {
+      // Deliberately no Response written. With 100ms timeout the hook
+      // exits cleanly with the default-allow decision.
+      const result = await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 100,
+      });
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: expect.stringMatching(/timeout.*allow/i),
+        },
+      });
+    });
+
+    it('cleans up Request + Response files on success path', async () => {
+      const hookPromise = runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 5,
+        permissionTimeoutMs: 2_000,
+      });
+
+      let requestId: string | null = null;
+      for (let i = 0; i < 40 && requestId === null; i++) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${SID}${PERMISSION_REQUEST_PREFIX}`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(
+            new RegExp(`^${SID}\\${PERMISSION_REQUEST_PREFIX}([^.]+)\\.json$`),
+          );
+          requestId = m?.[1] ?? null;
+        }
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await writePermissionResponseFile({
+        stateDir,
+        sessionId: SID,
+        requestId: requestId!,
+        decision: 'allow',
+        reason: 'IM user allowed',
+      });
+      await hookPromise;
+
+      const entries = await readStateDirEntries(stateDir);
+      // Both files removed. Nothing matches PermissionRequest./PermissionResponse. prefixes.
+      expect(
+        entries.filter(
+          (n) =>
+            n.includes(PERMISSION_REQUEST_PREFIX) ||
+            n.includes(PERMISSION_RESPONSE_PREFIX),
+        ),
+      ).toEqual([]);
+    });
+
+    it('clears pre-existing PermissionRequest/Response files for the same sid before writing the new one', async () => {
+      // Mirrors the Stop branch's stale-cleanup behavior: a prior hook
+      // subprocess that was killed mid-flow (or a daemon-down accumulation
+      // of unread Response files) should not survive into the next round.
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(stateDir, `${SID}.PermissionRequest.stale1.json`),
+        '{"requestId":"stale1","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+      await writeFile(
+        join(stateDir, `${SID}.PermissionRequest.stale2.json`),
+        '{"requestId":"stale2","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+      await writeFile(
+        join(stateDir, `${SID}.PermissionResponse.staleResp.json`),
+        '{"requestId":"staleResp","decision":"allow","reason":"old"}',
+      );
+
+      // Run a fast-timeout PreToolUse so we observe end state quickly.
+      await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 50,
+      });
+
+      const entries = await readStateDirEntries(stateDir);
+      // No `stale*` filenames remain; the just-written Request was also
+      // cleaned at the timeout cleanup step → state dir is empty for this sid.
+      expect(entries.filter((n) => n.includes('stale'))).toEqual([]);
+      expect(
+        entries.filter(
+          (n) =>
+            n.includes(PERMISSION_REQUEST_PREFIX) ||
+            n.includes(PERMISSION_RESPONSE_PREFIX),
+        ),
+      ).toEqual([]);
+    });
+
+    it('only clears Permission files for the current sid, not others', async () => {
+      const OTHER_SID = '99999999-3606-4fe4-b01d-cccccccccccc';
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(stateDir, `${OTHER_SID}.PermissionRequest.other1.json`),
+        '{"requestId":"other1","toolName":"Bash","toolInput":{},"createdAt":0}',
+      );
+
+      await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 50,
+      });
+
+      const entries = await readStateDirEntries(stateDir);
+      // OTHER_SID's Request still there (sid-scoped sweep).
+      expect(entries).toContain(`${OTHER_SID}.PermissionRequest.other1.json`);
+    });
+
+    it('cleans up Request file on timeout path (no Response was written)', async () => {
+      await runHookReceiver({
+        stateDir,
+        payload: PRE_TOOL_USE,
+        permissionPollIntervalMs: 10,
+        permissionTimeoutMs: 100,
+      });
+      const entries = await readStateDirEntries(stateDir);
+      expect(
+        entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX)),
+      ).toEqual([]);
     });
   });
 

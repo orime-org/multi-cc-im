@@ -35,11 +35,24 @@ export interface RouterDispatch {
   content: string;
 }
 
+/**
+ * Permission response derived from `@<tabname> /1` (allow) or `/2` (deny)
+ * IM messages. Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+ * Orchestrator picks this up after `route()`, locates the session's pending
+ * PermissionRequest file, and writes a matching PermissionResponse.
+ */
+export interface RouterPermissionResponse {
+  session: SessionInfo;
+  decision: 'allow' | 'deny';
+}
+
 export interface RouterResult {
   /** Visible feedback to send back to the IM (per CLAUDE.md "routing visible echo required"). */
   echo: string;
   /** Sessions to forward `content` to. Empty for control commands / errors. */
   dispatches: RouterDispatch[];
+  /** Set when the IM message was a `@<tabname> /1` or `/2` permission response. */
+  permissionResponse?: RouterPermissionResponse;
 }
 
 /**
@@ -93,7 +106,44 @@ export async function route(
 
     case 'plain':
       return handlePlain(parsed.body, sessions, opts.state);
+
+    case 'permission_response':
+      return handlePermissionResponse(parsed.tabName, parsed.decision, sessions);
   }
+}
+
+// ============================================================================
+// Permission response: @<tabname> /1 (allow) / @<tabname> /2 (deny)
+// ============================================================================
+
+function handlePermissionResponse(
+  tabName: string,
+  decision: 'allow' | 'deny',
+  sessions: readonly SessionInfo[],
+): RouterResult {
+  const result = matchSession(tabName, sessions);
+  if (result.type === 'none') {
+    return {
+      echo: `❌ \`@${tabName}\` not found — no active session by that name`,
+      dispatches: [],
+    };
+  }
+  if (result.type === 'ambiguous') {
+    return {
+      echo: `❌ \`@${tabName}\` is ambiguous — matches: ${result.candidates
+        .map(displayName)
+        .join(', ')}. Use a longer prefix or \`$<sid8>\`.`,
+      dispatches: [],
+    };
+  }
+  // Unique match. Orchestrator will check whether the session has a pending
+  // PermissionRequest file and either write the Response or echo "no pending".
+  const verb = decision === 'allow' ? '允许' : '拒绝';
+  return {
+    echo: `→ ${displayName(result.session)} permission ${verb}`,
+    dispatches: [],
+    permissionResponse: { session: result.session, decision },
+  };
 }
 
 // ============================================================================

@@ -26,6 +26,7 @@ export type {
   HookPayload,
   HookDecision,
   SessionStartPayload,
+  PreToolUsePayload,
   StopPayload,
   SessionEndPayload,
 } from './adapter/cli.js';

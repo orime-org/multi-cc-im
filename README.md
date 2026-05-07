@@ -125,6 +125,29 @@ Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 
+## Tool permission gate (PreToolUse → IM forward)
+
+When a cc session needs your approval to run a tool (e.g. `Bash`, `Edit`), the bridge forwards the prompt to WeChat instead of blocking on the cc TUI:
+
+```
+[frontend] 准备跑工具:
+  Bash(rm -rf node_modules)
+
+⏳ 30 秒内回复，否则默认放行:
+  @frontend /1   = 允许
+  @frontend /2   = 拒绝
+```
+
+You reply with two characters:
+
+| Reply in WeChat | Effect |
+|---|---|
+| `@frontend /1` | Allow — cc proceeds with the tool call |
+| `@frontend /2` | Deny — cc cancels and asks for an alternative |
+| (no reply within 30s) | Default allow — cc proceeds |
+
+This works only when the most recent message **to that cc** came from WeChat. If you typed directly into the cc TUI, the gate is silently skipped (the hook still fires, hits the 30s timeout, and default-allows). The 30-second window is fixed by design — long enough to read the prompt on phone, short enough not to block cc indefinitely if you're away from your phone.
+
 ## Project Structure
 
 ```

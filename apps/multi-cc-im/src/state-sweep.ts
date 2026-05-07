@@ -31,6 +31,7 @@ interface SidGroup {
   hasEnd: boolean;
   stopFiles: string[];
   legacyFiles: string[];
+  permissionFiles: string[];
 }
 
 const LEGACY_SUFFIXES = [
@@ -47,6 +48,12 @@ export interface SweepStaleStateFilesResult {
   orphanStopsCleaned: number;
   /** Number of legacy pre-redesign state files deleted. */
   legacyCleaned: number;
+  /**
+   * Number of orphan PermissionRequest/Response files deleted. Hook subprocess
+   * normally cleans up both files itself; orphans only appear when the
+   * subprocess crashed or the daemon died mid-flow.
+   */
+  orphanPermissionCleaned: number;
 }
 
 export interface SweepStaleStateFilesOpts {
@@ -76,7 +83,12 @@ export async function sweepStaleStateFiles(
     entries = await readdir(stateDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { pairedCleaned: 0, orphanStopsCleaned: 0, legacyCleaned: 0 };
+      return {
+        pairedCleaned: 0,
+        orphanStopsCleaned: 0,
+        legacyCleaned: 0,
+        orphanPermissionCleaned: 0,
+      };
     }
     throw err;
   }
@@ -103,6 +115,7 @@ export async function sweepStaleStateFiles(
         hasEnd: false,
         stopFiles: [],
         legacyFiles: [],
+        permissionFiles: [],
       };
       groups.set(sid, group);
     }
@@ -111,6 +124,15 @@ export async function sweepStaleStateFiles(
     else if (rest === '.SessionEnd') group.hasEnd = true;
     else if (rest.startsWith('.Stop.')) {
       group.stopFiles.push(join(stateDir, name));
+    } else if (
+      rest.startsWith('.PermissionRequest.') ||
+      rest.startsWith('.PermissionResponse.')
+    ) {
+      // Hook subprocess + daemon both clean these up in the happy path.
+      // Sweep on startup is the safety net for crash-mid-flow orphans —
+      // they're meaningless on a fresh daemon (the polling subprocess is
+      // gone) so always drop.
+      group.permissionFiles.push(join(stateDir, name));
     } else if (LEGACY_SUFFIXES.some((suf) => rest === suf)) {
       group.legacyFiles.push(join(stateDir, name));
     }
@@ -119,12 +141,20 @@ export async function sweepStaleStateFiles(
   let pairedCleaned = 0;
   let orphanStopsCleaned = 0;
   let legacyCleaned = topLevelLegacyCount;
+  let orphanPermissionCleaned = 0;
 
   for (const group of groups.values()) {
     // Always cleanup legacy files regardless of paired/lone state.
     for (const f of group.legacyFiles) {
       await remove(f);
       legacyCleaned++;
+    }
+
+    // Permission Request/Response files are always orphans on daemon
+    // startup — the polling hook subprocess they refer to is gone.
+    for (const f of group.permissionFiles) {
+      await remove(f);
+      orphanPermissionCleaned++;
     }
 
     if (group.hasStart && group.hasEnd) {
@@ -151,7 +181,12 @@ export async function sweepStaleStateFiles(
     }
   }
 
-  return { pairedCleaned, orphanStopsCleaned, legacyCleaned };
+  return {
+    pairedCleaned,
+    orphanStopsCleaned,
+    legacyCleaned,
+    orphanPermissionCleaned,
+  };
 }
 
 /** UUID v4 prefix matcher for our state-file naming convention. */

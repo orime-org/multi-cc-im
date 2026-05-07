@@ -45,6 +45,8 @@ function isENOENT(err: unknown): boolean {
 export const SESSION_START_SUFFIX = '.SessionStart';
 export const SESSION_END_SUFFIX = '.SessionEnd';
 export const STOP_PREFIX = '.Stop.';
+export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
+export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
 
 /**
  * Convert a Date to a filesystem-safe ISO-style timestamp:
@@ -210,6 +212,160 @@ export async function listStopFiles(opts: PerSessionIO): Promise<string[]> {
   return entries
     .filter((name) => name.startsWith(prefix))
     .sort() // lexicographic = chronological for our timestamp format
+    .map((name) => join(opts.stateDir, name));
+}
+
+// ============================================================================
+// Permission request / response files: hook-subprocess ↔ daemon IPC for
+// `@<tabname> /1` (allow) / `/2` (deny) IM審批 per [DD permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+//
+// Lifecycle:
+//   1. cc PreToolUse hook → hook subprocess writes <sid>.PermissionRequest.<id>.json
+//   2. daemon (chokidar) picks up the file, forwards prompt to IM
+//   3. IM user replies → daemon writes <sid>.PermissionResponse.<id>.json
+//   4. hook subprocess (polling) reads response, then unlinks both files
+//      and exits with stdout `{permissionDecision: ...}`.
+//   5. On daemon-down: cleanup sweep deletes orphan request/response files.
+// ============================================================================
+
+export interface PermissionRequestFile {
+  /** Random short id used to pair Request → Response. */
+  requestId: string;
+  /** Tool cc wants to call (e.g. `'Bash'`, `'Edit'`, `'WebFetch'`). */
+  toolName: string;
+  /** cc's tool_input verbatim (per-tool schema). */
+  toolInput: Record<string, unknown>;
+  /** When hook wrote the file (ms epoch). Daemon may use to detect stale. */
+  createdAt: number;
+}
+
+export interface PermissionResponseFile {
+  /** Echoes the request id so hook subprocess matches its own request. */
+  requestId: string;
+  /** User's decision relayed from IM. */
+  decision: 'allow' | 'deny';
+  /** Human-readable reason — passed through to cc as
+   *  `permissionDecisionReason` so cc transcript records why. */
+  reason: string;
+}
+
+export function permissionRequestPath(
+  opts: PerSessionIO & { requestId: string },
+): string {
+  return join(
+    opts.stateDir,
+    `${opts.sessionId}${PERMISSION_REQUEST_PREFIX}${opts.requestId}.json`,
+  );
+}
+
+export function permissionResponsePath(
+  opts: PerSessionIO & { requestId: string },
+): string {
+  return join(
+    opts.stateDir,
+    `${opts.sessionId}${PERMISSION_RESPONSE_PREFIX}${opts.requestId}.json`,
+  );
+}
+
+export async function writePermissionRequestFile(
+  opts: PerSessionIO & PermissionRequestFile,
+): Promise<void> {
+  const body: PermissionRequestFile = {
+    requestId: opts.requestId,
+    toolName: opts.toolName,
+    toolInput: opts.toolInput,
+    createdAt: opts.createdAt,
+  };
+  await atomicWrite(
+    permissionRequestPath(opts),
+    JSON.stringify(body, null, 2),
+  );
+}
+
+export async function readPermissionRequestFile(
+  filePath: string,
+): Promise<PermissionRequestFile | null> {
+  return readJsonOrNull<PermissionRequestFile>(filePath);
+}
+
+export async function writePermissionResponseFile(
+  opts: PerSessionIO & PermissionResponseFile,
+): Promise<void> {
+  const body: PermissionResponseFile = {
+    requestId: opts.requestId,
+    decision: opts.decision,
+    reason: opts.reason,
+  };
+  await atomicWrite(
+    permissionResponsePath(opts),
+    JSON.stringify(body, null, 2),
+  );
+}
+
+export async function readPermissionResponseFile(
+  filePath: string,
+): Promise<PermissionResponseFile | null> {
+  return readJsonOrNull<PermissionResponseFile>(filePath);
+}
+
+export async function deletePermissionRequestFile(
+  opts: PerSessionIO & { requestId: string },
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(permissionRequestPath(opts));
+}
+
+export async function deletePermissionResponseFile(
+  opts: PerSessionIO & { requestId: string },
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(permissionResponsePath(opts));
+}
+
+/**
+ * Delete a permission Request/Response file by absolute path. Mirrors
+ * `deleteStopFile`'s API — useful when sweeping per-sid orphans returned
+ * by `listPermission*Files` without re-parsing the request id from the
+ * filename.
+ */
+export async function deletePermissionFileByPath(
+  filePath: string,
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(filePath);
+}
+
+/**
+ * List all `<sid>.PermissionRequest.*` files for a given session. Used by
+ * the PreToolUse hook subprocess to sweep orphans before writing its own
+ * Request (mirrors Stop's "clear stale before write" pattern).
+ */
+export async function listPermissionRequestFiles(
+  opts: PerSessionIO,
+): Promise<string[]> {
+  const prefix = `${opts.sessionId}${PERMISSION_REQUEST_PREFIX}`;
+  let entries: string[];
+  try {
+    entries = await readdir(opts.stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(opts.stateDir, name));
+}
+
+export async function listPermissionResponseFiles(
+  opts: PerSessionIO,
+): Promise<string[]> {
+  const prefix = `${opts.sessionId}${PERMISSION_RESPONSE_PREFIX}`;
+  let entries: string[];
+  try {
+    entries = await readdir(opts.stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.startsWith(prefix))
     .map((name) => join(opts.stateDir, name));
 }
 

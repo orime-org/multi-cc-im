@@ -34,6 +34,7 @@ export type ParsedMessage =
   | { type: 'mention'; mentions: string[]; body: string }
   | { type: 'broadcast'; body: string }
   | { type: 'bridge_command'; command: string; args: string }
+  | { type: 'permission_response'; tabName: string; decision: 'allow' | 'deny' }
   | { type: 'error'; message: string };
 
 export function parse(rawText: string): ParsedMessage {
@@ -106,6 +107,21 @@ export function parse(rawText: string): ParsedMessage {
       };
     }
     return { type: 'bridge_command', command, args };
+  }
+
+  // Permission response: `@<tabname> /1` (allow) or `@<tabname> /2` (deny).
+  // Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+  // Single tabname mention + body is exactly `/1` or `/2` → permission
+  // response. (`/3` etc. fall through to the regular cc-slash forward
+  // case so cc TUI sees them as unknown command.)
+  if (mentions.length === 1 && mentions[0] !== ALL_TOKEN) {
+    const trimmedBody = body.trim();
+    if (trimmedBody === '/1') {
+      return { type: 'permission_response', tabName: mentions[0]!, decision: 'allow' };
+    }
+    if (trimmedBody === '/2') {
+      return { type: 'permission_response', tabName: mentions[0]!, decision: 'deny' };
+    }
   }
 
   // Broadcast: @all is exclusive — error if mixed with named mentions

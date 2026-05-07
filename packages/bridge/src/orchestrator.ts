@@ -8,6 +8,7 @@ import type {
   IMReplyContext,
   IncomingMessage,
   PaneToSessionMap,
+  PreToolUsePayload,
   SessionEndPayload,
   SessionId,
   SessionStartPayload,
@@ -15,6 +16,11 @@ import type {
   TermAdapter,
   TermPaneAlive,
 } from '@multi-cc-im/shared';
+import {
+  PERMISSION_REQUEST_PREFIX,
+  writePermissionResponseFile,
+} from '@multi-cc-im/cli-cc';
+import { readdir } from 'node:fs/promises';
 import { route } from './router.js';
 import type { RouterDispatch, RouterState, SessionRegistry } from './router.js';
 
@@ -35,6 +41,12 @@ export interface CreateOrchestratorOpts {
   termAdapter: TermAdapter & TermPaneAlive;
   /** Claude Code (or future codex / aider) CLI adapter. */
   cliAdapter: CLIAdapter;
+  /**
+   * State dir holding per-session files (e.g. `~/.multi-cc-im/state/`).
+   * Orchestrator needs it to write PermissionResponse files when the IM
+   * user replies `@<tabname> /1` or `/2` per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+   */
+  stateDir: string;
   /** Joined session registry + paneToSession map (`createSessionRegistry`). */
   registry: SessionRegistry & PaneToSessionMap;
   /** Persistent or in-memory state for `current_session` last-explicit sticky. */
@@ -143,6 +155,19 @@ export function createOrchestrator(
       state: opts.state,
     });
 
+    // Permission response path: IM user replied `@<tabname> /1` (allow) or
+    // `/2` (deny). Find the session's pending PermissionRequest file (one
+    // per sid invariant — cc serializes hook subprocesses) and write a
+    // matching PermissionResponse to unblock the polling hook subprocess.
+    if (result.permissionResponse) {
+      await handlePermissionResponseFromIM(
+        result.permissionResponse.session.sessionId,
+        result.permissionResponse.decision,
+        msg.replyCtx,
+      );
+      // Continue to send echo + return; no dispatch path for this branch.
+    }
+
     // Empty result (text=null / image-only) — orchestrator no-op for text path.
     if (result.echo === '' && result.dispatches.length === 0) return;
 
@@ -240,6 +265,113 @@ export function createOrchestrator(
     }
   }
 
+  // ============================================================================
+  // Permission response: IM user replied `@<tabname> /1` (allow) or `/2` (deny)
+  // ============================================================================
+
+  /**
+   * Locate the session's pending PermissionRequest file (we expect 0 or 1 —
+   * cc serializes hook subprocesses, so a sid never has 2+ pending) and
+   * write a PermissionResponse with the user's decision. The polling hook
+   * subprocess will pick up the response within 200ms and emit the
+   * permission decision to cc.
+   */
+  async function handlePermissionResponseFromIM(
+    sessionId: SessionId,
+    decision: 'allow' | 'deny',
+    replyCtx: IMReplyContext,
+  ): Promise<void> {
+    const sid8 = sessionId.slice(0, 8);
+    let entries: string[];
+    try {
+      entries = await readdir(opts.stateDir);
+    } catch (err) {
+      onError(err, { phase: 'permissionResponseListDir', sessionId });
+      return;
+    }
+    const prefix = `${sessionId}${PERMISSION_REQUEST_PREFIX}`;
+    const pendingNames = entries.filter(
+      (n) => n.startsWith(prefix) && n.endsWith('.json'),
+    );
+
+    if (pendingNames.length === 0) {
+      log(`[PermissionResponse ${sid8}] no pending request — IM reply ignored`);
+      try {
+        await opts.imAdapter.send(
+          `❌ @${sid8} 当前没在等审批的工具，回复无效。如果想发 prompt 请用 \`@<tabname> <内容>\`。`,
+          replyCtx,
+        );
+      } catch (err) {
+        onError(err, { phase: 'permissionResponseEcho', sessionId });
+      }
+      return;
+    }
+
+    // Multiple pending shouldn't happen (cc serializes), but if it does,
+    // process them all with the same decision — user explicitly chose.
+    for (const name of pendingNames) {
+      const requestId = name
+        .slice(prefix.length)
+        .replace(/\.json$/, '');
+      log(`[PermissionResponse ${sid8}] ${decision} request ${requestId}`);
+      try {
+        await writePermissionResponseFile({
+          stateDir: opts.stateDir,
+          sessionId: sessionId as unknown as string,
+          requestId,
+          decision,
+          reason: `IM user replied /${decision === 'allow' ? '1' : '2'}`,
+        });
+      } catch (err) {
+        onError(err, { phase: 'permissionResponseWrite', sessionId });
+      }
+    }
+  }
+
+  // ============================================================================
+  // PreToolUse: cc wants to call a tool, ask IM for permission.
+  // ============================================================================
+
+  async function handlePreToolUse(
+    p: PreToolUsePayload & { requestId: string },
+  ): Promise<void> {
+    const sid8 = p.session_id.slice(0, 8);
+    const replyCtx = pendingReplyCtxBySession.get(p.session_id);
+
+    if (!replyCtx) {
+      // No wechat origin recorded for this session — there's no IM user to
+      // ask. The hook subprocess will time out after 30s and default-allow.
+      log(
+        `[PreToolUse ${sid8}] no wechat origin — IM permission gate skipped (hook will default-allow after 30s)`,
+      );
+      return;
+    }
+
+    // Resolve the friendly name (cc /rename) for the prefix line.
+    let tabName = `$${sid8}`;
+    try {
+      const sessions = await opts.registry.listAlive();
+      const me = sessions.find((s) => s.sessionId === p.session_id);
+      if (me && me.tabTitle && me.tabTitle.length > 0) tabName = me.tabTitle;
+    } catch (err) {
+      onError(err, { phase: 'preToolUseRegistry', sessionId: p.session_id });
+    }
+
+    const summary = summarizeToolInput(p.tool_name, p.tool_input);
+    const body =
+      `[${tabName}] 准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
+      `⏳ 30 秒内回复，否则默认放行:\n` +
+      `  @${tabName} /1   = 允许\n` +
+      `  @${tabName} /2   = 拒绝`;
+
+    log(`[PreToolUse ${sid8}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
+    try {
+      await opts.imAdapter.send(body, replyCtx);
+    } catch (err) {
+      onError(err, { phase: 'preToolUseAsk', sessionId: p.session_id });
+    }
+  }
+
   const cliHandler: CLIHandler = {
     async onSessionStart(p: SessionStartPayload): Promise<void> {
       // Refresh registry so the new session shows up on next inbound dispatch.
@@ -249,6 +381,9 @@ export function createOrchestrator(
       await opts.registry.listAlive().catch((err) => {
         onError(err, { phase: 'sessionStartRefresh' });
       });
+    },
+    async onPreToolUse(p): Promise<void> {
+      return handlePreToolUse(p);
     },
     async onStop(p: StopPayload): Promise<HookDecision | void> {
       return handleStop(p);
@@ -324,6 +459,30 @@ function renameHintFor(
     ...lines,
     '  Run `/rename <name>` in each cc TUI to set a friendly name.',
   ].join('\n');
+}
+
+/**
+ * Summarize a cc tool_input for human-readable display in the IM
+ * permission prompt. Bash gets special-case treatment (just the command
+ * line); other tools get a one-line truncated JSON.
+ */
+function summarizeToolInput(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): string {
+  if (toolName === 'Bash' && typeof toolInput.command === 'string') {
+    return truncate(toolInput.command, 120);
+  }
+  if (
+    (toolName === 'Read' || toolName === 'Edit' || toolName === 'Write') &&
+    typeof toolInput.file_path === 'string'
+  ) {
+    return toolInput.file_path;
+  }
+  if (toolName === 'WebFetch' && typeof toolInput.url === 'string') {
+    return toolInput.url;
+  }
+  return truncate(JSON.stringify(toolInput), 120);
 }
 
 function truncate(text: string, max: number): string {
