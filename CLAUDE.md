@@ -69,6 +69,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 图片/文件（AES-128-ECB 解密） | ⚠️ | 跟协议层 DD 联动 |
 | pane 活性验证策略 | ✓ | 多信号组合：SessionEnd hook 权威 + PID kill -0 + `ps -o lstart` 防 PID 复用 + hook 时间戳 idle 超时兜底；3 项未决问题待 v1 实施前实测；[DD: pane 活性策略](docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md) |
 | Credentials 持久化（`bot_token` 等）| ✓ | **0600 JSON 文件**（`~/.multi-cc-im/credentials/<im>.json`），跟 Tencent OpenClaw vendor 上游一致；**不调 OS keychain**（微信生态零产品调 + `@napi-rs/keyring` WSL 默认开箱失败 + Windows DPAPI 同用户进程互通防护有限）；[DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
+| Permission prompt 转发 IM 审批 | ✓ | **PreToolUse hook + file IPC**：hook 子进程写 `<sid>.PermissionRequest.<id>.json` → daemon forward IM → 用户回 `@<tabname> /1`（允许）或 `/2`（拒绝） → daemon 写 `<sid>.PermissionResponse.<id>.json` → hook 读完写 stdout `{permissionDecision: "allow"/"deny"}`。30 秒 timeout 默认 allow。不加白/黑名单。[DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) |
 
 # 关键规范（MANDATORY）
 
