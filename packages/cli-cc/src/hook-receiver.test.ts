@@ -316,7 +316,12 @@ describe('runHookReceiver', () => {
       });
     });
 
-    it('multiple Stop calls: each creates a new file with different timestamp suffix', async () => {
+    it('multiple Stop calls: only the latest survives (each call clears stale Stop files for the same sid)', async () => {
+      // Symmetric with SessionStart's resume cleanup. Daemon-up case: each
+      // Stop is unlinked by the daemon ~100ms after write, so this listFiles
+      // loop is a no-op. Daemon-down case: previous Stop files lingered;
+      // they're cleaned here. Either way, after multiple Stop hooks fire,
+      // state/ contains exactly the latest Stop file.
       const t1 = new Date('2026-05-06T16:20:15.123Z');
       const t2 = new Date('2026-05-06T16:20:16.000Z');
       const t3 = new Date('2026-05-06T16:20:17.456Z');
@@ -324,11 +329,63 @@ describe('runHookReceiver', () => {
       await runHookReceiver({ stateDir, payload: STOP, now: () => t2 });
       await runHookReceiver({ stateDir, payload: STOP, now: () => t3 });
       const files = await listStopFiles({ stateDir, sessionId: SID });
-      expect(files).toHaveLength(3);
-      // Sorted ascending — t1 < t2 < t3.
-      expect(files[0]).toContain(formatStopTimestamp(t1));
-      expect(files[1]).toContain(formatStopTimestamp(t2));
-      expect(files[2]).toContain(formatStopTimestamp(t3));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toContain(formatStopTimestamp(t3));
+    });
+
+    it('clears pre-existing Stop files for the same sid before writing the new one', async () => {
+      // Simulate a daemon-down scenario where multiple Stop files
+      // accumulated for this sid. The next Stop hook fire should clean them.
+      const tOld1 = '2026-05-06T16-20-15-123Z';
+      const tOld2 = '2026-05-06T16-20-16-000Z';
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: tOld1,
+        last_assistant_message: 'old reply 1',
+      });
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: tOld2,
+        last_assistant_message: 'old reply 2',
+      });
+      expect(
+        (await listStopFiles({ stateDir, sessionId: SID })).length,
+      ).toBe(2);
+
+      const tNew = new Date('2026-05-06T16:20:30.000Z');
+      await runHookReceiver({ stateDir, payload: STOP, now: () => tNew });
+
+      const files = await listStopFiles({ stateDir, sessionId: SID });
+      expect(files).toHaveLength(1);
+      expect(files[0]).toContain(formatStopTimestamp(tNew));
+    });
+
+    it('only clears Stop files for the current sid, not others', async () => {
+      // Defensive: ensure the stale-cleanup is sid-scoped so concurrent cc
+      // sessions don't accidentally drop each other's pending Stop files.
+      const OTHER_SID = '99999999-3606-4fe4-b01d-bbbbbbbbbbbb';
+      await writeStopFile({
+        stateDir,
+        sessionId: OTHER_SID,
+        timestamp: '2026-05-06T16-20-15-123Z',
+        last_assistant_message: 'other cc reply',
+      });
+
+      await runHookReceiver({
+        stateDir,
+        payload: STOP,
+        now: () => new Date('2026-05-06T16:20:30.000Z'),
+      });
+
+      // SID got a new Stop, OTHER_SID's was untouched.
+      expect(
+        (await listStopFiles({ stateDir, sessionId: SID })).length,
+      ).toBe(1);
+      expect(
+        (await listStopFiles({ stateDir, sessionId: OTHER_SID })).length,
+      ).toBe(1);
     });
   });
 

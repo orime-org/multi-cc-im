@@ -155,6 +155,17 @@ export async function runHookReceiver(
     }
 
     case 'Stop': {
+      // Symmetric with SessionStart: clear stale Stop.* before writing the
+      // fresh one so state/ never accumulates more than one Stop file per
+      // sid. Daemon-up case: prior Stop was already unlinked by daemon
+      // after forwarding (~100ms). This loop is a no-op there. Daemon-down
+      // case: previous Stop file(s) lingered; we drop them — the daemon
+      // can't forward them on restart anyway (lastReplyCtxBySession is
+      // in-memory only and was lost). Keeps state/ clean for users
+      // running `ls ~/.multi-cc-im/state/` to inspect.
+      const stalestop = await listStopFiles({ stateDir, sessionId });
+      for (const f of stalestop) await deleteStopFile(f);
+
       const now = opts.now ?? (() => new Date());
       const timestamp = formatStopTimestamp(now());
       await writeStopFile({
