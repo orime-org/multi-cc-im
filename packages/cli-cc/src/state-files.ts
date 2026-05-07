@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@multi-cc-im/storage-files';
@@ -51,6 +52,8 @@ export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
 export const IM_WORK_FILE_NAME = 'IMWork';
 /** Per the same DD — per-session IMReplyContext snapshot. */
 export const IM_ORIGIN_SUFFIX = '.IMOrigin';
+/** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
+export const DAEMON_PID_FILE_NAME = 'daemon.pid';
 
 /**
  * Convert a Date to a filesystem-safe ISO-style timestamp:
@@ -459,6 +462,120 @@ export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
   return entries
     .filter((name) => name.endsWith(IM_ORIGIN_SUFFIX))
     .map((name) => join(stateDir, name));
+}
+
+// ============================================================================
+// daemon.pid: PID lock for the daemon process. Per
+// [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+//
+// Lifecycle:
+//   - daemon start → write { pid, startedAt } (unless another daemon
+//     already running — start enforces double-start guard via isDaemonAlive)
+//   - daemon stop  → delete (Ctrl+C / graceful shutdown)
+//   - daemon SIGKILL'd → file leaks; next daemon start sees it as "stale
+//     lock" (PID dead OR lstart mismatch) and overwrites
+//
+// `startedAt` is the verbatim output of `ps -o lstart= -p <pid>` (e.g.
+// "Mon May  9 10:00:00 2026"). Stored alongside PID specifically to defend
+// against PID reuse — when the OS recycles a dead daemon's PID to some
+// unrelated process, lstart of that PID won't match what we recorded so
+// `isDaemonAlive` returns false correctly.
+// ============================================================================
+
+export interface DaemonPidFile {
+  pid: number;
+  /**
+   * Output of `ps -o lstart= -p <pid>` captured at daemon start, used to
+   * detect PID reuse on later isDaemonAlive checks. Stored verbatim.
+   */
+  startedAt: string;
+}
+
+export function daemonPidPath(stateDir: string): string {
+  return join(stateDir, DAEMON_PID_FILE_NAME);
+}
+
+export async function writeDaemonPidFile(
+  opts: { stateDir: string } & DaemonPidFile,
+): Promise<void> {
+  const body: DaemonPidFile = {
+    pid: opts.pid,
+    startedAt: opts.startedAt,
+  };
+  await atomicWrite(daemonPidPath(opts.stateDir), JSON.stringify(body, null, 2));
+}
+
+export async function readDaemonPidFile(
+  stateDir: string,
+): Promise<DaemonPidFile | null> {
+  return readJsonOrNull<DaemonPidFile>(daemonPidPath(stateDir));
+}
+
+export async function deleteDaemonPidFile(stateDir: string): Promise<void> {
+  await unlinkOrIgnoreENOENT(daemonPidPath(stateDir));
+}
+
+/**
+ * Capture the OS process start-time string for a given PID via
+ * `ps -o lstart= -p <pid>`. Returns null on ENOENT (PID does not exist) or
+ * any non-zero exit code (PID may be in another user / kernel process).
+ *
+ * Used by `isDaemonAlive` for PID-reuse defense and by daemon start's
+ * double-start check.
+ */
+export async function captureProcessLstart(pid: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'ps',
+      ['-o', 'lstart=', '-p', String(pid)],
+      { timeout: 5_000 },
+      (err, stdout) => {
+        if (err) {
+          // err.code = ESRCH (PID not found) or non-zero exit. Either way,
+          // we treat as "no lstart available" rather than throwing — caller
+          // (isDaemonAlive) interprets null as "PID dead/inaccessible".
+          resolve(null);
+          return;
+        }
+        const trimmed = stdout.trim();
+        resolve(trimmed.length === 0 ? null : trimmed);
+      },
+    );
+  });
+}
+
+/**
+ * Check whether the daemon recorded in `<stateDir>/daemon.pid` is still
+ * alive. Two-step verification per [DD: daemon liveness] candidate d:
+ *
+ *   1. `process.kill(pid, 0)` — fast existence test (no fork)
+ *   2. `ps -o lstart= -p <pid>` — verify the PID still belongs to the
+ *      same process we recorded (defends against OS PID reuse)
+ *
+ * Returns:
+ *   - false if no daemon.pid file
+ *   - false if PID does not exist (ESRCH / EPERM)
+ *   - false if PID exists but lstart string differs from recorded
+ *   - true otherwise
+ *
+ * Throws only on unexpected fs errors (file unreadable, permission, etc.).
+ */
+export async function isDaemonAlive(stateDir: string): Promise<boolean> {
+  const file = await readDaemonPidFile(stateDir);
+  if (file === null) return false;
+
+  // Step 1: PID existence (signal 0 doesn't actually kill anything)
+  try {
+    process.kill(file.pid, 0);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH' || code === 'EPERM') return false;
+    throw err;
+  }
+
+  // Step 2: PID-reuse defense — actual lstart must match recorded
+  const actualLstart = await captureProcessLstart(file.pid);
+  return actualLstart !== null && actualLstart === file.startedAt;
 }
 
 // ============================================================================

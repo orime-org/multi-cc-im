@@ -1,5 +1,10 @@
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  DAEMON_PID_FILE_NAME,
+  daemonPidPath,
+  isDaemonAlive,
+} from '@multi-cc-im/cli-cc';
 
 /**
  * Daemon startup state-directory sweep.
@@ -65,6 +70,13 @@ export interface SweepStaleStateFilesResult {
    * separately deletes IMWork.
    */
   orphanIMOriginCleaned: number;
+  /**
+   * Number of stale `daemon.pid` files deleted. Per [DD: daemon liveness] —
+   * sweep keeps daemon.pid if PID is alive + lstart matches recorded value
+   * (so `cleanup` is safe to run while daemon is live: it won't blow away
+   * the live lock); otherwise treats it as stale and deletes.
+   */
+  staleDaemonPidCleaned: number;
 }
 
 export interface SweepStaleStateFilesOpts {
@@ -100,6 +112,7 @@ export async function sweepStaleStateFiles(
         legacyCleaned: 0,
         orphanPermissionCleaned: 0,
         orphanIMOriginCleaned: 0,
+        staleDaemonPidCleaned: 0,
       };
     }
     throw err;
@@ -107,12 +120,30 @@ export async function sweepStaleStateFiles(
 
   const groups = new Map<string, SidGroup>();
   let topLevelLegacyCount = 0;
+  let staleDaemonPidCleaned = 0;
 
   for (const name of entries) {
     if (name === 'current-session') {
       // Top-level legacy file from PR-B1 era — delete unconditionally.
       await remove(join(stateDir, name));
       topLevelLegacyCount++;
+      continue;
+    }
+
+    if (name === DAEMON_PID_FILE_NAME) {
+      // Per [DD: daemon liveness](../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md):
+      // keep daemon.pid only if it points at a live daemon (PID + lstart
+      // both match). Otherwise it's a stale lock from a crashed daemon —
+      // delete so next daemon start has a clean slate.
+      //
+      // Safety for `multi-cc-im cleanup` run while daemon is live: live
+      // daemon's PID + lstart match, so isDaemonAlive returns true and we
+      // keep the file.
+      const alive = await isDaemonAlive(stateDir);
+      if (!alive) {
+        await remove(daemonPidPath(stateDir));
+        staleDaemonPidCleaned++;
+      }
       continue;
     }
 
@@ -221,6 +252,7 @@ export async function sweepStaleStateFiles(
     legacyCleaned,
     orphanPermissionCleaned,
     orphanIMOriginCleaned,
+    staleDaemonPidCleaned,
   };
 }
 

@@ -12,6 +12,7 @@ import {
   existsIMOriginFile,
   existsIMWorkFile,
   formatStopTimestamp,
+  isDaemonAlive,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
   listStopFiles,
@@ -273,6 +274,21 @@ export async function runHookReceiver(
         };
       }
 
+      // E4: daemon not running (Ctrl+C / crash / never started). Per
+      // [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+      // Order is intentionally after IMWork + IMOrigin: those checks are cheap
+      // (stat ~0.1ms) and trigger far more often than the daemon-dead path,
+      // so spawn-ps cost (~10-30ms) is only paid in the rare forward case.
+      if (!(await isDaemonAlive(stateDir))) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'ask',
+            permissionDecisionReason: '[multi-cc-im] daemon not running',
+          },
+        };
+      }
+
       // Sweep stale Request/Response files for this sid before writing the
       // new Request (mirrors Stop branch's stale-cleanup; defends against
       // a prior hook subprocess killed mid-cleanup).
@@ -337,14 +353,30 @@ export async function runHookReceiver(
     }
 
     case 'Stop': {
+      // Three short-circuit guards mirror PreToolUse decision tree per
+      // [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+      // Order is (cheapest → most expensive): IMWork stat → IMOrigin stat →
+      // daemon liveness (spawn ps). 99% of Stop hooks won't reach the
+      // daemon liveness check.
+      //
+      //   E1 !IMWork    → return void (local mode, cc reply stays in TUI)
+      //   E2 !IMOrigin  → return void (cc this turn isn't IM-bound)
+      //   E3 !daemon    → return void (forward impossible, don't accumulate Stop file)
+      //   else fall through to write + injection-queue check (PR-D path)
+
+      // E1
+      if (!(await existsIMWorkFile(stateDir))) return;
+      // E2
+      if (!(await existsIMOriginFile({ stateDir, sessionId }))) return;
+      // E3
+      if (!(await isDaemonAlive(stateDir))) return;
+
       // Symmetric with SessionStart: clear stale Stop.* before writing the
       // fresh one so state/ never accumulates more than one Stop file per
       // sid. Daemon-up case: prior Stop was already unlinked by daemon
       // after forwarding (~100ms). This loop is a no-op there. Daemon-down
-      // case: previous Stop file(s) lingered; we drop them — the daemon
-      // can't forward them on restart anyway (lastReplyCtxBySession is
-      // in-memory only and was lost). Keeps state/ clean for users
-      // running `ls ~/.multi-cc-im/state/` to inspect.
+      // case is now handled by E3 above, so we only reach here if daemon
+      // is alive — Stop file will be picked up promptly.
       const stalestop = await listStopFiles({ stateDir, sessionId });
       for (const f of stalestop) await deleteStopFile(f);
 

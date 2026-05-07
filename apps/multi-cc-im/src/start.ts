@@ -6,7 +6,14 @@ import {
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
 import type { RouterState } from '@multi-cc-im/bridge';
-import { createCcCliAdapter, deleteIMWorkFile } from '@multi-cc-im/cli-cc';
+import {
+  captureProcessLstart,
+  createCcCliAdapter,
+  deleteIMWorkFile,
+  isDaemonAlive,
+  readDaemonPidFile,
+  writeDaemonPidFile,
+} from '@multi-cc-im/cli-cc';
 import {
   createWeixinAdapter,
   WeixinCredentialsSchema,
@@ -130,6 +137,27 @@ export async function runStartCommand(
     log(`  ✓ wezterm at ${wezterm}`);
   }
 
+  // ===== 1b'. Double-start check =====
+  // Per [DD: daemon liveness](../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+  // If state/daemon.pid points at a still-alive daemon (PID + lstart match),
+  // refuse to start a second one — iLink getupdates cursor is global so two
+  // daemons would steal each other's messages, creating a debug black hole.
+  // Stale lock (PID dead OR lstart mismatch) → silently overwrite later.
+  if (await isDaemonAlive(paths.stateDir)) {
+    const existing = await readDaemonPidFile(paths.stateDir);
+    return {
+      exitCode: 1,
+      stderr:
+        `multi-cc-im start: another daemon already running.\n` +
+        `  PID:    ${existing?.pid ?? 'unknown'}\n` +
+        `  Start:  ${existing?.startedAt ?? 'unknown'}\n` +
+        `  Stop:   pkill -f 'multi-cc-im start'   (or kill ${existing?.pid ?? '<pid>'})\n` +
+        `\n` +
+        `If you're sure no daemon is running, the lock file may be stale:\n` +
+        `  rm ${paths.stateDir}/daemon.pid`,
+    };
+  }
+
   // ===== 1c. Sweep stale state files BEFORE chokidar starts watching =====
   // Cleans paired SessionStart+SessionEnd from completed sessions, orphan
   // Stop files (daemon-down accumulation that can't be forwarded — replyCtx
@@ -143,11 +171,12 @@ export async function runStartCommand(
       sweepResult.orphanStopsCleaned +
       sweepResult.legacyCleaned +
       sweepResult.orphanPermissionCleaned +
-      sweepResult.orphanIMOriginCleaned >
+      sweepResult.orphanIMOriginCleaned +
+      sweepResult.staleDaemonPidCleaned >
     0
   ) {
     log(
-      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop, ${sweepResult.legacyCleaned} legacy, ${sweepResult.orphanPermissionCleaned} orphan Permission, ${sweepResult.orphanIMOriginCleaned} orphan IMOrigin cleaned`,
+      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop, ${sweepResult.legacyCleaned} legacy, ${sweepResult.orphanPermissionCleaned} orphan Permission, ${sweepResult.orphanIMOriginCleaned} orphan IMOrigin, ${sweepResult.staleDaemonPidCleaned} stale daemon.pid cleaned`,
     );
   }
 
@@ -166,6 +195,31 @@ export async function runStartCommand(
   log(
     `  ✓ IMWork: OFF (run \`@multi-cc-im /start\` from IM to enable)`,
   );
+
+  // ===== 1e. Write daemon.pid lock file =====
+  // Per [DD: daemon liveness](../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+  // Hook subprocesses (cc child processes) read this file to verify the
+  // daemon is alive before walking the forward path; if missing or stale
+  // they emit `permissionDecision: ask` so cc TUI handles approvals.
+  try {
+    const lstart = await captureProcessLstart(process.pid);
+    if (lstart === null) {
+      log(
+        `  ⚠️  failed to capture daemon lstart — hook liveness check will fail`,
+      );
+    } else {
+      await writeDaemonPidFile({
+        stateDir: paths.stateDir,
+        pid: process.pid,
+        startedAt: lstart,
+      });
+      log(`  ✓ daemon.pid: PID ${process.pid}, lstart "${lstart}"`);
+    }
+  } catch (err) {
+    log(
+      `  ⚠️  failed to write daemon.pid: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   // ===== 2. Build adapters =====
   const credentialStore = createCredentialStore<WeixinCredentials>({

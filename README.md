@@ -127,6 +127,7 @@ The state/ directory is **monitor-only** — it never accumulates cc conversatio
 | `<sid>.PermissionResponse.<id>.json` | IM user replies → hook subprocess cleanup | Daemon writes after `@<tab> /1` or `/2`; hook subprocess polls to unblock |
 | `<sid>.IMOrigin` | each IM dispatch → cc Stop forward | IMReplyContext snapshot. cc reply threads to user's most recent IM message |
 | `IMWork` (top-level) | `@multi-cc-im /start` → `/stop` or daemon restart | 0-byte tombstone marking "user is in IM mode" |
+| `daemon.pid` (top-level) | daemon start → daemon stop (Ctrl+C / graceful) | JSON `{pid,startedAt}`. Hooks check this to know whether the daemon is alive — missing or stale ⇒ TUI takes over |
 | `wechat-cursor` | persistent | iLink long-poll cursor (don't lose messages on restart) |
 
 Daemon startup runs a sweep that deletes paired `SessionStart` + `SessionEnd` (= cc lifecycle complete), orphan `Stop.<ts>` (= daemon-down accumulation that can't be forwarded), orphan permission files (= hook subprocess killed mid-flow), and any legacy state files from pre-redesign installs. To trigger the same sweep manually:
@@ -395,6 +396,42 @@ cp ~/.claude/settings.json.bak.<latest-ISO> ~/.claude/settings.json
 mv ~/.claude/settings.json ~/.claude/settings.json.before-redo
 ./bin/multi-cc-im setup-hooks
 ```
+
+### `multi-cc-im start` says "another daemon already running"
+
+multi-cc-im enforces single-instance via `state/daemon.pid` (per [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)). Two daemons polling iLink would steal each other's messages. Three recovery options:
+
+```bash
+# 1. If you genuinely have a daemon already running (you forgot about it):
+pkill -f 'multi-cc-im start'
+./bin/multi-cc-im start
+
+# 2. If you're sure no daemon is running (e.g. previous one was SIGKILL'd):
+rm ~/.multi-cc-im/state/daemon.pid
+./bin/multi-cc-im start
+
+# 3. If unsure, the error message gives you the PID — check what it actually is:
+ps -p <pid> -o command=
+# If output is `node ... multi-cc-im start` → real daemon, kill it
+# Otherwise → PID was reused by some unrelated process; rm the lock file
+```
+
+The 3rd case is rare (PID reuse window in the home-dir-daemon scenario is huge), and the lock format includes a `startedAt` timestamp that detects this — if reused, multi-cc-im automatically overwrites without erroring.
+
+### After Ctrl+C, IM still receives stale messages
+
+Shouldn't — daemon stop deletes `IMWork` + `daemon.pid`, and hooks check both before forwarding. If you see stale forwards:
+
+```bash
+# verify lock files cleared
+ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid 2>&1
+# both should be "No such file or directory"
+
+# if not, manually clean:
+rm -f ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
+```
+
+If both files are gone but IM still routes, daemon is somehow still running — `pkill -f 'multi-cc-im start'` to be sure.
 
 ### state/ directory accumulating files
 
