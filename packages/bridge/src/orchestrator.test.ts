@@ -411,6 +411,89 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     await orch.stop();
   });
 
+  it('one-shot pending: subsequent Stop without new wechat dispatch is NOT forwarded', async () => {
+    // Reproduces the user-reported bug: once wechat dispatched once to a
+    // sid, every later Stop on that sid was being forwarded to wechat —
+    // including replies to prompts the user typed directly into the cc TUI
+    // from a wezterm tab. After the fix, pending is cleared on first Stop.
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    // Round 1: wechat dispatches → first Stop forwards
+    await im.handler!.onMessage(
+      incoming('hello', { to: 'wxid_alice', contextToken: 'ctx-1' }),
+    );
+    im.sent.length = 0;
+    const stopBase: StopPayload = {
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: 'wechat-bound reply',
+    };
+    await cli.handler!.onStop(stopBase);
+    expect(im.sent).toHaveLength(1);
+    expect(im.sent[0]?.content).toBe('[frontend]\nwechat-bound reply');
+    im.sent.length = 0;
+
+    // Round 2: user types directly into the cc TUI (NO wechat dispatch).
+    // cc replies → Stop fires. Should NOT forward to wechat.
+    await cli.handler!.onStop({
+      ...stopBase,
+      last_assistant_message: 'console-bound reply, must not leak to wechat',
+    });
+    expect(im.sent).toEqual([]);
+    await orch.stop();
+  });
+
+  it('multi-turn wechat: each new dispatch resets pending → each Stop forwards once', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      imAdapter: im,
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    const stopBase: StopPayload = {
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: '',
+    };
+
+    // 3 turns wechat ↔ cc, each forward exactly once.
+    for (const turn of [1, 2, 3]) {
+      await im.handler!.onMessage(
+        incoming(`turn ${turn}`, { to: 'wxid_alice', contextToken: `ctx-${turn}` }),
+      );
+      im.sent.length = 0;
+      await cli.handler!.onStop({ ...stopBase, last_assistant_message: `reply ${turn}` });
+      expect(im.sent).toHaveLength(1);
+      expect(im.sent[0]?.content).toBe(`[frontend]\nreply ${turn}`);
+      im.sent.length = 0;
+    }
+    await orch.stop();
+  });
+
   it('multi-target inbound stores replyCtx for ALL dispatched sessions', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
@@ -598,7 +681,7 @@ describe('createOrchestrator — INFO log sink', () => {
       stop_hook_active: false,
       last_assistant_message: 'lone reply',
     });
-    expect(lines.some((l) => l.includes('no wechat origin recorded'))).toBe(true);
+    expect(lines.some((l) => l.includes('no pending wechat origin'))).toBe(true);
     await orch.stop();
   });
 

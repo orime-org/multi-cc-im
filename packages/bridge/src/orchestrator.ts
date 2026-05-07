@@ -81,22 +81,27 @@ export interface BridgeOrchestrator {
  *   visible echo (router result + dispatch errors) → IM.send(replyCtx)
  *
  * **Outbound (cc Stop → wechat)**:
- *   CLI.onStop(p) → look up `lastReplyCtxBySession[p.session_id]` → if set,
- *   IM.send(p.last_assistant_message, replyCtx). No-op when bridge has never
- *   routed a wechat msg to that session.
+ *   CLI.onStop(p) → look up `pendingReplyCtxBySession[p.session_id]` → if
+ *   set, IM.send(p.last_assistant_message, replyCtx) and **delete the
+ *   pending entry**. No-op when no pending wechat origin.
  *
- * **Reply-ctx tracking**:
- *   On every successful inbound dispatch, store `incoming.replyCtx` keyed by
- *   target sessionId (overwrite). Multi-target / @all inbound store the same
- *   ctx for every dispatched session. Bridge restart resets the map (current
- *   v1 keeps it in-memory only; persistence would require a per-session file).
+ * **Pending reply-ctx tracking (one-shot)**:
+ *   On every successful inbound dispatch, store `incoming.replyCtx` keyed
+ *   by target sessionId. The next cc Stop forwards the assistant reply to
+ *   that ctx and **clears the pending**. Subsequent Stops without a fresh
+ *   wechat dispatch (e.g. the user typing directly into the cc TUI from
+ *   a wezterm tab) skip forward — they're not wechat-bound.
+ *
+ *   Multi-target / @all inbound store the same ctx for every dispatched
+ *   session. Bridge restart resets the map (in-memory only; iLink
+ *   contextToken is short-lived so persisting wouldn't help anyway).
  */
 export function createOrchestrator(
   opts: CreateOrchestratorOpts,
 ): BridgeOrchestrator {
   const sendKeystrokeDelayMs =
     opts.sendKeystrokeDelayMs ?? DEFAULT_SEND_KEYSTROKE_DELAY_MS;
-  const lastReplyCtxBySession = new Map<SessionId, IMReplyContext>();
+  const pendingReplyCtxBySession = new Map<SessionId, IMReplyContext>();
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
 
@@ -143,7 +148,7 @@ export function createOrchestrator(
 
     // Store replyCtx for each dispatched session (so cc Stop can route back)
     for (const d of result.dispatches) {
-      lastReplyCtxBySession.set(d.session.sessionId, msg.replyCtx);
+      pendingReplyCtxBySession.set(d.session.sessionId, msg.replyCtx);
     }
 
     if (result.dispatches.length > 0) {
@@ -194,11 +199,18 @@ export function createOrchestrator(
 
   async function handleStop(p: StopPayload): Promise<HookDecision | void> {
     const sid8 = p.session_id.slice(0, 8);
-    const replyCtx = lastReplyCtxBySession.get(p.session_id);
+    const replyCtx = pendingReplyCtxBySession.get(p.session_id);
     if (!replyCtx) {
-      log(`[Stop ${sid8}] no wechat origin recorded, skip forward`);
-      return; // session never received wechat traffic — silent
+      log(`[Stop ${sid8}] no pending wechat origin, skip forward`);
+      return; // not from wechat (e.g. user typed into the cc TUI directly)
     }
+    // ONE-SHOT semantic: clear pending immediately so subsequent Stops
+    // without a fresh wechat dispatch (e.g. user types directly into cc
+    // TUI from a wezterm tab) are NOT forwarded as if they were
+    // wechat-bound. The user has to actively send another `@<name> body`
+    // from wechat to bind a new replyCtx.
+    pendingReplyCtxBySession.delete(p.session_id);
+
     if (p.last_assistant_message.length === 0) {
       log(`[Stop ${sid8}] empty assistant message, skip forward`);
       return;
@@ -247,7 +259,7 @@ export function createOrchestrator(
       // stale reply target.
       const sid8 = p.session_id.slice(0, 8);
       log(`[SessionEnd ${sid8}] reason=${p.reason}`);
-      lastReplyCtxBySession.delete(p.session_id);
+      pendingReplyCtxBySession.delete(p.session_id);
       await opts.registry.listAlive().catch((err) => {
         onError(err, { phase: 'sessionEndRefresh' });
       });
@@ -281,7 +293,7 @@ export function createOrchestrator(
       await opts.cliAdapter.stop().catch((err) => {
         onError(err, { phase: 'stop:cli' });
       });
-      lastReplyCtxBySession.clear();
+      pendingReplyCtxBySession.clear();
     },
   };
 }
