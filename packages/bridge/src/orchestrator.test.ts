@@ -1179,164 +1179,184 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     });
   });
 
+  /**
+   * Test reaper window — short enough to keep tests fast, long enough that
+   * any pre-fire fs assertions reliably observe the file before the timer
+   * fires. CI is slower so we err on the higher side; locally these tests
+   * run in ~0.3s.
+   *
+   * NB: vi.useFakeTimers does NOT play well with this reaper because the
+   * reaper callback awaits real fs.unlink (libuv-backed) — fake timers fire
+   * the callback but the event loop doesn't tick async I/O completion in
+   * time for the next assertion (race on macOS local, deterministic-fail
+   * on CI). Real timers + a tiny window is the simplest reliable approach.
+   */
+  const REAPER_WINDOW_MS = 50;
+  const PRE_REAPER_PROBE_MS = 10; // safe window to assert "file exists" before reaper
+  const POST_REAPER_PROBE_MS = REAPER_WINDOW_MS + 50; // safe window to assert "file unlinked"
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   it('handlePreToolUse schedules a reaper that unlinks Request + Response after timer', async () => {
-    vi.useFakeTimers();
-    try {
-      const { writeFile } = await import('node:fs/promises');
-      const { readPermissionResponseFile } = await import('@multi-cc-im/cli-cc');
+    const { writeFile } = await import('node:fs/promises');
+    const { existsSync } = await import('node:fs');
 
-      const requestId = 'reaper-test-1';
-      // Pre-create the Request file as the hook subprocess would have
-      const reqPath = join(
-        reaperStateDir,
-        `${SID_A}.PermissionRequest.${requestId}.json`,
-      );
-      await writeFile(
-        reqPath,
-        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
-      );
-
-      const cli = makeMockCLI();
-      const im = makeMockIM();
-      const orch = createOrchestrator({
-        stateDir: reaperStateDir,
-        imAdapter: im,
-        termAdapter: makeMockTerm(),
-        cliAdapter: cli,
-        registry: fixedRegistry([FRONTEND]),
-        state: memState(),
-        sendKeystrokeDelayMs: 0,
-      });
-      await orch.start();
-
-      await cli.handler!.onPreToolUse({
-        session_id: SID_A,
-        transcript_path: '/tmp/x.jsonl' as never,
-        cwd: '/tmp/proj-a' as never,
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
-        tool_use_id: 'tu',
-        permission_mode: 'default',
+    const requestId = 'reaper-test-1';
+    const reqPath = join(
+      reaperStateDir,
+      `${SID_A}.PermissionRequest.${requestId}.json`,
+    );
+    await writeFile(
+      reqPath,
+      JSON.stringify({
         requestId,
-      });
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      }),
+    );
 
-      // Before the reaper fires, the Request file is still there (hook
-      // would normally cleanup at its own pace, here we left it).
-      const { existsSync } = await import('node:fs');
-      expect(existsSync(reqPath)).toBe(true);
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: reaperStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      reaperDelayMs: REAPER_WINDOW_MS,
+    });
+    await orch.start();
 
-      // Advance fake timers past the 10s reaper window
-      await vi.advanceTimersByTimeAsync(11_000);
+    await cli.handler!.onPreToolUse({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'tu',
+      permission_mode: 'default',
+      requestId,
+    });
 
-      // Reaper has unlinked
-      expect(existsSync(reqPath)).toBe(false);
+    // Right after schedule: Request still there (reaper not fired yet)
+    await delay(PRE_REAPER_PROBE_MS);
+    expect(existsSync(reqPath)).toBe(true);
 
-      await orch.stop();
-    } finally {
-      vi.useRealTimers();
-    }
+    // After the reaper window: file unlinked
+    await delay(POST_REAPER_PROBE_MS);
+    expect(existsSync(reqPath)).toBe(false);
+
+    await orch.stop();
   });
 
   it('reaper unlink is idempotent (hook subprocess cleanup wins → reaper finds ENOENT, no error)', async () => {
-    vi.useFakeTimers();
-    try {
-      const { writeFile, unlink } = await import('node:fs/promises');
-      const requestId = 'reaper-test-2';
-      const reqPath = join(
-        reaperStateDir,
-        `${SID_A}.PermissionRequest.${requestId}.json`,
-      );
-      await writeFile(
-        reqPath,
-        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
-      );
-
-      const cli = makeMockCLI();
-      const errors: { err: unknown; ctx: { phase: string } }[] = [];
-      const orch = createOrchestrator({
-        stateDir: reaperStateDir,
-        imAdapter: makeMockIM(),
-        termAdapter: makeMockTerm(),
-        cliAdapter: cli,
-        registry: fixedRegistry([FRONTEND]),
-        state: memState(),
-        sendKeystrokeDelayMs: 0,
-        onError: (err, ctx) => errors.push({ err, ctx }),
-      });
-      await orch.start();
-
-      await cli.handler!.onPreToolUse({
-        session_id: SID_A,
-        transcript_path: '/tmp/x.jsonl' as never,
-        cwd: '/tmp/proj-a' as never,
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
-        tool_use_id: 'tu',
-        permission_mode: 'default',
+    const { writeFile, unlink } = await import('node:fs/promises');
+    const requestId = 'reaper-test-2';
+    const reqPath = join(
+      reaperStateDir,
+      `${SID_A}.PermissionRequest.${requestId}.json`,
+    );
+    await writeFile(
+      reqPath,
+      JSON.stringify({
         requestId,
-      });
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      }),
+    );
 
-      // Simulate hook subprocess winning the race: it cleans up first
-      await unlink(reqPath);
+    const cli = makeMockCLI();
+    const errors: { err: unknown; ctx: { phase: string } }[] = [];
+    const orch = createOrchestrator({
+      stateDir: reaperStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      reaperDelayMs: REAPER_WINDOW_MS,
+      onError: (err, ctx) => errors.push({ err, ctx }),
+    });
+    await orch.start();
 
-      // Reaper fires later — should silently no-op on ENOENT
-      await vi.advanceTimersByTimeAsync(11_000);
+    await cli.handler!.onPreToolUse({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'tu',
+      permission_mode: 'default',
+      requestId,
+    });
 
-      const reaperErrors = errors.filter((e) => e.ctx.phase === 'reaper');
-      expect(reaperErrors).toEqual([]);
-      await orch.stop();
-    } finally {
-      vi.useRealTimers();
-    }
+    // Simulate hook subprocess winning the race: it cleans up first
+    await unlink(reqPath);
+
+    // Reaper fires later — should silently no-op on ENOENT
+    await delay(POST_REAPER_PROBE_MS);
+
+    const reaperErrors = errors.filter((e) => e.ctx.phase === 'reaper');
+    expect(reaperErrors).toEqual([]);
+    await orch.stop();
   });
 
   it('orchestrator.stop() clears pending reaper timers (no leaked timeouts)', async () => {
-    vi.useFakeTimers();
-    try {
-      const { writeFile } = await import('node:fs/promises');
-      const requestId = 'reaper-test-3';
-      await writeFile(
-        join(
-          reaperStateDir,
-          `${SID_A}.PermissionRequest.${requestId}.json`,
-        ),
-        JSON.stringify({ requestId, toolName: 'Bash', toolInput: {}, createdAt: 0 }),
-      );
-
-      const cli = makeMockCLI();
-      const orch = createOrchestrator({
-        stateDir: reaperStateDir,
-        imAdapter: makeMockIM(),
-        termAdapter: makeMockTerm(),
-        cliAdapter: cli,
-        registry: fixedRegistry([FRONTEND]),
-        state: memState(),
-        sendKeystrokeDelayMs: 0,
-      });
-      await orch.start();
-      await cli.handler!.onPreToolUse({
-        session_id: SID_A,
-        transcript_path: '/tmp/x.jsonl' as never,
-        cwd: '/tmp/proj-a' as never,
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'ls' },
-        tool_use_id: 'tu',
-        permission_mode: 'default',
+    const { writeFile } = await import('node:fs/promises');
+    const { existsSync } = await import('node:fs');
+    const requestId = 'reaper-test-3';
+    const reqPath = join(
+      reaperStateDir,
+      `${SID_A}.PermissionRequest.${requestId}.json`,
+    );
+    await writeFile(
+      reqPath,
+      JSON.stringify({
         requestId,
-      });
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      }),
+    );
 
-      // Stop clears timers
-      await orch.stop();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: reaperStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: cli,
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      reaperDelayMs: REAPER_WINDOW_MS,
+    });
+    await orch.start();
+    await cli.handler!.onPreToolUse({
+      session_id: SID_A,
+      transcript_path: '/tmp/x.jsonl' as never,
+      cwd: '/tmp/proj-a' as never,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls' },
+      tool_use_id: 'tu',
+      permission_mode: 'default',
+      requestId,
+    });
 
-      // Even after timer window, no error fires (timer was cleared)
-      await vi.advanceTimersByTimeAsync(15_000);
-      // No assertion on file existence — daemon just shouldn't crash from
-      // a fired-after-stop timer.
-    } finally {
-      vi.useRealTimers();
-    }
+    // Stop **before** the reaper window expires → timer cleared
+    await orch.stop();
+
+    // Wait past where the timer would have fired. File should still be
+    // there because the reaper was cancelled by stop().
+    await delay(POST_REAPER_PROBE_MS);
+    expect(existsSync(reqPath)).toBe(true);
   });
 });

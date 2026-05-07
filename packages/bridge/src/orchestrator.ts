@@ -63,6 +63,14 @@ export interface CreateOrchestratorOpts {
   /** Step 1 → Step 2 paste-render delay (ms). Default 300 per DD W1. */
   sendKeystrokeDelayMs?: number;
   /**
+   * Daemon reaper window (ms) — schedule unlink of orphan
+   * `<sid>.PermissionRequest/Response.<id>.json` files this long after
+   * chokidar surfaces a new Request. Default `10_000` matches the hook
+   * subprocess's PERMISSION_TIMEOUT_MS so reaper runs *just after* the hook
+   * would normally have cleaned up itself. Tests inject a small value.
+   */
+  reaperDelayMs?: number;
+  /**
    * Non-fatal error sink (IM / Term failures during routing). Default:
    * silently swallow. Bridge main entry passes its `pino` logger.
    */
@@ -133,7 +141,8 @@ export function createOrchestrator(
   // Reaper timers per request id — track to allow stop() to clear them.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Reaper window — should match hook subprocess timeout (10s, see DD). */
-  const REAPER_DELAY_MS = 10_000;
+  const DEFAULT_REAPER_DELAY_MS = 10_000;
+  const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
 
   // ============================================================================
   // Inbound: wechat → router → term sendText (two-step send)
@@ -507,7 +516,7 @@ export function createOrchestrator(
         // anything else is a genuine fs error worth surfacing.
         onError(err, { phase: 'reaper', sessionId: opts2.sessionId });
       }
-    }, REAPER_DELAY_MS);
+    }, reaperDelayMs);
     reaperTimers.set(key, timer);
   }
 
