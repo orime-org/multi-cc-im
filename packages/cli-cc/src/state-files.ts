@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 import {
   IMReplyContextSchema,
@@ -15,7 +16,8 @@ import {
  * categories:
  *
  * **Top-level (per-daemon):**
- * - `IMWork`         — 0-byte tombstone; user controls via @multi-cc-im /start /stop
+ * - `IMWork`         — JSON `{auto:boolean}`; user controls via @multi-cc-im /start [auto] /stop.
+ *                      File existence ⇔ IM mode ON. 0-byte (legacy) → `{auto:false}`.
  * - `daemon.pid`     — daemon PID lock (JSON `{pid, startedAt}`)
  * - `wechat-cursor`  — iLink long-poll cursor (handled by im-wechat package, not here)
  *
@@ -384,18 +386,49 @@ export async function listPermissionResponseFiles(
 }
 
 // ============================================================================
-// IMWork: global tombstone — file exists ⇔ user is in IM mode (manual
-// switch via @multi-cc-im /start /stop).
-// Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+// IMWork: global IM-mode flag — file exists ⇔ user is in IM mode (manual
+// switch via `@multi-cc-im /start /stop`).
+//
+// Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
+// + [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md):
+//
+// Schema evolution (compat-bridged):
+//   - **0-byte tombstone** (legacy v1.3 schema): file exists = IM mode ON,
+//     `auto = false`. Any old file written by pre-DD-#64 daemon parses as
+//     `{auto:false}` — no migration code needed; daemon start always resets
+//     IMWork → OFF (deletes the file) so legacy-content windows are short.
+//   - **JSON `{"auto":boolean}`** (current): explicit auto-approve flag.
+//     `/start` → `{auto:false}` (ask, default); `/start auto` → `{auto:true}`
+//     (hook decision tree E1.5 fast-allows all PreToolUse).
+//
+// Read path returns `IMWorkFile | null`:
+//   - null = ENOENT (IM mode OFF)
+//   - `{auto:false}` = 0-byte file (legacy compat) OR JSON `{"auto":false}`
+//   - `{auto:true}` = JSON `{"auto":true}`
+//   - throws on JSON corruption (any non-empty body that isn't valid
+//     IMWorkFile JSON) — bug indicator, fail loud
 // ============================================================================
+
+export const IMWorkFileSchema = z.object({
+  auto: z.boolean(),
+});
+
+export type IMWorkFile = z.infer<typeof IMWorkFileSchema>;
 
 export function imWorkPath(stateDir: string): string {
   return join(stateDir, IM_WORK_FILE_NAME);
 }
 
-export async function writeIMWorkFile(stateDir: string): Promise<void> {
-  // 0-byte tombstone — content is intentionally empty.
-  await atomicWrite(imWorkPath(stateDir), '');
+/**
+ * Write `IMWork` JSON. Default body `{auto:false}` keeps zero-arg callers
+ * working unchanged (matches legacy "just enable IM mode" semantic).
+ */
+export async function writeIMWorkFile(
+  stateDir: string,
+  content: IMWorkFile = { auto: false },
+): Promise<void> {
+  IMWorkFileSchema.parse(content);
+  await atomicWrite(imWorkPath(stateDir), JSON.stringify(content));
 }
 
 export async function existsIMWorkFile(stateDir: string): Promise<boolean> {
@@ -406,6 +439,25 @@ export async function existsIMWorkFile(stateDir: string): Promise<boolean> {
     if (isENOENT(err)) return false;
     throw err;
   }
+}
+
+/**
+ * Read + zod-validate `IMWork`. Returns null on ENOENT. Empty file (legacy
+ * 0-byte tombstone) is treated as `{auto:false}` for back-compat. Throws on
+ * malformed JSON or schema mismatch (corruption / future-version).
+ */
+export async function readIMWorkFile(
+  stateDir: string,
+): Promise<IMWorkFile | null> {
+  let raw: string;
+  try {
+    raw = await readFile(imWorkPath(stateDir), 'utf-8');
+  } catch (err) {
+    if (isENOENT(err)) return null;
+    throw err;
+  }
+  if (raw.length === 0) return { auto: false }; // legacy 0-byte tombstone
+  return IMWorkFileSchema.parse(JSON.parse(raw));
 }
 
 export async function deleteIMWorkFile(stateDir: string): Promise<void> {

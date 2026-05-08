@@ -365,16 +365,41 @@ describe('router — bridge commands @multi-cc-im /...', () => {
     expect(result.echo).toContain('disconnected');
   });
 
-  it('/start when off → imWorkAction "enable" + inventory', async () => {
+  it('/start when off → imWorkAction enable {auto:false} + inventory', async () => {
     const state = memState(null);
     const result = await route(incoming('@multi-cc-im /start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
     });
-    expect(result.imWorkAction).toBe('enable');
+    expect(result.imWorkAction).toEqual({ kind: 'enable', auto: false });
     expect(result.echo).toContain('IMWork ON');
     expect(result.echo).toContain('frontend');
+  });
+
+  it('/start auto → imWorkAction enable {auto:true} + auto-approve header (DD #64)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start auto'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.imWorkAction).toEqual({ kind: 'enable', auto: true });
+    expect(result.echo).toContain('IMWork ON (auto-approve)');
+    // Body explains the new mode.
+    expect(result.echo).toContain('auto-approve ON');
+  });
+
+  it('/start (no auto) → echo does NOT mention auto-approve header', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).not.toContain('(auto-approve)');
+    // Bullet line still describes ask flow.
+    expect(result.echo).toContain('10 秒内 /1');
   });
 
   it('/start echo footer points users to /help for full command reference', async () => {
@@ -403,37 +428,75 @@ describe('router — bridge commands @multi-cc-im /...', () => {
     expect(result.echo).toContain('/rename');
   });
 
-  it('/start when already on → idempotent (no imWorkAction)', async () => {
+  it('/start when already on → still emits imWorkAction (lets user re-toggle modes)', async () => {
     const state = memState(null);
     const result = await route(incoming('@multi-cc-im /start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
     });
-    expect(result.imWorkAction).toBeUndefined();
-    expect(result.echo).toMatch(/already ON/i);
+    // Always emit — user can switch /start ↔ /start auto.
+    expect(result.imWorkAction).toEqual({ kind: 'enable', auto: false });
+    // Still re-renders inventory + rules (idempotent UX).
+    expect(result.echo).toContain('IMWork ON');
+    expect(result.echo).toContain('frontend');
   });
 
-  it('/stop when on → imWorkAction "disable"', async () => {
+  it('/start auto when already-on-with-auto → still emits + auto:true (mode-confirm)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start auto'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      imWorkAuto: true,
+    });
+    expect(result.imWorkAction).toEqual({ kind: 'enable', auto: true });
+    expect(result.echo).toContain('auto-approve');
+  });
+
+  it('/stop when on → imWorkAction disable', async () => {
     const state = memState(null);
     const result = await route(incoming('@multi-cc-im /stop'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
     });
-    expect(result.imWorkAction).toBe('disable');
+    expect(result.imWorkAction).toEqual({ kind: 'disable' });
     expect(result.echo).toContain('IMWork OFF');
   });
 
-  it('/stop when already off → idempotent (no imWorkAction)', async () => {
+  it('/stop when already off → still emits (idempotent — orchestrator delete tolerates ENOENT)', async () => {
     const state = memState(null);
     const result = await route(incoming('@multi-cc-im /stop'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
     });
-    expect(result.imWorkAction).toBeUndefined();
+    expect(result.imWorkAction).toEqual({ kind: 'disable' });
     expect(result.echo).toMatch(/already OFF/i);
+  });
+
+  it('/current shows IMWork = ON (auto-approve) when imWorkAuto=true', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /current'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      imWorkAuto: true,
+    });
+    expect(result.echo).toContain('IMWork = ON (auto-approve)');
+  });
+
+  it('/current shows IMWork = ON (no auto suffix) when imWorkAuto=false', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /current'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      imWorkAuto: false,
+    });
+    expect(result.echo).toContain('IMWork = ON');
+    expect(result.echo).not.toContain('auto-approve');
   });
 
   it('unknown bridge command → error pointing to /help', async () => {
@@ -547,7 +610,7 @@ describe('router — IMWork off gate', () => {
       state,
       imWorkOn: false,
     });
-    expect(result.imWorkAction).toBe('enable');
+    expect(result.imWorkAction).toEqual({ kind: 'enable', auto: false });
   });
 
   it('permission response @<tab> /1 ALWAYS allowed even when off', async () => {

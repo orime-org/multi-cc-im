@@ -40,6 +40,13 @@ export interface RouterOpts {
    * (`@<tab> /1` `/2`) always work regardless of IMWork state.
    */
   imWorkOn?: boolean;
+  /**
+   * Current `IMWork.auto` value when `imWorkOn=true`. Used only by `/current`
+   * echo to display the active mode (`auto-approve: ON | OFF`). Per
+   * [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
+   * Ignored when `imWorkOn=false`.
+   */
+  imWorkAuto?: boolean;
 }
 
 export interface RouterDispatch {
@@ -67,10 +74,20 @@ export interface RouterResult {
   /** Set when the IM message was a `@<tabname> /1` or `/2` permission response. */
   permissionResponse?: RouterPermissionResponse;
   /**
-   * Set when the IM user invoked `@multi-cc-im /start` or `/stop`. Orchestrator
-   * acts on it after `route()` returns: writes / deletes `<stateDir>/IMWork`.
+   * Set when the IM user invoked `@multi-cc-im /start [auto]` or `/stop`.
+   * Orchestrator acts on it after `route()` returns: writes / deletes
+   * `<stateDir>/IMWork`.
+   * - `{kind:'enable', auto:false}` ← `/start`
+   * - `{kind:'enable', auto:true}`  ← `/start auto` (per DD #64)
+   * - `{kind:'disable'}`            ← `/stop`
+   *
+   * Always emitted on `/start`/`/stop` (no idempotent skip on re-run) — keeps
+   * router pure and lets the user toggle modes (`/start` ↔ `/start auto`)
+   * without router needing to know prior state.
    */
-  imWorkAction?: 'enable' | 'disable';
+  imWorkAction?:
+    | { kind: 'enable'; auto: boolean }
+    | { kind: 'disable' };
 }
 
 /**
@@ -102,6 +119,7 @@ export async function route(
   }
   const parsed = parse(text);
   const imWorkOn = opts.imWorkOn ?? false;
+  const imWorkAuto = opts.imWorkAuto ?? false;
 
   // IMWork gate: "talk to cc" message types require IMWork on. Bridge
   // commands (`@multi-cc-im /...`) + permission responses (`@<tab> /1` `/2`)
@@ -129,6 +147,7 @@ export async function route(
         sessions,
         opts.state,
         imWorkOn,
+        imWorkAuto,
       );
 
     case 'broadcast':
@@ -325,10 +344,11 @@ function handleBroadcast(
 
 function handleBridgeCommand(
   command: string,
-  _args: string,
+  args: string,
   sessions: readonly SessionInfo[],
   state: RouterState,
   imWorkOn: boolean,
+  imWorkAuto: boolean,
 ): RouterResult {
   switch (command) {
     case 'list':
@@ -364,7 +384,9 @@ function handleBridgeCommand(
 
     case 'current': {
       const paneId = state.getCurrent();
-      const imWorkLine = `IMWork = ${imWorkOn ? 'ON' : 'OFF'}`;
+      const imWorkLine = imWorkOn
+        ? `IMWork = ON${imWorkAuto ? ' (auto-approve)' : ''}`
+        : 'IMWork = OFF';
       if (paneId === null) {
         return {
           echo: `current = none\n${imWorkLine}`,
@@ -385,13 +407,21 @@ function handleBridgeCommand(
       };
     }
 
-    case 'start':
-      // /start: enable IM mode + show pane inventory + warnings.
-      // Idempotent — already-on case still re-renders the inventory so user
-      // can re-check what's available.
+    case 'start': {
+      // /start [auto]: enable IM mode + (optionally) auto-approve.
+      // Per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
+      // Always emits imWorkAction (no idempotent skip) so users can switch
+      // modes (`/start` ↔ `/start auto`) by re-issuing.
+      const wantAuto = args.trim() === 'auto';
+      const headerLine = wantAuto
+        ? '✓ IMWork ON (auto-approve) — cc 工具调用直接放行'
+        : '✓ IMWork ON';
+      const autoTipLine = wantAuto
+        ? '  - auto-approve ON：cc 调工具时**不**问 IM，直接放行（用 /start 切回 ask）'
+        : '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行';
       return {
         echo: [
-          imWorkOn ? 'ℹ️ IMWork already ON' : '✓ IMWork ON',
+          headerLine,
           '',
           ...formatSessionInventory(sessions),
           ...formatNumericTabWarning(sessions),
@@ -402,23 +432,25 @@ function handleBridgeCommand(
           '  - 没 /rename 的 cc 只能在 cc TUI 里用，IM 寻址不到',
           '  - 建议 tab title 用字母/单词，**不要用纯数字** (易混淆)',
           '  - cc 回复转发到 IM (Stop hook)',
-          '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行',
+          autoTipLine,
           '  - 终端 cc TUI 直接打字不会 forward 到 IM',
           '',
           '完整命令说明：发 @multi-cc-im /help',
         ].join('\n'),
         dispatches: [],
-        ...(imWorkOn ? {} : { imWorkAction: 'enable' as const }),
+        imWorkAction: { kind: 'enable', auto: wantAuto },
       };
+    }
 
     case 'stop':
-      if (!imWorkOn) {
-        return { echo: 'ℹ️ IMWork already OFF', dispatches: [] };
-      }
+      // Always emit imWorkAction (idempotent semantics — repeat /stop is safe;
+      // orchestrator's deleteIMWorkFile already ignores ENOENT).
       return {
-        echo: '✓ IMWork OFF — cc 回复留 cc TUI，工具审批走 cc 原生菜单',
+        echo: imWorkOn
+          ? '✓ IMWork OFF — cc 回复留 cc TUI，工具审批走 cc 原生菜单'
+          : 'ℹ️ IMWork already OFF',
         dispatches: [],
-        imWorkAction: 'disable',
+        imWorkAction: { kind: 'disable' },
       };
 
     default:

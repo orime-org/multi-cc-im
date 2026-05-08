@@ -165,6 +165,7 @@ Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.
 | `@multi-cc-im /help` | Built-in help text |
 | `@multi-cc-im /current` | Show `current_session` + IMWork status |
 | `@multi-cc-im /start` | **Enable IM mode** (cc replies + tool prompts both forward to WeChat) |
+| `@multi-cc-im /start auto` | **Enable IM mode + auto-approve** — cc tool calls auto-pass without IM round-trip ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)) |
 | `@multi-cc-im /stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
@@ -176,14 +177,16 @@ Before dispatching to cc, the bot sends a visible echo to WeChat for every route
 Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
 
 ```
-@multi-cc-im /start    →  IM mode ON (cc replies + tool prompts both forward to WeChat)
-@multi-cc-im /stop     →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
-@multi-cc-im /current  →  show current target + IMWork status
+@multi-cc-im /start         →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
+@multi-cc-im /start auto    →  IM mode ON, auto-approve (cc tool calls auto-pass, no IM round-trip)
+@multi-cc-im /stop          →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
+@multi-cc-im /current       →  show current target + IMWork status (incl. auto-approve flag)
 ```
 
-- **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote.
+- **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote. Auto-approve mode also resets — restart = safe default.
 - When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 @multi-cc-im /start 开启 IM 模式"`. Bridge commands and permission responses still work.
-- When **ON**, the `/start` echo lists currently alive cc sessions and the rules so you know what's available.
+- When **ON**, the `/start` echo lists currently alive cc sessions and the rules.
+- `/start auto` is for tool-dense workflows (e.g. "analyze this repo") where every PreToolUse round-trip would burn your thumb on `/1`. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). Switch back with `/start` (no `auto`).
 
 This is the master switch. The per-session forwarding behavior (next section) only kicks in when IMWork is on.
 
@@ -212,9 +215,10 @@ The hook decision tree (in order, cheapest check first):
 
 1. **Read-only tool** (`Read` / `Grep` / `Glob` / `NotebookRead`) → auto-allow, no IM forward (cc itself doesn't show TUI menu for these — forwarding would just spam IM).
 2. **IMWork off** → cc TUI shows its native permission menu (the 3-option `Yes / Yes don't ask again / No`). You decide locally on the keyboard.
-3. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → falls back to cc TUI menu.
-4. **Daemon not running** (Ctrl+C'd / crashed / never started) → falls back to cc TUI menu — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
-5. **Otherwise** → forward to WeChat with 10s window.
+3. **IMWork on + auto-approve enabled** (`/start auto`) → auto-allow, no IM forward, no `/1` ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)).
+4. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → falls back to cc TUI menu.
+5. **Daemon not running** (Ctrl+C'd / crashed / never started) → falls back to cc TUI menu — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
+6. **Otherwise** → forward to WeChat with 10s window.
 
 So one cc can flip between "cc TUI menu" and "IM round-trip" turn-by-turn:
 
@@ -448,7 +452,7 @@ Two categories: **top-level** files (one per daemon) and **pane-keyed** files (p
 | File | Schema | Writer | Deleter | Purpose |
 |---|---|---|---|---|
 | `daemon.pid` | JSON `{ pid: number, startedAt: string }` (`startedAt` = `ps -o lstart= -p <pid>` output, used to defend against PID reuse — [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)) | daemon `start` | daemon `stop` (Ctrl+C / graceful); state-sweep if PID dead or lstart mismatch | Lock file: hooks check `isDaemonAlive()` before walking forward path. Also enforces single-instance — second `start` errors out if first daemon's PID + lstart still match |
-| `IMWork` | 0-byte tombstone (file existence IS the signal) | router on `@multi-cc-im /start` (orchestrator handler) | router on `/stop`; daemon `start` (always reset to OFF); daemon `stop` (Ctrl+C cleanup) | Master IM-mode switch. When **absent**, hooks short-circuit (cc TUI handles approvals locally); when **present**, IM mode is on and `@frontend body` from WeChat dispatches to cc |
+| `IMWork` | JSON `{auto:boolean}` (file existence = IM mode ON; `auto:true` = auto-approve mode per [DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md); legacy 0-byte file falls back to `{auto:false}`) | router on `@multi-cc-im /start [auto]` (orchestrator handler) | router on `/stop`; daemon `start` (always reset to OFF); daemon `stop` (Ctrl+C cleanup) | Master IM-mode switch. When **absent**, hooks short-circuit (cc TUI handles approvals locally); when **present**, IM mode is on and `@frontend body` from WeChat dispatches to cc. `auto:true` makes hook PreToolUse fast-allow without IM round-trip |
 | `wechat-cursor` | text file (single string) | iLink getupdates loop on every advance (`atomicWrite`) | never deleted in normal operation | iLink long-poll cursor. Persists across daemon restart so messages aren't lost during the daemon-down window |
 
 ### Pane-keyed files
