@@ -362,16 +362,31 @@ chokidar add(`<paneId>_<sid>.Stop.<ts>`):
 当前可用 cc sessions:
   1. frontend (pane 15)
   2. api (pane 22)
-  3. (pane 28, 未 /rename)         ← 没改名的 cc 显示 paneId
+  3. (pane 28, 未 /rename — 不能从 IM 寻址，请进 cc TUI 跑 /rename <name>)
 
 ⚠️ 规则：
-  - 路由用 wezterm tab title (cc /rename 设的)
+  - IM 路由只用 tab title (cc /rename 设的)。**没 /rename 的 cc 只能在 cc TUI 里用**，IM 寻址不到
+  - 建议 tab title 用字母/单词，不要用纯数字 (易混淆)
   - cc 调工具 IM 收到 prompt，10 秒内 /1 (允许) /2 (拒绝)
   - 超过 10 秒默认放行
   - 终端 cc TUI 直接打字不会 forward IM
 ```
 
-`@multi-cc-im /list` 同 `/start` 第一段（不含规则提示）。
+如果 `/start` 时检测到任何 cc tab 的 title 是**纯数字**，echo 末尾追加一条提示：
+
+```
+⚠️ 注意：tab "15" 是纯数字，建议改名（在 cc TUI 跑 /rename <非数字名>）
+```
+
+如果 `/start` 时有**多个 cc 同名**（用户 /rename 撞名），echo 列出所有冲突：
+
+```
+⚠️ 同名 cc 冲突，IM 寻址不到下列任一：
+  - tab "frontend" 在 pane 15 + pane 22 两个地方
+  请进 cc TUI 把其中一个 /rename 成别的名
+```
+
+`@multi-cc-im /list` 同 `/start` 第一段（不含规则提示，但保留警告）。
 
 ### 5.5 状态归约：删除的概念
 
@@ -383,11 +398,28 @@ chokidar add(`<paneId>_<sid>.Stop.<ts>`):
 | SessionEnd hook | 不订阅 |
 | `bridge/session-registry.ts` 整个模块 | wezterm cli list 直接给 SessionInfo |
 | `term-wezterm/pane-alive.ts` 复杂逻辑 | wezterm cli list 看 tab title 即可（不验活）|
-| router `@$<sid>` 寻址路径 | 强制 /rename / 用户 IM 路由用 tab title |
+| router `@$<sid>` 寻址路径 | **完全删除** — 强制 /rename，所有 IM 路由必须用 tab title。**`@$<paneId>` 兜底也不加**（理由见下）|
 | `pendingReplyCtxBySession` Map（PR #56 已删）| 不变 |
 | daemon 内 `sessionId` 概念 | daemon 只关心 paneId，sid 是文件名透明字段 |
 | `transcript_path` 字段 | 删（dead code，未来 analytics 实施时按 sid 直接拼 cc transcript 路径）|
 | `cwd` 字段 in SessionStart | 删（user-facing display 改用 wezterm cli list 给的 cwd 字段）|
+
+#### 为什么不加 `@$<paneId>` 数字兜底
+
+如果允许 `@$<paneId>` 数字寻址，会跟用户的 `/rename` 自由起冲突：
+
+```
+用户 cc TUI 跑 /rename 15
+  → cc 通过 OSC 设 tab title 为 "15"
+  → IM 端发 @15 hello
+  → daemon 解析：是 tabname=15 还是 paneId=15? 歧义!
+```
+
+为了消歧义保持**所有 `@<XXX>` 一律解析为 tab title**：
+
+- IM 路由路径**只有一条**：tab title 匹配
+- 用户必须 `/rename <name>` 才能从 IM 用 cc — 强制约束让 UX 简单
+- **建议但不强制**：tab title 不要用纯数字（用户即使 `/rename 15` 系统仍 work，但同名时跟 paneId 显示混淆，用户体验差）—— 在 `/start` echo 跟 `/help` 文案里软提醒
 
 ### 5.6 PaneAlive 弱化
 
@@ -507,17 +539,15 @@ DD merge 后：
 
 ## 9. 用户决策点
 
-请最后确认（DD merge 之前）：
+所有决策点已锁定（用户审 + 拍板）：
 
 1. ✅ 走候选 c（paneId-keyed full + 删 SessionStart/SessionEnd + 入站不验活 + IMReplyContext imType discriminator）
 2. ✅ 文件命名 `<paneId>_<sid>.<event>` 双 key (cc-hook-写) + `<paneId>.IMOrigin` 单 key (daemon-写)
 3. ✅ daemon 入站不验活，信任用户从 `/start` list 的认知；corner case (cc 中途死) 接受盲注入 zsh
 4. ✅ cc settings.json 减到 2 hook (PreToolUse + Stop)，删 SessionStart + SessionEnd
-5. ✅ 删 router `@$<sid>` 寻址路径，强制用户 /rename 才能 IM 路由 (没 /rename 用 paneId 兜底 `@$15` ?)
+5. ✅ **删 router `@$<sid>` 寻址 + 也不加 `@$<paneId>` 兜底**：所有 `@<XXX>` 一律解析为 tab title，强制 /rename 才能 IM 路由；`/start` 跟 `/help` 文案软提醒「tab title 不要用纯数字」（避免跟 paneId 数字显示混淆）
 6. ✅ WEZTERM_PANE 未定义时 hook silently exit (cc 不在 wezterm = multi-cc-im 不管)
 7. ✅ state-sweep 用 wezterm cli list 当前 paneId 集合作 ground truth
 8. ✅ per-pane IMOrigin 保留（多 cc 同时 IM 对话需要）
 
-唯一未拍：第 5 点 `@$<sid>` 寻址替代物 — 删掉强制 /rename / 还是保留 `@$<paneId>` (paneId 兜底)？
-
-确认后 DD merge → 实施 PR ship。
+DD merge → 实施 PR ship。
