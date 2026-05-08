@@ -55,22 +55,27 @@ export interface PreToolUseHookOutput {
 }
 
 /**
- * Polling cadence + max wait for the PermissionResponse file. Per
- * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+ * Polling cadence + max wait for the PermissionResponse file (= IM-reply
+ * window for the user). Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
  *
- * **Why 8s and not 10s** (the cc-side `timeout: 10` configured in
- * `apps/setup-hooks.ts`): cc kills the hook subprocess once its own timeout
- * elapses. If hook's internal poll deadline equals cc's kill deadline,
- * there's a race — hook finishes polling at exactly 10s, computes
- * default-allow, attempts to write stdout, but cc has already started
- * SIGKILL'ing it. Reserving 2s margin lets hook deterministically write
- * its decision JSON to stdout before cc considers the hook hung.
+ * **10s internal vs 20s cc-side** (configured in `apps/setup-hooks.ts`
+ * `HOOK_TIMEOUTS.PreToolUse: 20`): cc kills the hook subprocess once its
+ * own timeout elapses. The cc-side timeout MUST be greater than the
+ * hook's internal poll deadline so the hook can deterministically write
+ * its decision JSON to stdout before cc SIGKILLs it.
  *
- * Net user-perceptible window: still ~10s before default-allow takes
- * effect (cc replied 8s + cleanup + cc reads stdout ~2s).
+ * The 10s margin (20s cc-side − 10s hook internal) covers:
+ * 1. Hook writing stdout + cleanup (~ms)
+ * 2. Daemon-side `apiPostFetch` transient retry on unhealthy iLink LB IPs
+ *    (up to 2 retries with 200ms+500ms backoff + per-attempt timeoutMs)
+ * 3. Any network jitter
+ *
+ * User-perceptible IM-reply window remains 10s — the same as before;
+ * the extra 10s is daemon-side resilience budget that doesn't extend
+ * the user's "act in N seconds" perception.
  */
 const PERMISSION_POLL_INTERVAL_MS = 200;
-const PERMISSION_TIMEOUT_MS = 8_000;
+const PERMISSION_TIMEOUT_MS = 10_000;
 
 /**
  * cc tools that are read-only by design — Read / Grep / Glob / NotebookRead.

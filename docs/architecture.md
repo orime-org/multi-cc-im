@@ -216,9 +216,10 @@ cc wants to call <tool> → cc fires PreToolUse hook
    → 否则走 PR-D forward 路径：
        sweep stale <paneId>_<sid>.Permission*.json
        write <paneId>_<sid>.PermissionRequest.<reqId>.json
-       poll <paneId>_<sid>.PermissionResponse.<reqId>.json every 200ms, max 8s
-       (8s < cc settings.json hook timeout 10s — 留 2s margin 给 hook 写 stdout
-        + exit；race 时 cc 才能拿到 decision，否则 cc 的 default behavior unstable)
+       poll <paneId>_<sid>.PermissionResponse.<reqId>.json every 200ms, max 10s
+       (10s < cc settings.json hook timeout 20s — 留 10s margin 给 hook 写 stdout
+        + cleanup + daemon-side apiPostFetch retry 预算 + 任何网络抖动；
+        race-free even under 2-3 transient retries hitting unhealthy LB IPs)
 
 chokidar add event → cli-cc adapter dispatches PreToolUse
    → orchestrator.handlePreToolUse({ paneId, sid, requestId, ... })
