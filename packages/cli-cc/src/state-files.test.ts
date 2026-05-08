@@ -43,6 +43,7 @@ import {
   writeDaemonPidFile,
   writeIMOriginFile,
   writeIMWorkFile,
+  readIMWorkFile,
   writePermissionRequestFile,
   writePermissionResponseFile,
   writeStopFile,
@@ -407,13 +408,49 @@ describe('state-files', () => {
     });
   });
 
-  describe('IMWork file (top-level tombstone)', () => {
-    it('writeIMWorkFile creates 0-byte file at top-level (no paneId/sid)', async () => {
+  describe('IMWork file (top-level JSON, post-DD #64)', () => {
+    it('writeIMWorkFile zero-arg writes {auto:false} JSON at top-level', async () => {
       await writeIMWorkFile(stateDir);
       const path = imWorkPath(stateDir);
       expect(path).toBe(join(stateDir, IM_WORK_FILE_NAME));
-      const buf = await readFile(path);
-      expect(buf.byteLength).toBe(0);
+      const buf = await readFile(path, 'utf-8');
+      expect(JSON.parse(buf)).toEqual({ auto: false });
+    });
+
+    it('writeIMWorkFile({auto:true}) writes {auto:true} JSON', async () => {
+      await writeIMWorkFile(stateDir, { auto: true });
+      const buf = await readFile(imWorkPath(stateDir), 'utf-8');
+      expect(JSON.parse(buf)).toEqual({ auto: true });
+    });
+
+    it('readIMWorkFile returns null on ENOENT', async () => {
+      expect(await readIMWorkFile(stateDir)).toBeNull();
+    });
+
+    it('readIMWorkFile returns {auto:false} for legacy 0-byte file (back-compat)', async () => {
+      await writeFile(imWorkPath(stateDir), '');
+      expect(await readIMWorkFile(stateDir)).toEqual({ auto: false });
+    });
+
+    it('readIMWorkFile round-trips JSON {auto:true} written by writeIMWorkFile', async () => {
+      await writeIMWorkFile(stateDir, { auto: true });
+      expect(await readIMWorkFile(stateDir)).toEqual({ auto: true });
+    });
+
+    it('readIMWorkFile throws on JSON corruption (loud failure, not silent default)', async () => {
+      await writeFile(imWorkPath(stateDir), 'not-json');
+      await expect(readIMWorkFile(stateDir)).rejects.toThrow();
+    });
+
+    it('readIMWorkFile throws on schema mismatch (e.g. future version with extra required field, or wrong type)', async () => {
+      await writeFile(imWorkPath(stateDir), JSON.stringify({ auto: 'yes' }));
+      await expect(readIMWorkFile(stateDir)).rejects.toThrow();
+    });
+
+    it('writeIMWorkFile rejects non-IMWorkFile-shape content via zod', async () => {
+      await expect(
+        writeIMWorkFile(stateDir, { auto: 'yes' } as unknown as { auto: boolean }),
+      ).rejects.toThrow();
     });
 
     it('existsIMWorkFile / deleteIMWorkFile lifecycle', async () => {

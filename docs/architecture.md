@@ -183,22 +183,25 @@ chokidar add event → cli-cc adapter classifyStateFile (parsePaneSidPrefix)
 
 ### 3. Permission gate（PreToolUse → IM 审批）
 
-详见 [DD: permission forward](superpowers/specs/2026-05-07-permission-forward-dd.md) + [DD: IMWork+IMOrigin](superpowers/specs/2026-05-08-imwork-imorigin-dd.md) + [DD: daemon liveness](superpowers/specs/2026-05-09-daemon-liveness-dd.md)（每份 refine 前一份）。
+详见 [DD: permission forward](superpowers/specs/2026-05-07-permission-forward-dd.md) + [DD: IMWork+IMOrigin](superpowers/specs/2026-05-08-imwork-imorigin-dd.md) + [DD: daemon liveness](superpowers/specs/2026-05-09-daemon-liveness-dd.md) + [DD: PreToolUse auto-approve](superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)（每份 refine 前一份）。
 
 ```
 cc wants to call <tool> → cc fires PreToolUse hook
    → multi-cc-im hook PreToolUse（hook subprocess）
    → 入口 filter: WEZTERM_PANE undefined → silent exit
-   → 四个前置 early-return（按 cost 从低到高排序）：
+   → 五个前置 early-return（按 cost 从低到高排序）：
        E1. tool ∈ {Read, Grep, Glob, NotebookRead}：               ~0ms (CPU set lookup)
               emit { permissionDecision: "allow", reason: "read-only tool" }
               exit  ← 不写 Request 文件，IM 不被打扰
-       E2. !exists(state/IMWork)：                                 ~0.1ms (stat)
+       E2. readIMWorkFile() === null：                             ~0.5ms (read+parse)
               emit { permissionDecision: "ask", reason: "local mode" }
               exit  ← cc TUI 显示原生 3 选项菜单
+       E1.5. IMWork.auto = true：                                  ~0ms (already read above)
+              emit { permissionDecision: "allow", reason: "auto-approve" }
+              exit  ← 用户 /start auto 切到 trust mode；不打扰 IM
        E3. !exists(state/<paneId>.IMOrigin)：                      ~0.1ms (stat)
               emit { permissionDecision: "ask", reason: "no IM thread for this cc" }
-              exit  ← 同上
+              exit  ← 同 E2
        E4. !isDaemonAlive(stateDir)：                              ~10-30ms (spawn ps，rare path)
               emit { permissionDecision: "ask", reason: "daemon not running" }
               exit  ← daemon 崩溃 / Ctrl+C / 未启动；cc TUI 接管

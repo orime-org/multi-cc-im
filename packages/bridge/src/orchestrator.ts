@@ -18,6 +18,7 @@ import {
   deleteDaemonPidFile,
   deleteIMOriginFile,
   deleteIMWorkFile,
+  readIMWorkFile,
   deletePermissionFileByPath,
   existsIMWorkFile,
   permissionRequestPath,
@@ -174,26 +175,33 @@ export function createOrchestrator(
   }
 
   async function handleInbound(msg: IncomingMessage): Promise<void> {
-    const imWorkOn = await existsIMWorkFile(opts.stateDir).catch((err) => {
-      onError(err, { phase: 'existsIMWorkFile' });
-      return false;
+    // Read IMWork once — derives both `imWorkOn` (file exists?) and
+    // `imWorkAuto` (`{auto:true}`?). Per [DD: PreToolUse auto-approve](../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
+    const imWork = await readIMWorkFile(opts.stateDir).catch((err) => {
+      onError(err, { phase: 'readIMWorkFile' });
+      return null;
     });
+    const imWorkOn = imWork !== null;
+    const imWorkAuto = imWork?.auto ?? false;
 
     const result = await route(msg, {
       registry: paneRegistry,
       state: opts.state,
       imWorkOn,
+      imWorkAuto,
     });
 
-    // IMWork toggle from /start /stop
-    if (result.imWorkAction === 'enable') {
+    // IMWork toggle from /start [auto] /stop
+    if (result.imWorkAction?.kind === 'enable') {
       try {
-        await writeIMWorkFile(opts.stateDir);
-        log('[IMWork] enabled by /start');
+        await writeIMWorkFile(opts.stateDir, { auto: result.imWorkAction.auto });
+        log(
+          `[IMWork] enabled by /start${result.imWorkAction.auto ? ' auto' : ''}`,
+        );
       } catch (err) {
         onError(err, { phase: 'writeIMWork' });
       }
-    } else if (result.imWorkAction === 'disable') {
+    } else if (result.imWorkAction?.kind === 'disable') {
       try {
         await deleteIMWorkFile(opts.stateDir);
         log('[IMWork] disabled by /stop');

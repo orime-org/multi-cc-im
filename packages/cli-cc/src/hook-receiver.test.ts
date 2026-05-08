@@ -201,6 +201,47 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     ).toBe(false);
   });
 
+  it('E1.5: IMWork.auto=true → permissionDecision: allow, no Request file (DD #64)', async () => {
+    // Just IMWork {auto:true} — no IMOrigin / daemon.pid needed; auto bypasses
+    // E3 / E4 entirely.
+    await writeIMWorkFile(stateDir, { auto: true });
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_BASH,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason: expect.stringContaining('auto-approve'),
+      },
+    });
+    // Crucially: no PermissionRequest file — IM round-trip skipped.
+    expect(
+      (await readStateDirEntries(stateDir)).some((n) =>
+        n.includes(PERMISSION_REQUEST_PREFIX),
+      ),
+    ).toBe(false);
+  });
+
+  it('E1.5: IMWork.auto=false → falls through to E3/E4/forward (no auto bypass)', async () => {
+    // IMWork {auto:false} but no IMOrigin → should hit E3 (ask), not E1.5.
+    await writeIMWorkFile(stateDir, { auto: false });
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_BASH,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason: expect.stringContaining('IM thread'),
+      },
+    });
+  });
+
   it('E3: !<paneId>.IMOrigin → permissionDecision: ask, no Request file', async () => {
     await writeIMWorkFile(stateDir);
     // No IMOrigin written.

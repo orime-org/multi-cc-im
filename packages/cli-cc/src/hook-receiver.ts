@@ -16,6 +16,7 @@ import {
   listPermissionResponseFiles,
   listStopFiles,
   permissionResponsePath,
+  readIMWorkFile,
   readPermissionResponseFile,
   writePermissionRequestFile,
   writeStopFile,
@@ -121,12 +122,15 @@ function defaultResolvePaneId(): number | undefined {
  * outside wezterm (ssh / VS Code terminal / etc.) — multi-cc-im does not
  * interact with such cc instances.
  *
- * **PreToolUse**: 4-step decision tree (cheapest check first):
+ * **PreToolUse**: 5-step decision tree (cheapest check first):
  *   1. read-only tool → emit `permissionDecision: allow` exit (no Request file written)
- *   2. !IMWork → emit `ask` exit (cc TUI takes over with native menu)
- *   3. !`<paneId>.IMOrigin` → emit `ask` exit (no IM thread bound for this pane)
- *   4. !daemon alive → emit `ask` exit (forward target gone)
- *   5. otherwise: write `<paneId>_<sid>.PermissionRequest.<id>.json`,
+ *   2. read IMWork: null → emit `ask` exit (cc TUI takes over with native menu)
+ *   3. IMWork.auto = true → emit `permissionDecision: allow` exit
+ *      (per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md);
+ *       user opted in via `@multi-cc-im /start auto`)
+ *   4. !`<paneId>.IMOrigin` → emit `ask` exit (no IM thread bound for this pane)
+ *   5. !daemon alive → emit `ask` exit (forward target gone)
+ *   6. otherwise: write `<paneId>_<sid>.PermissionRequest.<id>.json`,
  *      poll matching `<paneId>_<sid>.PermissionResponse.<id>.json` for
  *      `PERMISSION_TIMEOUT_MS`, return cc decision (default-allow on timeout).
  *
@@ -172,13 +176,27 @@ export async function runHookReceiver(
         };
       }
 
-      // E2: IMWork off → cc TUI native menu handles it
-      if (!(await existsIMWorkFile(stateDir))) {
+      // E1.5 + E2: load IMWork JSON. null → IM mode OFF (E2 — cc TUI takes
+      // over). {auto:true} → user opted into trust mode via `/start auto` →
+      // fast-allow without IM round-trip (E1.5). {auto:false} → fall through
+      // to E3 forward path.
+      const imWork = await readIMWorkFile(stateDir);
+      if (imWork === null) {
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             permissionDecision: 'ask',
             permissionDecisionReason: '[multi-cc-im] local mode',
+          },
+        };
+      }
+      if (imWork.auto) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason:
+              '[multi-cc-im] IMWork auto-approve, allow without IM prompt',
           },
         };
       }

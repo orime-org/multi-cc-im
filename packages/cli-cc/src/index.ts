@@ -52,8 +52,10 @@ export {
   listPermissionRequestFiles,
   listPermissionResponseFiles,
   writeIMWorkFile,
+  readIMWorkFile,
   existsIMWorkFile,
   deleteIMWorkFile,
+  IMWorkFileSchema,
   writeIMOriginFile,
   readIMOriginFile,
   existsIMOriginFile,
@@ -75,6 +77,7 @@ export type {
   ParsedStopFilename,
   ParsedPermissionFilename,
   ParsedIMOriginFilename,
+  IMWorkFile,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI
