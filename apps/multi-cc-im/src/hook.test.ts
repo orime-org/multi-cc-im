@@ -58,18 +58,14 @@ describe('runHookCommand', () => {
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  /** Helper: set up IMWork + <PANE_ID>.IMOrigin + daemon.pid so Stop / PreToolUse
+  /** Helper: set up IMWork + global IMOrigin + daemon.pid so Stop / PreToolUse
    * pass the 3 short-circuit guards and exercise the forward path. */
   async function setupBoundState(): Promise<void> {
     await writeIMWorkFile(stateDir);
-    await writeIMOriginFile({
-      stateDir,
-      paneId: PANE_ID,
-      replyCtx: {
-        imType: 'wechat',
-        to: 'wxid_user',
-        contextToken: 'tk',
-      },
+    await writeIMOriginFile(stateDir, {
+      imType: 'wechat',
+      to: 'wxid_user',
+      contextToken: 'tk',
     });
     const lstart = await captureProcessLstart(process.pid);
     await writeDaemonPidFile({

@@ -16,8 +16,8 @@ import type {
 } from '@multi-cc-im/shared';
 import {
   deleteDaemonPidFile,
-  deleteIMOriginFile,
   deleteIMWorkFile,
+  deleteIMOriginFile,
   readIMWorkFile,
   deletePermissionFileByPath,
   existsIMWorkFile,
@@ -138,26 +138,14 @@ export function createOrchestrator(
 
   async function dispatchOne(
     d: RouterDispatch,
-    msg: IncomingMessage,
+    _msg: IncomingMessage,
   ): Promise<string | null> {
     // Per DD #61: no isPaneAlive gate. Trust user-side `/start` listing.
     // If cc died after user /start, sendText goes to zsh — user notices
     // via missing IM round-trip.
-
-    // Write <paneId>.IMOrigin with the typed replyCtx (B2 — newest wins).
-    try {
-      await writeIMOriginFile({
-        stateDir: opts.stateDir,
-        paneId: d.session.paneId as unknown as number,
-        replyCtx: msg.replyCtx as IMReplyContext,
-      });
-    } catch (err) {
-      onError(err, {
-        phase: 'writeIMOrigin',
-        paneId: d.session.paneId as unknown as number,
-      });
-      return `❌ ${displayName(d.session)} writeIMOrigin failed`;
-    }
+    //
+    // IMOrigin is written by handleInbound() at the entry to this hop
+    // (DD: IMOrigin global) — we do not re-write here per-dispatch.
 
     try {
       await opts.termAdapter.sendText(d.session.paneId, d.content);
@@ -175,6 +163,19 @@ export function createOrchestrator(
   }
 
   async function handleInbound(msg: IncomingMessage): Promise<void> {
+    // Capture latest IMReplyContext into global state/IMOrigin BEFORE any
+    // router / dispatch work. Per [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md):
+    // every inbound (bridge cmd / permission response / dispatch / etc.)
+    // overwrites IMOrigin so async outbound paths (cc PreToolUse / Stop
+    // forward) read the same fresh `context_token` as the synchronous echo
+    // path uses via `msg.replyCtx`. Fixes the stale-token bug where
+    // dispatch-only writes left old tokens cached in per-pane files.
+    try {
+      await writeIMOriginFile(opts.stateDir, msg.replyCtx as IMReplyContext);
+    } catch (err) {
+      onError(err, { phase: 'writeIMOrigin' });
+    }
+
     // Read IMWork once — derives both `imWorkOn` (file exists?) and
     // `imWorkAuto` (`{auto:true}`?). Per [DD: PreToolUse auto-approve](../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
     const imWork = await readIMWorkFile(opts.stateDir).catch((err) => {
@@ -268,10 +269,16 @@ export function createOrchestrator(
       return;
     }
 
-    // Read IMOrigin (per-pane ctx, zod-validated discriminated union).
+    // Read global IMOrigin (latest server-side ctx — zod-validated). Per
+    // [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)
+    // it's overwritten by every inbound, so the token here is the latest
+    // one issued by the server. NOT deleted here — DD #57's per-reply
+    // one-shot semantic was dropped (multi-cc cc#2 reply was being lost
+    // when cc#1 reply ran first). Anti-misforward is now gated entirely
+    // by IMWork above.
     let replyCtx: IMReplyContext | null;
     try {
-      replyCtx = await readIMOriginFile({ stateDir: opts.stateDir, paneId });
+      replyCtx = await readIMOriginFile(opts.stateDir);
     } catch (err) {
       onError(err, { phase: 'readIMOrigin', paneId });
       return;
@@ -279,13 +286,6 @@ export function createOrchestrator(
     if (replyCtx === null) {
       log(`[Stop pane=${paneId}] no IMOrigin, skip forward`);
       return;
-    }
-
-    // ONE-SHOT: delete IMOrigin immediately.
-    try {
-      await deleteIMOriginFile({ stateDir: opts.stateDir, paneId });
-    } catch (err) {
-      onError(err, { phase: 'deleteIMOrigin', paneId });
     }
 
     if (p.last_assistant_message.length === 0) {
@@ -394,11 +394,11 @@ export function createOrchestrator(
       requestId: p.requestId,
     });
 
-    // Read IMOrigin (per-pane ctx). hook E3 should have short-circuited;
-    // defensive null-handling for race / corruption.
+    // Read global IMOrigin. hook E3 should have short-circuited; defensive
+    // null-handling for race / corruption.
     let replyCtx: IMReplyContext | null;
     try {
-      replyCtx = await readIMOriginFile({ stateDir: opts.stateDir, paneId });
+      replyCtx = await readIMOriginFile(opts.stateDir);
     } catch (err) {
       onError(err, { phase: 'readIMOrigin', paneId });
       return;
@@ -514,9 +514,15 @@ export function createOrchestrator(
       reaperTimers.clear();
 
       // Cleanup IM-mode lock + daemon lock so hooks immediately see
-      // "daemon not running" + "local mode" after Ctrl+C.
+      // "daemon not running" + "local mode" after Ctrl+C. Per
+      // [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md),
+      // also wipe IMOrigin so the next daemon start (or interim direct
+      // hook fire) doesn't see a stale `context_token`.
       await deleteIMWorkFile(opts.stateDir).catch((err) => {
         onError(err, { phase: 'stop:deleteIMWork' });
+      });
+      await deleteIMOriginFile(opts.stateDir).catch((err) => {
+        onError(err, { phase: 'stop:deleteIMOrigin' });
       });
       await deleteDaemonPidFile(opts.stateDir).catch((err) => {
         onError(err, { phase: 'stop:deleteDaemonPid' });

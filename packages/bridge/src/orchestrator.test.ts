@@ -441,12 +441,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
         contextToken: 'tok-A',
       }),
     );
-    expect(
-      await existsIMOriginFile({
-        stateDir: testStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
-      }),
-    ).toBe(true);
+    expect(await existsIMOriginFile(testStateDir)).toBe(true);
 
     await im.handler!.onMessage(
       incoming('@frontend second', {
@@ -455,15 +450,71 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
         contextToken: 'tok-B',
       }),
     );
-    const ctx = await readIMOriginFile({
-      stateDir: testStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
-    });
+    const ctx = await readIMOriginFile(testStateDir);
     expect(ctx).toEqual({
       imType: 'wechat',
       to: 'wxid_owner',
       contextToken: 'tok-B',
     });
+
+    await orch.stop();
+  });
+
+  it('inbound bridge command (@multi-cc-im /list) ALSO writes IMOrigin — every inbound covers stale token (DD: IMOrigin global)', async () => {
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    // First a real dispatch to seed IMOrigin = tok-A.
+    await im.handler!.onMessage(
+      incoming('@frontend hello', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tok-A',
+      }),
+    );
+    {
+      const ctx = await readIMOriginFile(testStateDir);
+      expect(ctx?.imType).toBe('wechat');
+      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-A');
+    }
+
+    // Then a bridge command — does NOT dispatch, but server still issued
+    // a fresh token (tok-B). Pre-fix bug: dispatch-only write left IMOrigin
+    // at tok-A (stale). Post-fix: every inbound overwrites.
+    await im.handler!.onMessage(
+      incoming('@multi-cc-im /list', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tok-B',
+      }),
+    );
+    {
+      const ctx = await readIMOriginFile(testStateDir);
+      expect(ctx?.imType).toBe('wechat');
+      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-B');
+    }
+
+    // Now a permission response — also a non-dispatch path; same story.
+    await im.handler!.onMessage(
+      incoming('@frontend /1', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tok-C',
+      }),
+    );
+    {
+      const ctx = await readIMOriginFile(testStateDir);
+      expect(ctx?.imType).toBe('wechat');
+      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-C');
+    }
 
     await orch.stop();
   });
@@ -534,7 +585,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     await orch.stop();
   });
 
-  it('cc Stop with empty last_assistant_message → no forward (still deletes IMOrigin)', async () => {
+  it('cc Stop with empty last_assistant_message → no forward (IMOrigin preserved per DD: IMOrigin global)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
@@ -553,17 +604,13 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       makeStop({ paneId: FRONTEND_PANE as unknown as number, message: '' }),
     );
     expect(im.sent).toEqual([]);
-    // IMOrigin still deleted (one-shot)
-    expect(
-      await existsIMOriginFile({
-        stateDir: testStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
-      }),
-    ).toBe(false);
+    // Per DD: IMOrigin global — Stop forward never deletes IMOrigin
+    // (latest-wins semantics, lifecycle owned by daemon start/stop only).
+    expect(await existsIMOriginFile(testStateDir)).toBe(true);
     await orch.stop();
   });
 
-  it('one-shot semantic: subsequent Stop without new dispatch is NOT forwarded', async () => {
+  it('IMOrigin persists across multiple Stops (one-shot dropped) — multi-cc cc#2 reply still forwards after cc#1', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
@@ -582,20 +629,22 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     await cli.handler!.onStop(
       makeStop({
         paneId: FRONTEND_PANE as unknown as number,
-        message: 'wechat-bound',
+        message: 'first reply',
       }),
     );
     expect(im.sent).toHaveLength(1);
     im.sent.length = 0;
 
-    // Second Stop, no new dispatch → IMOrigin gone → no forward
+    // Second Stop without new inbound — IMOrigin still set (no one-shot
+    // delete). Forwards using the same latest token. This is the
+    // multi-cc fix: cc#1 reply doesn't starve cc#2 reply.
     await cli.handler!.onStop(
       makeStop({
         paneId: FRONTEND_PANE as unknown as number,
-        message: 'console-bound, must not leak',
+        message: 'second reply',
       }),
     );
-    expect(im.sent).toEqual([]);
+    expect(im.sent).toHaveLength(1);
     await orch.stop();
   });
 
@@ -707,14 +756,10 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     // Pane 99 not in the listPanes snapshot — simulate "user closed wezterm tab".
-    await writeIMOriginFile({
-      stateDir: testStateDir,
-      paneId: 99,
-      replyCtx: {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'ctx-99',
-      },
+    await writeIMOriginFile(testStateDir, {
+      imType: 'wechat',
+      to: 'wxid_owner',
+      contextToken: 'ctx-99',
     });
     const orch = createOrchestrator({
       stateDir: testStateDir,
@@ -1155,13 +1200,12 @@ describe('createOrchestrator — IMWork toggle', () => {
 
     await im.handler!.onMessage(incoming('@frontend hello'));
 
+    // IMWork off → router rejects dispatch (no sendText to cc)
     expect(term.sendTextCalls).toEqual([]);
-    expect(
-      await existsIMOriginFile({
-        stateDir: toggleStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
-      }),
-    ).toBe(false);
+    // But IMOrigin IS written at handleInbound entry regardless of IMWork
+    // state (per DD: IMOrigin global — every inbound writes, IMWork is the
+    // gate only on the *forward* path, not on token capture).
+    expect(await existsIMOriginFile(toggleStateDir)).toBe(true);
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork off');
     await orch.stop();
@@ -1204,14 +1248,10 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
   beforeEach(async () => {
     reaperStateDir = mkdtempSync(join(tmpdir(), 'orch-reaper-'));
     await writeIMWorkFile(reaperStateDir);
-    await writeIMOriginFile({
-      stateDir: reaperStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
-      replyCtx: {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tk',
-      },
+    await writeIMOriginFile(reaperStateDir, {
+      imType: 'wechat',
+      to: 'wxid_owner',
+      contextToken: 'tk',
     });
   });
 

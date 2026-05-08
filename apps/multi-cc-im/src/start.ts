@@ -8,6 +8,7 @@ import type { RouterState } from '@multi-cc-im/bridge';
 import {
   captureProcessLstart,
   createCcCliAdapter,
+  deleteIMOriginFile,
   deleteIMWorkFile,
   isDaemonAlive,
   readDaemonPidFile,
@@ -179,16 +180,29 @@ export async function runStartCommand(
     );
   }
 
-  // ===== 1d. Reset IMWork to OFF on every daemon start =====
+  // ===== 1d. Reset IMWork + IMOrigin to clean state on every daemon start =====
   // Per [DD: IMWork+IMOrigin](../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
   // §5.3 — daemon start auto-resets IM mode to off, forcing user to re-issue
   // `@multi-cc-im /start` from IM if they want remote mode again. Safer than
   // honoring stale "user was in IM mode last week" state.
+  //
+  // Per [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md):
+  // IMOrigin is also wiped on start as a crash-path safety net. Stale
+  // `context_token` from a SIGKILL'd / OOM'd previous daemon would 4xx /
+  // RST against the iLink server (server only honors latest token issued
+  // for the current user-bot conversation).
   try {
     await deleteIMWorkFile(paths.stateDir);
   } catch (err) {
     log(
       `  ⚠️  failed to reset IMWork on start: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  try {
+    await deleteIMOriginFile(paths.stateDir);
+  } catch (err) {
+    log(
+      `  ⚠️  failed to reset IMOrigin on start: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   log(
