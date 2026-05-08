@@ -194,17 +194,18 @@ cc wants to call <tool> → cc fires PreToolUse hook
               emit { permissionDecision: "allow", reason: "read-only tool" }
               exit  ← 不写 Request 文件，IM 不被打扰
        E2. readIMWorkFile() === null：                             ~0.5ms (read+parse)
-              emit { permissionDecision: "ask", reason: "local mode" }
-              exit  ← cc TUI 显示原生 3 选项菜单
+              silent exit (no JSON in stdout)
+              ← cc 走原生 permission flow：user allow rules（如 "Yes don't
+                ask again" 设的）先评估命中就放行；没命中才弹 TUI menu。
+                **不返回 ask** — 否则会强制 prompt，覆盖 user 的 allow rules
+                （DD #64 & PR #67 修这个 bug）
        E1.5. IMWork.auto = true：                                  ~0ms (already read above)
               emit { permissionDecision: "allow", reason: "auto-approve" }
               exit  ← 用户 /start auto 切到 trust mode；不打扰 IM
        E3. !exists(state/<paneId>.IMOrigin)：                      ~0.1ms (stat)
-              emit { permissionDecision: "ask", reason: "no IM thread for this cc" }
-              exit  ← 同 E2
+              silent exit  ← 同 E2，defer 给 cc 原生流程
        E4. !isDaemonAlive(stateDir)：                              ~10-30ms (spawn ps，rare path)
-              emit { permissionDecision: "ask", reason: "daemon not running" }
-              exit  ← daemon 崩溃 / Ctrl+C / 未启动；cc TUI 接管
+              silent exit  ← 同 E2，defer 给 cc 原生流程
    → 否则走 PR-D forward 路径：
        sweep stale <paneId>_<sid>.Permission*.json
        write <paneId>_<sid>.PermissionRequest.<reqId>.json

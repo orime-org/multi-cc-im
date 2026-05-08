@@ -214,10 +214,10 @@ You reply with two characters:
 The hook decision tree (in order, cheapest check first):
 
 1. **Read-only tool** (`Read` / `Grep` / `Glob` / `NotebookRead`) → auto-allow, no IM forward (cc itself doesn't show TUI menu for these — forwarding would just spam IM).
-2. **IMWork off** → cc TUI shows its native permission menu (the 3-option `Yes / Yes don't ask again / No`). You decide locally on the keyboard.
+2. **IMWork off** → hook silently exits (no JSON output). cc runs its **native permission flow** — your saved `Yes don't ask again` allow rules apply first; only commands without a matching rule trigger the TUI prompt. (Returning `permissionDecision: "ask"` would force a prompt every time and override your allow rules — so we don't.)
 3. **IMWork on + auto-approve enabled** (`/start auto`) → auto-allow, no IM forward, no `/1` ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)).
-4. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → falls back to cc TUI menu.
-5. **Daemon not running** (Ctrl+C'd / crashed / never started) → falls back to cc TUI menu — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
+4. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → silent exit (same as step 2 — defer to cc's native flow + your allow rules).
+5. **Daemon not running** (Ctrl+C'd / crashed / never started) → silent exit (same as step 2) — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
 6. **Otherwise** → forward to WeChat with 10s window.
 
 So one cc can flip between "cc TUI menu" and "IM round-trip" turn-by-turn:

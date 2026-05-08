@@ -123,13 +123,16 @@ function defaultResolvePaneId(): number | undefined {
  * interact with such cc instances.
  *
  * **PreToolUse**: 5-step decision tree (cheapest check first):
- *   1. read-only tool → emit `permissionDecision: allow` exit (no Request file written)
- *   2. read IMWork: null → emit `ask` exit (cc TUI takes over with native menu)
- *   3. IMWork.auto = true → emit `permissionDecision: allow` exit
+ *   1. read-only tool → emit `permissionDecision: allow` (no Request file written)
+ *   2. read IMWork: null → **silent exit** (return undefined → no JSON in stdout).
+ *      cc falls through to its native permission flow: user-configured `allow`/
+ *      `ask`/`deny` rules apply, then default first-time prompt. **NOT `ask`** —
+ *      `ask` overrides user-saved allow rules; silent exit respects them.
+ *   3. IMWork.auto = true → emit `permissionDecision: allow`
  *      (per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md);
  *       user opted in via `@multi-cc-im /start auto`)
- *   4. !`<paneId>.IMOrigin` → emit `ask` exit (no IM thread bound for this pane)
- *   5. !daemon alive → emit `ask` exit (forward target gone)
+ *   4. !`<paneId>.IMOrigin` → silent exit (same reason as step 2)
+ *   5. !daemon alive → silent exit (same reason as step 2)
  *   6. otherwise: write `<paneId>_<sid>.PermissionRequest.<id>.json`,
  *      poll matching `<paneId>_<sid>.PermissionResponse.<id>.json` for
  *      `PERMISSION_TIMEOUT_MS`, return cc decision (default-allow on timeout).
@@ -176,19 +179,28 @@ export async function runHookReceiver(
         };
       }
 
-      // E1.5 + E2: load IMWork JSON. null → IM mode OFF (E2 — cc TUI takes
-      // over). {auto:true} → user opted into trust mode via `/start auto` →
-      // fast-allow without IM round-trip (E1.5). {auto:false} → fall through
-      // to E3 forward path.
+      // E1.5 + E2: load IMWork JSON.
+      //
+      // - null (IM mode OFF) → silent exit (no JSON output, no decision).
+      //   cc treats this as "no opinion" and falls through to its native
+      //   permission flow: user-configured allow rules apply (e.g. `Bash(cd:*)`
+      //   from prior "Yes don't ask again"), then ask rules, then deny rules,
+      //   then default first-time prompt. Anthropics' own `validate-bash.sh`
+      //   example uses this same pattern.
+      //
+      //   Why NOT `permissionDecision: "ask"`: returning `ask` forces a
+      //   prompt every time, **overriding user-saved allow rules**. The cc
+      //   docs only guarantee that hook output cannot bypass user `deny` /
+      //   `ask` rules — not user `allow` rules. Returning `ask` makes us
+      //   strictly worse than not having a hook at all.
+      //
+      // - {auto:true} (IM mode ON, trust mode via `/start auto`) →
+      //   `allow`, fast-path without IM round-trip (E1.5).
+      //
+      // - {auto:false} (IM mode ON, ask mode) → fall through to E3.
       const imWork = await readIMWorkFile(stateDir);
       if (imWork === null) {
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'ask',
-            permissionDecisionReason: '[multi-cc-im] local mode',
-          },
-        };
+        return; // E2: silent exit, defer to cc native permission flow
       }
       if (imWork.auto) {
         return {
@@ -201,29 +213,18 @@ export async function runHookReceiver(
         };
       }
 
-      // E3: IMWork on but no IM thread bound for this pane → cc TUI takes over
+      // E3: IMWork on but no IM thread bound for this pane → silent exit so
+      // user's allow rules still apply; otherwise cc falls back to its TUI
+      // first-time prompt.
       if (!(await existsIMOriginFile({ stateDir, paneId }))) {
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'ask',
-            permissionDecisionReason:
-              '[multi-cc-im] no IM thread for this cc',
-          },
-        };
+        return; // E3: silent exit, defer to cc native permission flow
       }
 
       // E4: daemon not running. Order intentionally last: IMWork + IMOrigin
-      // checks are cheap (stat ~0.1ms), daemon liveness costs spawn ps
+      // checks are cheap (read+stat ~0.5ms), daemon liveness costs spawn ps
       // (~10-30ms). Most hook calls short-circuit at E2 / E3.
       if (!(await isDaemonAlive(stateDir))) {
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'ask',
-            permissionDecisionReason: '[multi-cc-im] daemon not running',
-          },
-        };
+        return; // E4: silent exit, defer to cc native permission flow
       }
 
       // Sweep stale Request/Response files for this pane+sid before writing

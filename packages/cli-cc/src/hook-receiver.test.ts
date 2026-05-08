@@ -180,20 +180,19 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     }
   });
 
-  it('E2: !IMWork → permissionDecision: ask, no Request file', async () => {
+  it('E2: !IMWork → silent exit (no JSON, no Request file). cc falls through to user permission rules — does NOT force a prompt that would override "Yes don\'t ask again" allow rules', async () => {
     // Don't write IMWork.
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
       resolvePaneId: stubPaneId,
     });
-    expect(result).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: expect.stringContaining('local mode'),
-      },
-    });
+    // Hook returns void → CLI writes empty stdout → cc treats as "no opinion"
+    // and runs its native permission flow (allow rules first, then ask, then
+    // deny, then default prompt). Crucial: returning `permissionDecision: ask`
+    // would FORCE a prompt and bypass user-saved allow rules — that was the
+    // pre-fix bug.
+    expect(result).toBeUndefined();
     expect(
       (await readStateDirEntries(stateDir)).some((n) =>
         n.includes(PERMISSION_REQUEST_PREFIX),
@@ -225,24 +224,18 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     ).toBe(false);
   });
 
-  it('E1.5: IMWork.auto=false → falls through to E3/E4/forward (no auto bypass)', async () => {
-    // IMWork {auto:false} but no IMOrigin → should hit E3 (ask), not E1.5.
+  it('E1.5: IMWork.auto=false → falls through to E3 silent exit (no Request file)', async () => {
+    // IMWork {auto:false} but no IMOrigin → should hit E3 silent exit.
     await writeIMWorkFile(stateDir, { auto: false });
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
       resolvePaneId: stubPaneId,
     });
-    expect(result).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: expect.stringContaining('IM thread'),
-      },
-    });
+    expect(result).toBeUndefined();
   });
 
-  it('E3: !<paneId>.IMOrigin → permissionDecision: ask, no Request file', async () => {
+  it('E3: !<paneId>.IMOrigin → silent exit, no Request file (defers to cc native flow + user allow rules)', async () => {
     await writeIMWorkFile(stateDir);
     // No IMOrigin written.
     const result = await runHookReceiver({
@@ -250,13 +243,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
       payload: PRE_TOOL_USE_BASH,
       resolvePaneId: stubPaneId,
     });
-    expect(result).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: expect.stringContaining('IM thread'),
-      },
-    });
+    expect(result).toBeUndefined();
     expect(
       (await readStateDirEntries(stateDir)).some((n) =>
         n.includes(PERMISSION_REQUEST_PREFIX),
@@ -264,7 +251,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     ).toBe(false);
   });
 
-  it('E4: !daemon alive → permissionDecision: ask, no Request file', async () => {
+  it('E4: !daemon alive → silent exit, no Request file (defers to cc native flow)', async () => {
     await writeIMWorkFile(stateDir);
     await writeIMOriginFile({
       stateDir,
@@ -277,13 +264,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
       payload: PRE_TOOL_USE_BASH,
       resolvePaneId: stubPaneId,
     });
-    expect(result).toEqual({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: expect.stringContaining('daemon'),
-      },
-    });
+    expect(result).toBeUndefined();
     expect(
       (await readStateDirEntries(stateDir)).some((n) =>
         n.includes(PERMISSION_REQUEST_PREFIX),
