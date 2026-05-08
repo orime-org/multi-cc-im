@@ -110,6 +110,7 @@ describe('sweepStaleStateFiles', () => {
       legacyCleaned: 0,
       orphanPermissionCleaned: 0,
       orphanIMOriginCleaned: 0,
+      staleDaemonPidCleaned: 0,
     });
   });
 
@@ -213,5 +214,67 @@ describe('sweepStaleStateFiles', () => {
     });
     await sweepStaleStateFiles(stateDir);
     expect(await listStateDir()).toContain('IMWork');
+  });
+
+  it('daemon.pid pointing at dead PID → cleaned (stale lock)', async () => {
+    await writeFiles({
+      'daemon.pid': JSON.stringify({
+        pid: 999_999, // unlikely to exist
+        startedAt: 'fake',
+      }),
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.staleDaemonPidCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([]);
+  });
+
+  it('daemon.pid pointing at live PID with mismatched lstart → cleaned (PID-reuse stale lock)', async () => {
+    await writeFiles({
+      'daemon.pid': JSON.stringify({
+        pid: process.pid, // alive
+        startedAt: 'WRONG-LSTART-2020-01-01',
+      }),
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.staleDaemonPidCleaned).toBe(1);
+  });
+
+  it('daemon.pid pointing at THIS process with correct lstart → KEPT (live daemon)', async () => {
+    const { captureProcessLstart } = await import('@multi-cc-im/cli-cc');
+    const lstart = await captureProcessLstart(process.pid);
+    await writeFiles({
+      'daemon.pid': JSON.stringify({
+        pid: process.pid,
+        startedAt: lstart!,
+      }),
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.staleDaemonPidCleaned).toBe(0);
+    expect(await listStateDir()).toContain('daemon.pid');
+  });
+
+  it('daemon.pid + IMOrigin + Permission all stale together → all cleaned in one sweep', async () => {
+    await writeFiles({
+      'daemon.pid': JSON.stringify({ pid: 999_999, startedAt: 'fake' }),
+      [`${SID_A}.SessionStart`]: '{}',
+      [`${SID_A}.SessionEnd`]: '',
+      [`${SID_A}.IMOrigin`]: '{"contextToken":"tk"}',
+      [`${SID_A}.PermissionRequest.req1.json`]: '{}',
+    });
+    const r = await sweepStaleStateFiles(stateDir);
+    expect(r.staleDaemonPidCleaned).toBe(1);
+    expect(r.pairedCleaned).toBe(1);
+    expect(r.orphanIMOriginCleaned).toBe(1);
+    expect(r.orphanPermissionCleaned).toBe(1);
+    expect(await listStateDir()).toEqual([]);
+  });
+
+  it('dry-run preserves stale daemon.pid file', async () => {
+    await writeFiles({
+      'daemon.pid': JSON.stringify({ pid: 999_999, startedAt: 'fake' }),
+    });
+    const r = await sweepStaleStateFiles(stateDir, { dryRun: true });
+    expect(r.staleDaemonPidCleaned).toBe(1);
+    expect(await listStateDir()).toEqual(['daemon.pid']);
   });
 });

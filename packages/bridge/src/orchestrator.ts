@@ -18,6 +18,7 @@ import type {
 } from '@multi-cc-im/shared';
 import {
   PERMISSION_REQUEST_PREFIX,
+  deleteDaemonPidFile,
   deleteIMOriginFile,
   deleteIMWorkFile,
   deletePermissionFileByPath,
@@ -586,6 +587,18 @@ export function createOrchestrator(
       // orphan files (if any) will be cleaned by daemon start sweep next time.
       for (const t of reaperTimers.values()) clearTimeout(t);
       reaperTimers.clear();
+
+      // Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md):
+      // delete IMWork (so next /start flow forces user to re-confirm IM mode)
+      // and daemon.pid (so hooks immediately see "daemon dead" and emit ask).
+      // SIGKILL leaves these files; next daemon start sweep / double-start
+      // check handles stale files defensively.
+      await deleteIMWorkFile(opts.stateDir).catch((err) => {
+        onError(err, { phase: 'stop:deleteIMWork' });
+      });
+      await deleteDaemonPidFile(opts.stateDir).catch((err) => {
+        onError(err, { phase: 'stop:deleteDaemonPid' });
+      });
     },
   };
 }

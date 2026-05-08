@@ -3,8 +3,12 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  captureProcessLstart,
   enqueueInjection,
   sessionStartPath,
+  writeDaemonPidFile,
+  writeIMOriginFile,
+  writeIMWorkFile,
 } from '@multi-cc-im/cli-cc';
 import { runHookCommand } from './hook.js';
 
@@ -73,7 +77,28 @@ describe('runHookCommand', () => {
     expect(startBody.transcript_path).toBe(TX);
   });
 
+  /**
+   * Stop hook write/inject path requires IMWork on + IMOrigin set + daemon
+   * alive (DD #57 short-circuit guards). Test helper sets all three so the
+   * existing Stop tests continue to verify the decision-emission path.
+   */
+  async function setupStopForwardPath(): Promise<void> {
+    await writeIMWorkFile(stateDir);
+    await writeIMOriginFile({
+      stateDir,
+      sessionId: SID,
+      replyCtx: { contextToken: 'tk' },
+    });
+    const lstart = await captureProcessLstart(process.pid);
+    await writeDaemonPidFile({
+      stateDir,
+      pid: process.pid,
+      startedAt: lstart!,
+    });
+  }
+
   it('Stop with queued injection → emits decision JSON to stdout', async () => {
+    await setupStopForwardPath();
     await enqueueInjection({
       stateDir,
       sessionId: SID,
@@ -89,18 +114,33 @@ describe('runHookCommand', () => {
   });
 
   it('Stop with empty queue → exit 0 empty stdout (no decision = normal turn end)', async () => {
+    await setupStopForwardPath();
     const result = await runHookCommand({ stdin: STOP, stateDir });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe('');
   });
 
   it('Stop with stop_hook_active=true → never pops queue (anti-loop)', async () => {
+    await setupStopForwardPath();
     await enqueueInjection({
       stateDir,
       sessionId: SID,
       content: 'should-not-fire',
     });
     const result = await runHookCommand({ stdin: STOP_ACTIVE, stateDir });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('Stop without IMWork → exit 0 empty stdout (E1 short-circuit)', async () => {
+    // No setup — IMWork missing. Stop hook must short-circuit before
+    // checking the injection queue.
+    await enqueueInjection({
+      stateDir,
+      sessionId: SID,
+      content: 'never-popped',
+    });
+    const result = await runHookCommand({ stdin: STOP, stateDir });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe('');
   });

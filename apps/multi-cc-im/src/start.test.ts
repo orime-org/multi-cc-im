@@ -96,7 +96,122 @@ describe('runStartCommand — pre-flight failures', () => {
     expect(joined).toContain(`✓ wechat credentials at`);
     expect(joined).toContain(`✓ wezterm at /usr/local/bin/wezterm`);
     expect(joined).toContain(`session registry: 0 alive cc session(s)`);
+    expect(joined).toContain(`✓ daemon.pid: PID ${process.pid}`);
     expect(joined).toMatch(/✓ orchestrator started.*Ctrl\+C/);
+    await result.shutdown!();
+  });
+
+  it('happy path: writes <stateDir>/daemon.pid with current PID + lstart', async () => {
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+
+    const result = await runStartCommand({
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+
+    const { readDaemonPidFile, captureProcessLstart } = await import(
+      '@multi-cc-im/cli-cc'
+    );
+    const stateDir = join(root, 'state');
+    const pidFile = await readDaemonPidFile(stateDir);
+    expect(pidFile?.pid).toBe(process.pid);
+    const actualLstart = await captureProcessLstart(process.pid);
+    expect(pidFile?.startedAt).toBe(actualLstart);
+    await result.shutdown!();
+  });
+
+  it('double-start: existing daemon.pid pointing at our own PID + correct lstart → exit 1', async () => {
+    // Simulate: a daemon with PID=process.pid (this test process) is "already
+    // running". The double-start check sees isDaemonAlive=true → reject.
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await mkdir(join(root, 'state'), { recursive: true });
+    const { writeDaemonPidFile, captureProcessLstart } = await import(
+      '@multi-cc-im/cli-cc'
+    );
+    const lstart = await captureProcessLstart(process.pid);
+    await writeDaemonPidFile({
+      stateDir: join(root, 'state'),
+      pid: process.pid,
+      startedAt: lstart!,
+    });
+
+    const result = await runStartCommand({
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/another daemon already running/i);
+    expect(result.stderr).toContain(`PID:    ${process.pid}`);
+    expect(result.stderr).toMatch(/pkill -f|kill /);
+  });
+
+  it('stale lock: daemon.pid PID dead → ignored, daemon starts normally', async () => {
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await mkdir(join(root, 'state'), { recursive: true });
+    const { writeDaemonPidFile } = await import('@multi-cc-im/cli-cc');
+    await writeDaemonPidFile({
+      stateDir: join(root, 'state'),
+      pid: 999_999, // unlikely to exist
+      startedAt: 'fake',
+    });
+
+    const result = await runStartCommand({
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+
+    // Stale lock was overwritten with our own PID
+    const { readDaemonPidFile } = await import('@multi-cc-im/cli-cc');
+    const pidFile = await readDaemonPidFile(join(root, 'state'));
+    expect(pidFile?.pid).toBe(process.pid);
+    await result.shutdown!();
+  });
+
+  it('stale lock: daemon.pid PID alive but lstart mismatch (PID-reuse) → ignored, daemon starts normally', async () => {
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await mkdir(join(root, 'state'), { recursive: true });
+    const { writeDaemonPidFile } = await import('@multi-cc-im/cli-cc');
+    await writeDaemonPidFile({
+      stateDir: join(root, 'state'),
+      pid: process.pid,
+      startedAt: 'WRONG-LSTART-2020-01-01',
+    });
+
+    const result = await runStartCommand({
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
     await result.shutdown!();
   });
 });

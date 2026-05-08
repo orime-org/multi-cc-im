@@ -15,6 +15,8 @@ import {
   readStopFile,
   sessionStartPath,
   stopFilePath,
+  captureProcessLstart,
+  writeDaemonPidFile,
   writeIMOriginFile,
   writeIMWorkFile,
   writePermissionResponseFile,
@@ -231,6 +233,26 @@ describe('runHookReceiver', () => {
     const FIXED_NOW = new Date('2026-05-06T16:20:15.123Z');
     const FIXED_TS = formatStopTimestamp(FIXED_NOW);
 
+    // Existing Stop tests assume the write path runs. After daemon liveness
+    // DD #57, that requires IMWork on + IMOrigin set + daemon alive. Set
+    // those once per test so each Stop test starts in the "forward path"
+    // state. Tests for the new short-circuit guards live in their own
+    // describe block below.
+    beforeEach(async () => {
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { to: 'wxid_owner', contextToken: 'tk-test' },
+      });
+      const lstart = await captureProcessLstart(process.pid);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: lstart!,
+      });
+    });
+
     it('writes <sid>.Stop.<ts> with last_assistant_message using injected now()', async () => {
       const result = await runHookReceiver({
         stateDir,
@@ -407,15 +429,22 @@ describe('runHookReceiver', () => {
       permission_mode: 'default',
     } as ParsedHookPayload;
 
-    // Forward-path tests below require IMWork on + IMOrigin set for the sid,
-    // otherwise the early-returns (E2/E3) skip the polling path entirely.
-    // Setup once per test so each test starts in the "forward path" state.
+    // Forward-path tests below require IMWork on + IMOrigin set for the sid
+    // + daemon alive (E1/E2/E3/E4 must all pass to reach polling path).
+    // We pretend the test process IS the daemon by writing daemon.pid with
+    // the test's own pid + actual lstart — isDaemonAlive then returns true.
     beforeEach(async () => {
       await writeIMWorkFile(stateDir);
       await writeIMOriginFile({
         stateDir,
         sessionId: SID,
         replyCtx: { to: 'wxid_owner', contextToken: 'tk-test' },
+      });
+      const lstart = await captureProcessLstart(process.pid);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: lstart!,
       });
     });
 
@@ -799,6 +828,219 @@ describe('runHookReceiver', () => {
           .hookSpecificOutput.permissionDecisionReason,
       ).toContain('local mode');
     });
+
+    it('E4 IMWork on + IMOrigin set + daemon dead → ask + reason "daemon not running" + no Request file', async () => {
+      // All forward path conditions met EXCEPT daemon — daemon.pid points
+      // at a non-existent PID.
+      const { writeIMWorkFile, writeIMOriginFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 999_999, // very unlikely to exist
+        startedAt: 'whatever',
+      });
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'ask',
+          permissionDecisionReason: '[multi-cc-im] daemon not running',
+        },
+      });
+      const entries = await readStateDirEntries(stateDir);
+      expect(entries.filter((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toEqual([]);
+    });
+
+    it('E4 daemon.pid exists but PID lstart mismatches → ask "daemon not running" (PID-reuse defense)', async () => {
+      const { writeIMWorkFile, writeIMOriginFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      // Real PID but fake lstart — isDaemonAlive should reject.
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: 'WRONG-LSTART-2020-01-01',
+      });
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+
+      expect(
+        (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecisionReason,
+      ).toContain('daemon not running');
+    });
+
+    it('E1 takes precedence over E4 (read-only auto-allow even when daemon dead)', async () => {
+      const { writeIMWorkFile, writeIMOriginFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      // No daemon.pid → daemon dead. But Read is read-only → E1 wins.
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Read'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecision: string } })
+          .hookSpecificOutput.permissionDecision,
+      ).toBe('allow');
+    });
+
+    it('E2 takes precedence over E4 (IMWork off → "local mode" not "daemon not running")', async () => {
+      // No IMWork; daemon also dead. E2 fires first.
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecisionReason,
+      ).toContain('local mode');
+    });
+
+    it('E3 takes precedence over E4 (IMWork on, no IMOrigin → "no IM thread" not "daemon not running")', async () => {
+      const { writeIMWorkFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      // No IMOrigin; no daemon.pid. E3 fires first.
+      const result = await runHookReceiver({
+        stateDir,
+        payload: payloadWithTool('Bash'),
+      });
+      expect(
+        (result as { hookSpecificOutput: { permissionDecisionReason: string } })
+          .hookSpecificOutput.permissionDecisionReason,
+      ).toContain('no IM thread');
+    });
+  });
+
+  describe('Stop — short-circuit guards (E1/E2/E3 before write)', () => {
+    const STOP_PAYLOAD: ParsedHookPayload = {
+      session_id: SID as never,
+      transcript_path: TX as never,
+      cwd: CWD as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      last_assistant_message: 'reply text',
+    };
+
+    it('E1 !IMWork → return void, do NOT write <sid>.Stop.<ts>', async () => {
+      // IMWork file missing
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP_PAYLOAD,
+      });
+      expect(result).toBeUndefined();
+      const stops = await listStopFiles({ stateDir, sessionId: SID });
+      expect(stops).toEqual([]);
+    });
+
+    it('E2 IMWork on but no IMOrigin → return void, do NOT write Stop file', async () => {
+      const { writeIMWorkFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      // No IMOrigin
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP_PAYLOAD,
+      });
+      expect(result).toBeUndefined();
+      const stops = await listStopFiles({ stateDir, sessionId: SID });
+      expect(stops).toEqual([]);
+    });
+
+    it('E3 IMWork + IMOrigin set but daemon dead → return void, do NOT write Stop file', async () => {
+      const { writeIMWorkFile, writeIMOriginFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 999_999,
+        startedAt: 'whatever',
+      });
+
+      const result = await runHookReceiver({
+        stateDir,
+        payload: STOP_PAYLOAD,
+      });
+      expect(result).toBeUndefined();
+      const stops = await listStopFiles({ stateDir, sessionId: SID });
+      expect(stops).toEqual([]);
+    });
+
+    it('all 3 guards pass → write Stop file (forward path)', async () => {
+      const { writeIMWorkFile, writeIMOriginFile } = await import('./state-files.js');
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      const lstart = await captureProcessLstart(process.pid);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: lstart!,
+      });
+
+      await runHookReceiver({
+        stateDir,
+        payload: STOP_PAYLOAD,
+        now: () => new Date('2026-05-09T10:00:00.000Z'),
+      });
+
+      const stops = await listStopFiles({ stateDir, sessionId: SID });
+      expect(stops).toHaveLength(1);
+      const content = await readStopFile(stops[0]!);
+      expect(content).toEqual({ last_assistant_message: 'reply text' });
+    });
+
+    it('!IMWork preserves existing Stop files (does not sweep — write path skipped entirely)', async () => {
+      // Pre-existing Stop file from earlier IM mode session — when user
+      // runs /stop and cc keeps replying, we don't actively delete prior
+      // Stop files; they're cleaned by daemon-start sweep on next reboot.
+      const tOld = '2026-05-08T10-00-00-000Z';
+      await writeStopFile({
+        stateDir,
+        sessionId: SID,
+        timestamp: tOld,
+        last_assistant_message: 'old',
+      });
+      // No IMWork → E1 short-circuits
+
+      await runHookReceiver({
+        stateDir,
+        payload: STOP_PAYLOAD,
+      });
+
+      const stops = await listStopFiles({ stateDir, sessionId: SID });
+      expect(stops).toHaveLength(1);
+      expect(stops[0]).toContain(tOld);
+    });
   });
 
   describe('SessionEnd', () => {
@@ -845,6 +1087,20 @@ describe('runHookReceiver', () => {
     });
 
     it('Stop branch writes no legacy state files', async () => {
+      // Stop write path requires IMWork + IMOrigin + daemon alive (DD #57).
+      await writeIMWorkFile(stateDir);
+      await writeIMOriginFile({
+        stateDir,
+        sessionId: SID,
+        replyCtx: { contextToken: 'tk' },
+      });
+      const lstart = await captureProcessLstart(process.pid);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: lstart!,
+      });
+
       await runHookReceiver({
         stateDir,
         payload: STOP,

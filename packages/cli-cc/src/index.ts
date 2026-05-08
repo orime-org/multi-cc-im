@@ -58,6 +58,13 @@ export {
   existsIMOriginFile,
   deleteIMOriginFile,
   listIMOriginFiles,
+  DAEMON_PID_FILE_NAME,
+  daemonPidPath,
+  writeDaemonPidFile,
+  readDaemonPidFile,
+  deleteDaemonPidFile,
+  captureProcessLstart,
+  isDaemonAlive,
 } from './state-files.js';
 export type {
   PerSessionIO,
@@ -65,6 +72,7 @@ export type {
   StopFile,
   PermissionRequestFile,
   PermissionResponseFile,
+  DaemonPidFile,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI

@@ -201,6 +201,52 @@ describe('createOrchestrator — start/stop lifecycle', () => {
     expect(im.handler).toBeUndefined();
     expect(cli.handler).toBeUndefined();
   });
+
+  it('stop() deletes IMWork file (Ctrl+C cleanup per DD #57)', async () => {
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    // Pre-condition: IMWork exists (beforeEach writes it)
+    expect(await existsIMWorkFile(testStateDir)).toBe(true);
+
+    await orch.start();
+    await orch.stop();
+
+    // IMWork removed by orchestrator.stop()
+    expect(await existsIMWorkFile(testStateDir)).toBe(false);
+  });
+
+  it('stop() deletes daemon.pid file (DD #57)', async () => {
+    const { writeDaemonPidFile, captureProcessLstart, readDaemonPidFile } =
+      await import('@multi-cc-im/cli-cc');
+    const lstart = await captureProcessLstart(process.pid);
+    await writeDaemonPidFile({
+      stateDir: testStateDir,
+      pid: process.pid,
+      startedAt: lstart!,
+    });
+
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      registry: fixedRegistry([]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    expect(await readDaemonPidFile(testStateDir)).not.toBeNull();
+
+    await orch.stop();
+    expect(await readDaemonPidFile(testStateDir)).toBeNull();
+  });
 });
 
 describe('createOrchestrator — inbound (wechat → cc)', () => {

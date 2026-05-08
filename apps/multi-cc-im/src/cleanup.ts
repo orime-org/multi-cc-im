@@ -66,7 +66,8 @@ export async function runCleanupCommand(
       result.orphanStopsCleaned +
       result.legacyCleaned +
       result.orphanPermissionCleaned +
-      result.orphanIMOriginCleaned ===
+      result.orphanIMOriginCleaned +
+      result.staleDaemonPidCleaned ===
     0
   ) {
     log(`  ✓ already clean — nothing to do.`);
@@ -77,6 +78,7 @@ export async function runCleanupCommand(
     log(`    - ${result.legacyCleaned} legacy file(s)`);
     log(`    - ${result.orphanPermissionCleaned} orphan Permission file(s)`);
     log(`    - ${result.orphanIMOriginCleaned} orphan IMOrigin file(s)`);
+    log(`    - ${result.staleDaemonPidCleaned} stale daemon.pid file(s)`);
   }
 
   if (dryRun) {

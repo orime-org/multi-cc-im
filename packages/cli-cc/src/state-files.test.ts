@@ -3,11 +3,15 @@ import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  DAEMON_PID_FILE_NAME,
   IM_ORIGIN_SUFFIX,
   IM_WORK_FILE_NAME,
   SESSION_END_SUFFIX,
   SESSION_START_SUFFIX,
   STOP_PREFIX,
+  captureProcessLstart,
+  daemonPidPath,
+  deleteDaemonPidFile,
   deleteIMOriginFile,
   deleteIMWorkFile,
   deleteSessionEndFile,
@@ -19,14 +23,17 @@ import {
   formatStopTimestamp,
   imOriginPath,
   imWorkPath,
+  isDaemonAlive,
   listIMOriginFiles,
   listStopFiles,
+  readDaemonPidFile,
   readIMOriginFile,
   readSessionStartFile,
   readStopFile,
   sessionEndPath,
   sessionStartPath,
   stopFilePath,
+  writeDaemonPidFile,
   writeIMOriginFile,
   writeIMWorkFile,
   writeSessionEndFile,
@@ -383,6 +390,105 @@ describe('state-files', () => {
       const result = await listIMOriginFiles(stateDir);
       expect(result).toHaveLength(1);
       expect(result[0]).toContain(IM_ORIGIN_SUFFIX);
+    });
+  });
+
+  describe('daemon.pid file (PID lock for daemon process)', () => {
+    it('DAEMON_PID_FILE_NAME is "daemon.pid"', () => {
+      expect(DAEMON_PID_FILE_NAME).toBe('daemon.pid');
+      expect(daemonPidPath(stateDir)).toBe(join(stateDir, 'daemon.pid'));
+    });
+
+    it('write + read roundtrip', async () => {
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 12345,
+        startedAt: 'Mon May  9 10:00:00 2026',
+      });
+      expect(await readDaemonPidFile(stateDir)).toEqual({
+        pid: 12345,
+        startedAt: 'Mon May  9 10:00:00 2026',
+      });
+    });
+
+    it('readDaemonPidFile returns null when file does not exist', async () => {
+      expect(await readDaemonPidFile(stateDir)).toBeNull();
+    });
+
+    it('deleteDaemonPidFile is idempotent (ENOENT-safe)', async () => {
+      await deleteDaemonPidFile(stateDir);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 12345,
+        startedAt: 'now',
+      });
+      await deleteDaemonPidFile(stateDir);
+      await deleteDaemonPidFile(stateDir);
+      expect(await readDaemonPidFile(stateDir)).toBeNull();
+    });
+
+    it('captureProcessLstart for current PID returns non-empty string', async () => {
+      const lstart = await captureProcessLstart(process.pid);
+      expect(lstart).toBeTypeOf('string');
+      expect(lstart!.length).toBeGreaterThan(0);
+    });
+
+    it('captureProcessLstart for nonexistent PID returns null', async () => {
+      // PID 999999 is unlikely to exist on a normal system
+      const lstart = await captureProcessLstart(999_999);
+      expect(lstart).toBeNull();
+    });
+
+    it('isDaemonAlive returns false when daemon.pid file missing', async () => {
+      expect(await isDaemonAlive(stateDir)).toBe(false);
+    });
+
+    it('isDaemonAlive returns false when PID does not exist', async () => {
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 999_999,
+        startedAt: 'whatever',
+      });
+      expect(await isDaemonAlive(stateDir)).toBe(false);
+    });
+
+    it('isDaemonAlive returns false when PID exists but lstart mismatches (PID-reuse defense)', async () => {
+      // Simulate: PID 12345 belonged to dead daemon X (lstart = "old time"),
+      // OS recycled PID 12345 to current test process (lstart = something
+      // else). Recorded daemon.pid still says { pid: <current>, startedAt: "wrong time" }.
+      // isDaemonAlive should detect mismatch and return false.
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: 'WRONG-LSTART-2020-01-01',
+      });
+      expect(await isDaemonAlive(stateDir)).toBe(false);
+    });
+
+    it('isDaemonAlive returns true when PID exists AND lstart matches', async () => {
+      const actualLstart = await captureProcessLstart(process.pid);
+      expect(actualLstart).not.toBeNull();
+      await writeDaemonPidFile({
+        stateDir,
+        pid: process.pid,
+        startedAt: actualLstart!,
+      });
+      expect(await isDaemonAlive(stateDir)).toBe(true);
+    });
+
+    it('writeDaemonPidFile uses atomic-write (mode 0600 — bot_token-style protection by analogy)', async () => {
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 12345,
+        startedAt: 'now',
+      });
+      // We don't strictly need 0600 for daemon.pid (no secrets), but the
+      // atomic-write helper used by all our state files defaults to a
+      // restrictive mode. Sanity check it's at least a regular file we can
+      // read back.
+      const stats = await stat(daemonPidPath(stateDir));
+      expect(stats.isFile()).toBe(true);
+      expect(stats.size).toBeGreaterThan(0);
     });
   });
 });
