@@ -287,7 +287,33 @@ DD #61 之后：**daemon 不再独立追踪 cc 死活**。每次 IM 事件直接
 
 权衡：偶尔残留 zsh 的 pane 被注入是用户可见的痛感（自己关 tab 就好），换来 daemon 端零状态、零 stale-tracking 风险。SessionEnd hook + sid-keyed 文件 + PaneAlive 验证全部撤销。详见 [DD: pane-keyed state files](superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)。
 
-## iLink 网络韧性 (transient retry)
+## iLink 网络韧性（两层防御）
+
+### 第一层：IP health-probed dispatcher（根因 fix）
+
+PR-H ([DD: iLink dispatcher health probe](superpowers/specs/2026-05-08-ilink-dispatcher-health-probe-dd.md)) 加自定义 undici `Agent` (`packages/im-wechat/lib/ilink/api/dispatcher.ts`)：
+
+```
+adapter.start():
+  1. dns.resolve4(ilinkai.weixin.qq.com)        # 拿 4 个 A records
+  2. concurrent TCP probe (port 443, 2s timeout) # 标记 healthy / dead set
+  3. new Agent({ connect: { lookup } })          # lookup 从 healthy round-robin
+  4. setInterval(5 * 60_000, reprobeAll)         # 周期 re-probe (跟踪 LB 自适应)
+
+每条 fetch:
+  fetch(url, { dispatcher: agent })              # 强制只用 healthy IP
+
+adapter.stop():
+  clearInterval(reprobeTimer) + agent.close()
+```
+
+**起源**: 用户 2026-05-08 跑诊断脚本发现腾讯 iLink LB 4 个 backend IP 中 **2 个完全不健康** (`43.171.116.194` / `43.171.124.85`)。Node fetch 默认 `dns.lookup` 取 single first IP 没 fallback，命中死 IP hang 5s 直到 OS TLS handshake timeout。
+
+**全 dead 退化**: 如果某次 re-probe 4 IP 全 fail（罕见），dispatcher 进 degraded 模式 (healthy = all)，行为退化到默认 fetch + 第二层 retry 兜底。`snapshot().degraded === true` 可观测。
+
+**测试覆盖** (`packages/im-wechat/lib/ilink/api/dispatcher.test.ts` 9 cases): initial probe / all-dead degraded / re-probe revive+kill / DNS error / empty A records / probe rejection / stop 幂等 / Agent 接口验证。
+
+### 第二层：apiPostFetch transient retry (兜底)
 
 `packages/im-wechat/lib/ilink/api/api.ts` 的 `apiPostFetch` (sendMessage / sendImage / sendFile / sendTyping / getConfig 共用) 对 TCP/网络瞬时错误自动 retry：
 
@@ -297,11 +323,11 @@ DD #61 之后：**daemon 不再独立追踪 cc 死活**。每次 IM 事件直接
 | HTTP 4xx / 5xx (server 给了 response body) | **不** retry — server-side 确定性答案 |
 | AbortError (本地 timeout) | **不** retry — 已经到 budget |
 
-**起源**: PR #62 (DD #61) 之后 user 实测多 cc 并发场景偶发 ECONNRESET，导致 IM forward 消失，cc 默认 yes，user 看不到 prompt 就工具被允许了。根因是 server-side（LB 健康度 / anti-abuse 限速）+ 缺 client-side retry。`getUpdates` 长轮询自带 retry 没事，但业务 send (sendMessage 等) 漏 retry。
-
 **Idempotent 安全**: caller 在 `sendMessageWeixin / sendImageMessageWeixin / sendFileMessageWeixin` 一次性生成 `client_id`，retry 用同一 body 同一 client_id，server 端按 client_id 去重 — 不会发重复消息。
 
-**测试覆盖** (`packages/im-wechat/lib/ilink/api/api.test.ts` 23 cases): retry-on-ECONNRESET / 给-up-after-3 / HTTP-error-not-retried / abort-not-retried / body-stable-across-retries / fresh-AbortController-per-attempt / undici-specific 错误码。
+### 两层关系
+
+dispatcher 是根因 fix（避开死 IP），retry 是 robustness 兜底（dispatcher 也可能瞬时失败 / degraded 模式时 / dispatcher 重 probe 之间的 race）。两层独立，dispatcher 失败不影响 retry，retry 失败不影响 dispatcher 工作。
 
 ## /usage /cost 计算（v2 deferred）
 

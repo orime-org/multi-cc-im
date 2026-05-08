@@ -1,5 +1,6 @@
 import type { CursorStore } from '@multi-cc-im/shared';
 import { setTimeout as sleep } from 'node:timers/promises';
+import type { Dispatcher } from 'undici';
 import { getUpdates } from '../lib/ilink/api/api.js';
 import type { WeixinMessage } from '../lib/ilink/api/types.js';
 
@@ -31,6 +32,13 @@ export interface MonitorOpts {
   onError?: (err: Error) => void;
   /** Abort signal the caller can use to stop the loop. */
   abortSignal?: AbortSignal;
+  /**
+   * Optional undici Dispatcher for IP health-probed routing. Per
+   * [DD: iLink dispatcher health probe](../../../docs/superpowers/specs/2026-05-08-ilink-dispatcher-health-probe-dd.md):
+   * adapter.start() creates this via `createHealthProbedDispatcher()` and
+   * passes it through so long-poll fetch only hits Tencent's healthy LB IPs.
+   */
+  dispatcher?: Dispatcher;
 }
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
@@ -53,6 +61,7 @@ export async function runMonitor(opts: MonitorOpts): Promise<void> {
         token: opts.token,
         get_updates_buf: cursor,
         timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS,
+        dispatcher: opts.dispatcher,
       });
 
       // Business errors (session expired, etc.) flow through onError without exiting the loop.

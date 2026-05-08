@@ -34,6 +34,10 @@ import {
   sendImageMessageWeixin,
   sendMessageWeixin,
 } from '../lib/ilink/messaging/send.js';
+import {
+  createHealthProbedDispatcher,
+  type HealthProbedDispatcher,
+} from '../lib/ilink/api/dispatcher.js';
 import { resolveAccount, type ResolvedAccount } from './accounts.js';
 import { runMonitor } from './monitor.js';
 
@@ -93,11 +97,27 @@ export type WeixinAdapter = IMAdapter & IMImageSender & IMFileSender & IMTypingI
  * 4 core methods (name/start/send/stop) plus capabilities via `extends`
  * (image/file/typing).
  */
-export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
+export interface WeixinAdapterOptsWithDispatcher extends WeixinAdapterOpts {
+  /**
+   * Test seam: override dispatcher creation. Default uses
+   * `createHealthProbedDispatcher` against `account.baseUrl`'s hostname.
+   * Returning `null` skips dispatcher entirely (degrades to global fetch +
+   * apiPostFetch retry). Tests that don't care about network can pass
+   * `() => Promise.resolve(null)` to make adapter.start() lightning fast.
+   */
+  buildDispatcher?: (
+    account: ResolvedAccount,
+  ) => Promise<HealthProbedDispatcher | null>;
+}
+
+export function createWeixinAdapter(
+  opts: WeixinAdapterOptsWithDispatcher,
+): WeixinAdapter {
   let abortController: AbortController | undefined;
   let runningTask: Promise<void> | undefined;
   let resolvedAccount: ResolvedAccount | undefined;
   let configMgr: WeixinConfigManager | undefined;
+  let dispatcher: HealthProbedDispatcher | null = null;
 
   function ensureStarted(label: string): ResolvedAccount {
     if (!resolvedAccount) {
@@ -124,6 +144,25 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
           /* WeixinConfigManager only logs benign cache events; bridge has its own log. */
         },
       );
+      // Per [DD: iLink dispatcher health probe](../../docs/superpowers/specs/2026-05-08-ilink-dispatcher-health-probe-dd.md):
+      // probe LB backend IPs for health and bind a custom undici Agent that
+      // routes only to healthy ones. ~2s extra startup cost, but eliminates
+      // the 5s TLS hang per fetch when the default DNS lookup hits one of
+      // Tencent's known-dead `43.171.*` backends.
+      const buildDispatcher =
+        opts.buildDispatcher ?? defaultBuildDispatcher;
+      try {
+        dispatcher = await buildDispatcher(account);
+      } catch (err) {
+        // Don't fail adapter start on dispatcher init — log + continue
+        // with global fetch (apiPostFetch retry as backstop).
+        await handler.onError?.(
+          new Error(
+            `createWeixinAdapter: dispatcher init failed, using global fetch fallback: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        dispatcher = null;
+      }
       abortController = new AbortController();
 
       runningTask = runMonitor({
@@ -131,6 +170,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
         token: account.token,
         cursorStore: opts.cursorStore,
         abortSignal: abortController.signal,
+        ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
         onMessage: async (raw) => {
           const incoming = await weixinMessageToIncoming(
             raw,
@@ -163,6 +203,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
           baseUrl: account.baseUrl,
           token: account.token,
           contextToken: ctx.contextToken,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
         },
       });
     },
@@ -173,7 +214,11 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
       const uploaded = await uploadFileToWeixin({
         filePath: localPath,
         toUserId: ctx.to,
-        opts: { baseUrl: account.baseUrl, token: account.token },
+        opts: {
+          baseUrl: account.baseUrl,
+          token: account.token,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
+        },
         cdnBaseUrl: account.cdnBaseUrl,
       });
       await sendImageMessageWeixin({
@@ -184,6 +229,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
           baseUrl: account.baseUrl,
           token: account.token,
           contextToken: ctx.contextToken,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
         },
       });
     },
@@ -196,7 +242,11 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
         filePath: localPath,
         fileName,
         toUserId: ctx.to,
-        opts: { baseUrl: account.baseUrl, token: account.token },
+        opts: {
+          baseUrl: account.baseUrl,
+          token: account.token,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
+        },
         cdnBaseUrl: account.cdnBaseUrl,
       });
       await sendFileMessageWeixin({
@@ -208,6 +258,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
           baseUrl: account.baseUrl,
           token: account.token,
           contextToken: ctx.contextToken,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
         },
       });
     },
@@ -226,6 +277,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
       await sendTyping({
         baseUrl: account.baseUrl,
         token: account.token,
+        ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
         body: {
           ilink_user_id: ctx.to,
           typing_ticket: cached.typingTicket,
@@ -238,6 +290,7 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
         sendTyping({
           baseUrl: account.baseUrl,
           token: account.token,
+          ...(dispatcher ? { dispatcher: dispatcher.agent } : {}),
           body: {
             ilink_user_id: ctx.to,
             typing_ticket: cached.typingTicket,
@@ -254,12 +307,31 @@ export function createWeixinAdapter(opts: WeixinAdapterOpts): WeixinAdapter {
           /* swallow — monitor throwing on abort is expected */
         });
       }
+      // Tear down dispatcher (clears reprobe interval + closes agent).
+      // Per [DD: iLink dispatcher health probe].
+      if (dispatcher) {
+        await dispatcher.stop().catch(() => {
+          /* swallow — best effort */
+        });
+        dispatcher = null;
+      }
       abortController = undefined;
       runningTask = undefined;
       resolvedAccount = undefined;
       configMgr = undefined;
     },
   };
+}
+
+/**
+ * Default dispatcher factory — extracts hostname from `account.baseUrl` and
+ * runs IP health probe. Tests inject `() => Promise.resolve(null)` to skip.
+ */
+async function defaultBuildDispatcher(
+  account: ResolvedAccount,
+): Promise<HealthProbedDispatcher | null> {
+  const url = new URL(account.baseUrl);
+  return createHealthProbedDispatcher({ hostname: url.hostname });
 }
 
 /**
