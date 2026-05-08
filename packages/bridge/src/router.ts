@@ -393,8 +393,8 @@ function handleBridgeCommand(
           '  - IM 路由只用 tab title (cc /rename 设的)',
           '  - 没 /rename 的 cc 只能在 cc TUI 里用，IM 寻址不到',
           '  - 建议 tab title 用字母/单词，**不要用纯数字** (易混淆)',
-          '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)',
-          '  - 超过 10 秒默认放行',
+          '  - cc 回复转发到 IM (Stop hook)',
+          '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行',
           '  - 终端 cc TUI 直接打字不会 forward 到 IM',
         ].join('\n'),
         dispatches: [],
@@ -406,7 +406,7 @@ function handleBridgeCommand(
         return { echo: 'ℹ️ IMWork already OFF', dispatches: [] };
       }
       return {
-        echo: '✓ IMWork OFF — cc 工具问题在终端 TUI 处理',
+        echo: '✓ IMWork OFF — cc 回复留 cc TUI，工具审批走 cc 原生菜单',
         dispatches: [],
         imWorkAction: 'disable',
       };
