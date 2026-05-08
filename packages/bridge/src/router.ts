@@ -340,16 +340,24 @@ function handleBridgeCommand(
     case 'help':
       return {
         echo: [
-          'Routing:',
-          '  @<name> body          → 1 cc (sets current)',
-          '  @<a> @<b> body        → multiple cc',
-          '  @all body             → all /rename\'d cc',
-          '  body (no @)           → current cc',
-          'Matching: =strict → exact → prefix → glob (*?)',
-          'Bridge commands: /list | /help | /current | /start | /stop',
-          'Permission: @<tab> /1 (allow) | @<tab> /2 (deny) — 10s default allow',
-          'Tip: /rename inside cc TUI sets the @<name> identifier (real-time).',
-          'Tab title 不要用纯数字 — 易混淆 (paneId 显示也是数字)。',
+          '路由示例：',
+          '  hello                      → current cc (last-explicit-mention 粘性；只一个 cc 时自动 = 那一个)',
+          '  @frontend hello            → tab title=frontend 的 cc，并设为 current',
+          '  @fr hello                  → 短前缀（4 级 fallback：=strict → exact → prefix → glob；歧义列候选拒绝）',
+          '  @frontend @api sync        → 多目标分发；不改 current',
+          '  @frontend /clear           → 转发 /clear 进 cc TUI（cc 自己当 slash 命令处理）',
+          '  @all stop everything       → 广播给所有 /rename\'d cc',
+          '  @frontend /1   /  /2       → 权限允许 / 拒绝（仅当有 pending PreToolUse）',
+          '',
+          'Bridge 命令（@multi-cc-im /...）：',
+          '  /list                      → 列当前 wezterm tabs（含可寻址状态）',
+          '  /help                      → 本帮助',
+          '  /current                   → 显示 current_session + IMWork 状态',
+          '  /start                     → 开启 IM 模式（cc 回复 + 工具审批转发到微信）',
+          '  /stop                      → 关闭 IM 模式（cc 回复留 cc TUI，工具审批走 cc 原生菜单）',
+          '',
+          'Tip: 进 cc TUI 跑 /rename <name> 设 @<name> 寻址（real-time，cc /resume 也带）；',
+          '     tab title 不要用纯数字 — 易混淆 (paneId 显示也是数字)。',
         ].join('\n'),
         dispatches: [],
       };
@@ -396,6 +404,8 @@ function handleBridgeCommand(
           '  - cc 回复转发到 IM (Stop hook)',
           '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行',
           '  - 终端 cc TUI 直接打字不会 forward 到 IM',
+          '',
+          '完整命令说明：发 @multi-cc-im /help',
         ].join('\n'),
         dispatches: [],
         ...(imWorkOn ? {} : { imWorkAction: 'enable' as const }),
@@ -419,20 +429,25 @@ function handleBridgeCommand(
   }
 }
 
-/** Render the cc-list block for `/start` + `/list` echoes. */
+/**
+ * Render the wezterm-tabs inventory block for `/start` + `/list` echoes.
+ *
+ * Lists **all** wezterm panes (zsh / cc / vim / 任何东西) — daemon 不知道每个
+ * pane 里跑啥，只知道 tab title 是不是被 /rename 过。每行显示寻址状态：
+ *   - 有 /rename → `[可寻址 @<name>]`
+ *   - 没 /rename → `[未 /rename — 进 cc TUI 跑 /rename <name>]`
+ */
 function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
   if (sessions.length === 0) {
-    return ['当前可用 cc sessions: (无 — 请先在 wezterm tab 启动 cc)'];
+    return ['当前 wezterm tabs: (无 — 请先开 wezterm tab 启动 cc 并 /rename)'];
   }
-  const lines = ['当前可用 cc sessions:'];
+  const lines = ['当前 wezterm tabs:'];
   sessions.forEach((s, i) => {
-    const renameHint =
+    const status =
       s.tabTitle.length > 0
-        ? ''
-        : ', 未 /rename — 不能从 IM 寻址，请进 cc TUI 跑 /rename <name>';
-    lines.push(
-      `  ${i + 1}. ${displayName(s)} (pane ${s.paneId}${renameHint})`,
-    );
+        ? `[可寻址 @${s.tabTitle}]`
+        : `[未 /rename — 进 cc TUI 跑 /rename <name>]`;
+    lines.push(`  ${i + 1}. ${displayName(s)} (pane ${s.paneId}) ${status}`);
   });
   return lines;
 }
