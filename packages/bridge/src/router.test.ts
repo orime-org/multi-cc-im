@@ -290,6 +290,27 @@ describe('router — bridge commands @multi-cc-im /...', () => {
     expect(result.echo).toContain('api');
   });
 
+  it('/list → header is "wezterm tabs" not "可用 cc" (DD #61: lists all panes regardless of cc presence)', async () => {
+    const state = memState(null);
+    const result = await routeOn(incoming('@multi-cc-im /list'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    expect(result.echo).toContain('wezterm tabs');
+    expect(result.echo).not.toContain('可用 cc sessions');
+  });
+
+  it('/list → /rename\'d pane renders [可寻址 @<name>] status; un-renamed renders /rename hint', async () => {
+    const state = memState(null);
+    const unnamed = s('', 99);
+    const result = await routeOn(incoming('@multi-cc-im /list'), {
+      registry: fixedRegistry([FRONTEND, unnamed]),
+      state,
+    });
+    expect(result.echo).toContain('[可寻址 @frontend]');
+    expect(result.echo).toContain('[未 /rename');
+  });
+
   it('/list with empty registry → empty-state hint', async () => {
     const state = memState(null);
     const result = await routeOn(incoming('@multi-cc-im /list'), {
@@ -354,6 +375,32 @@ describe('router — bridge commands @multi-cc-im /...', () => {
     expect(result.imWorkAction).toBe('enable');
     expect(result.echo).toContain('IMWork ON');
     expect(result.echo).toContain('frontend');
+  });
+
+  it('/start echo footer points users to /help for full command reference', async () => {
+    const state = memState(null);
+    const result = await route(incoming('@multi-cc-im /start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).toContain('@multi-cc-im /help');
+  });
+
+  it('/help echo lists concrete usage examples (mention + broadcast + bridge commands)', async () => {
+    const state = memState(null);
+    const result = await routeOn(incoming('@multi-cc-im /help'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    // Concrete examples (not just placeholder syntax) so users know what
+    // to type without guessing.
+    expect(result.echo).toContain('@frontend hello');
+    expect(result.echo).toContain('@all');
+    expect(result.echo).toContain('/clear');
+    expect(result.echo).toContain('/1');
+    expect(result.echo).toContain('Bridge 命令');
+    expect(result.echo).toContain('/rename');
   });
 
   it('/start when already on → idempotent (no imWorkAction)', async () => {
