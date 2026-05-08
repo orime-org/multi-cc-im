@@ -1,8 +1,7 @@
 import { stat } from 'node:fs/promises';
-import type { SessionId } from '@multi-cc-im/shared';
+import type { PaneId } from '@multi-cc-im/shared';
 import {
   createOrchestrator,
-  createSessionRegistry,
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
 import type { RouterState } from '@multi-cc-im/bridge';
@@ -159,24 +158,24 @@ export async function runStartCommand(
   }
 
   // ===== 1c. Sweep stale state files BEFORE chokidar starts watching =====
-  // Cleans paired SessionStart+SessionEnd from completed sessions, orphan
-  // Stop files (daemon-down accumulation that can't be forwarded — replyCtx
-  // is in-memory only), orphan Permission Request/Response files (hook
-  // subprocess died mid-flow), all IMOrigin files (per [DD: IMWork+IMOrigin]
-  // — daemon start always resets per-session ctx), and any legacy state
-  // files from pre-redesign installs.
-  const sweepResult = await sweepStaleStateFiles(paths.stateDir);
+  // Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+  // wezterm cli list paneId set is the ground truth — files for paneIds not
+  // in the live set are orphan (cc + tab gone). Pre-DD-#61 sid-keyed legacy
+  // files are also swept here.
+  const sweepResult = await sweepStaleStateFiles(paths.stateDir, {
+    livePaneIds: async () => {
+      const tabs = await listAllTabs({ wezterm });
+      return [...tabs.keys()];
+    },
+  });
   if (
-    sweepResult.pairedCleaned +
-      sweepResult.orphanStopsCleaned +
+    sweepResult.orphanPaneFilesCleaned +
       sweepResult.legacyCleaned +
-      sweepResult.orphanPermissionCleaned +
-      sweepResult.orphanIMOriginCleaned +
       sweepResult.staleDaemonPidCleaned >
     0
   ) {
     log(
-      `  ✓ state sweep: ${sweepResult.pairedCleaned} completed session(s), ${sweepResult.orphanStopsCleaned} orphan Stop, ${sweepResult.legacyCleaned} legacy, ${sweepResult.orphanPermissionCleaned} orphan Permission, ${sweepResult.orphanIMOriginCleaned} orphan IMOrigin, ${sweepResult.staleDaemonPidCleaned} stale daemon.pid cleaned`,
+      `  ✓ state sweep: ${sweepResult.orphanPaneFilesCleaned} orphan pane file(s), ${sweepResult.legacyCleaned} legacy, ${sweepResult.staleDaemonPidCleaned} stale daemon.pid cleaned`,
     );
   }
 
@@ -229,26 +228,26 @@ export async function runStartCommand(
   const cursorStore = createCursorStore({
     filePath: `${paths.stateDir}/wechat-cursor`,
   });
-  const registry = createSessionRegistry({
-    stateDir: paths.stateDir,
-    getTabTitles: () => listAllTabs({ wezterm }),
-  });
-  // In-memory sticky `current_session` — last-explicit-mention pointer per
-  // routing G' DD. Does NOT persist across daemon restart by design (cc reply
-  // contexts in `lastReplyCtxBySession` are also in-memory; the user re-binds
-  // by sending `@<name> <body>` from WeChat after restart).
-  let currentSid: SessionId | null = null;
+  // In-memory sticky `current_pane` — last-explicit-mention pointer.
+  // Does NOT persist across daemon restart (the user re-binds by sending
+  // `@<name> <body>` from IM after restart).
+  let currentPaneId: PaneId | null = null;
   const routerState: RouterState = {
-    getCurrent: () => currentSid,
+    getCurrent: () => currentPaneId,
     setCurrent: (id) => {
-      currentSid = id;
+      currentPaneId = id;
     },
   };
 
-  const aliveSessions = await registry.listAlive();
-  log(
-    `  ✓ session registry: ${aliveSessions.length} alive cc session(s)${aliveSessions.length === 0 ? ' (start cc in any wezterm tab to see them appear)' : ''}`,
-  );
+  // No session registry anymore (DD #61). Bridge router queries
+  // `termAdapter.listPanes()` on each IM event for live tab data.
+  const livePanes = await listAllTabs({ wezterm }).catch(() => null);
+  if (livePanes !== null) {
+    const renamed = [...livePanes.values()].filter((t) => t.title.length > 0);
+    log(
+      `  ✓ wezterm panes: ${livePanes.size} total, ${renamed.length} /rename'd${livePanes.size === 0 ? ' (open a wezterm tab + run cc to see panes appear)' : ''}`,
+    );
+  }
 
   const imAdapter = createWeixinAdapter({
     configStore,
@@ -258,10 +257,6 @@ export async function runStartCommand(
   });
   const termAdapter = createWezTermAdapter({
     wezterm: { path: wezterm },
-    paneAlive: {
-      stateDir: paths.stateDir,
-      paneToSession: registry,
-    },
   });
   const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,
@@ -275,13 +270,18 @@ export async function runStartCommand(
         termAdapter,
         cliAdapter,
         stateDir: paths.stateDir,
-        registry,
         state: routerState,
         log,
         onError: (err, ctx) => {
           const msg = formatErrorWithCause(err);
+          const tag =
+            ctx.paneId !== undefined
+              ? `pane=${ctx.paneId}`
+              : ctx.sessionId
+                ? `sid=${ctx.sessionId.slice(0, 8)}`
+                : '';
           log(
-            `  ⚠️  orchestrator [${ctx.phase}${ctx.sessionId ? ` ${ctx.sessionId.slice(0, 8)}` : ''}]: ${msg}`,
+            `  ⚠️  orchestrator [${ctx.phase}${tag ? ' ' + tag : ''}]: ${msg}`,
           );
         },
       });

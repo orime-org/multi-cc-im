@@ -12,28 +12,17 @@ interface BaseHookPayload {
 }
 
 /**
- * Hook fired when a cc session starts up.
- * `source` is open enum — known values `'startup'`; others reserved for
- * future cc behaviors (resume / restart) per H1 observation.
- */
-export interface SessionStartPayload extends BaseHookPayload {
-  hook_event_name: 'SessionStart';
-  source: string;
-  /** e.g. `'claude-opus-4-7[1m]'` — model with optional context-mode suffix. */
-  model: string;
-}
-
-/**
  * Hook fired right before cc actually executes a tool (Bash / Edit / Write /
  * Read / WebFetch / etc.). Used by multi-cc-im as the **permission gate**
  * per [DD: permission forward](../../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
- * hook subprocess writes a `<sid>.PermissionRequest.<id>.json`, daemon
- * forwards to IM, IM user replies `@<tabname> /1` (allow) / `/2` (deny),
- * daemon writes `<sid>.PermissionResponse.<id>.json`, hook subprocess reads
- * it + writes stdout `{permissionDecision:"allow"|"deny"}` + exits.
+ * hook subprocess writes `<paneId>_<sid>.PermissionRequest.<id>.json`,
+ * daemon forwards to IM, IM user replies `@<tabname> /1` (allow) / `/2`
+ * (deny), daemon writes `<paneId>_<sid>.PermissionResponse.<id>.json`,
+ * hook subprocess reads it + writes stdout
+ * `{permissionDecision:"allow"|"deny"}` + exits.
  *
- * 30s timeout (custom per `setup-hooks.ts`); on timeout cc treats as allow
- * by default per cc PreToolUse hook protocol semantics.
+ * 10s timeout (per `setup-hooks.ts` `timeout: 10`); on timeout cc treats
+ * as allow by default per cc PreToolUse hook protocol semantics.
  */
 export interface PreToolUsePayload extends BaseHookPayload {
   hook_event_name: 'PreToolUse';
@@ -59,22 +48,8 @@ export interface StopPayload extends BaseHookPayload {
   last_assistant_message: string;
 }
 
-/**
- * Hook fired when a cc session terminates (clean `/exit`, logout, etc.).
- * Drives multi-cc-im's PaneAlive "graceful exit" signal.
- */
-export interface SessionEndPayload extends BaseHookPayload {
-  hook_event_name: 'SessionEnd';
-  /** e.g. `'clear'`, `'logout'`, `'/exit'`, `'prompt_input_exit'`. */
-  reason: string;
-}
-
 /** Discriminated union of every cc hook payload multi-cc-im subscribes to. */
-export type HookPayload =
-  | SessionStartPayload
-  | PreToolUsePayload
-  | StopPayload
-  | SessionEndPayload;
+export type HookPayload = PreToolUsePayload | StopPayload;
 
 /**
  * Stdout response shape that cc's Stop hook treats as an injection request.
@@ -91,25 +66,27 @@ export interface HookDecision {
  * Handler an CLIAdapter pushes hook events into. The bridge implements this
  * to wire cc → router → IM.
  *
- * multi-cc-im subscribes to only 3 hook events. Earlier versions also
- * subscribed to `UserPromptSubmit` / `PreToolUse` / `PostToolUse` for
- * analytics, but cc's own transcript jsonl
- * (`~/.claude/projects/<dir>/<sid>.jsonl`) already records that data —
- * future analytics work should read cc's transcript directly via the
- * `transcript_path` exposed in each `SessionStart` payload.
+ * Per [DD: pane-keyed state files](../../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md),
+ * multi-cc-im subscribes to **only 2 hook events**: `PreToolUse` and `Stop`.
+ * SessionStart / SessionEnd were dropped because daemon now uses
+ * `wezterm cli list` as the live source of truth for "which panes have cc"
+ * and trusts user-side knowledge from the IM `/start` listing for cc
+ * lifecycle.
+ *
+ * Adapter passes `paneId` (parsed from `<paneId>_<sid>.<event>` filename)
+ * into each handler call so bridge orchestrator can route without
+ * maintaining its own paneId↔sid map.
  */
 export interface Handler {
-  onSessionStart(p: SessionStartPayload): Promise<void>;
   /**
-   * On PreToolUse, called by adapter when daemon sees a fresh
-   * `<sid>.PermissionRequest.<id>.json` arrive in state/. Daemon forwards
-   * to IM and waits for user response. Adapter dispatches to bridge
-   * orchestrator's onPreToolUse, which manages the IM forward + response
-   * write. The actual hook subprocess that triggered this is asleep
-   * polling for the response file — it doesn't return anything to cc here;
-   * the response file does.
+   * On PreToolUse: adapter sees fresh `<paneId>_<sid>.PermissionRequest.<id>.json`
+   * land in state/. Daemon forwards to IM and writes a matching Response
+   * file once the user replies (or the hook subprocess hits its 10s
+   * timeout — daemon doesn't drive timeouts).
    */
-  onPreToolUse(p: PreToolUsePayload & { requestId: string }): Promise<void>;
+  onPreToolUse(
+    p: PreToolUsePayload & { requestId: string; paneId: number },
+  ): Promise<void>;
   /**
    * On Stop, the handler may return a `HookDecision` to inject a follow-up
    * prompt. Return `void` (or undefined) to let cc end the turn normally.
@@ -117,8 +94,7 @@ export interface Handler {
    * Implementations MUST guard `p.stop_hook_active === true` and return
    * `void` in that case to avoid infinite block loops.
    */
-  onStop(p: StopPayload): Promise<HookDecision | void>;
-  onSessionEnd(p: SessionEndPayload): Promise<void>;
+  onStop(p: StopPayload & { paneId: number }): Promise<HookDecision | void>;
 }
 
 /**

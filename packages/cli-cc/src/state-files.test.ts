@@ -1,47 +1,64 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
   IM_ORIGIN_SUFFIX,
   IM_WORK_FILE_NAME,
-  SESSION_END_SUFFIX,
-  SESSION_START_SUFFIX,
   STOP_PREFIX,
+  PERMISSION_REQUEST_PREFIX,
+  PERMISSION_RESPONSE_PREFIX,
   captureProcessLstart,
   daemonPidPath,
   deleteDaemonPidFile,
   deleteIMOriginFile,
   deleteIMWorkFile,
-  deleteSessionEndFile,
-  deleteSessionStartFile,
+  deletePermissionFileByPath,
+  deletePermissionRequestFile,
+  deletePermissionResponseFile,
   deleteStopFile,
   existsIMOriginFile,
   existsIMWorkFile,
-  existsSessionEndFile,
+  extractPaneIdFromFilename,
   formatStopTimestamp,
   imOriginPath,
   imWorkPath,
   isDaemonAlive,
   listIMOriginFiles,
+  listPermissionRequestFiles,
+  listPermissionResponseFiles,
   listStopFiles,
+  parseIMOriginFilename,
+  parsePermissionFilename,
+  parseStopFilename,
+  permissionRequestPath,
+  permissionResponsePath,
   readDaemonPidFile,
   readIMOriginFile,
-  readSessionStartFile,
+  readPermissionRequestFile,
+  readPermissionResponseFile,
   readStopFile,
-  sessionEndPath,
-  sessionStartPath,
   stopFilePath,
   writeDaemonPidFile,
   writeIMOriginFile,
   writeIMWorkFile,
-  writeSessionEndFile,
-  writeSessionStartFile,
+  writePermissionRequestFile,
+  writePermissionResponseFile,
   writeStopFile,
 } from './state-files.js';
+import type { IMReplyContext } from '@multi-cc-im/shared';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+const SID2 = '00000000-1111-2222-3333-444444444444';
+const PANE_ID = 42;
+const PANE_ID2 = 99;
+
+const WECHAT_CTX: IMReplyContext = {
+  imType: 'wechat',
+  to: 'wxid_user',
+  contextToken: 'ctx-1',
+};
 
 describe('state-files', () => {
   let stateDir: string;
@@ -69,426 +86,506 @@ describe('state-files', () => {
     });
   });
 
-  describe('SessionStart file', () => {
-    it('writeSessionStartFile + readSessionStartFile round-trip with all fields', async () => {
-      await writeSessionStartFile({
-        stateDir,
+  describe('filename parsers', () => {
+    it('parseStopFilename matches <paneId>_<sid>.Stop.<ts>', () => {
+      const name = `${PANE_ID}_${SID}.Stop.2026-05-08T01-43-40-131Z`;
+      expect(parseStopFilename(name)).toEqual({
+        paneId: PANE_ID,
         sessionId: SID,
-        pid: 12345,
-        startedAt: 'Tue May  4 16:38:00 2026',
-        paneId: 42,
-        cwd: '/private/tmp/cc-probe',
-        transcript_path: '/Users/x/.claude/projects/-private-tmp/91215578.jsonl',
-      });
-      const result = await readSessionStartFile({ stateDir, sessionId: SID });
-      expect(result).toEqual({
-        pid: 12345,
-        startedAt: 'Tue May  4 16:38:00 2026',
-        paneId: 42,
-        cwd: '/private/tmp/cc-probe',
-        transcript_path: '/Users/x/.claude/projects/-private-tmp/91215578.jsonl',
+        timestamp: '2026-05-08T01-43-40-131Z',
       });
     });
 
-    it('writes to the path returned by sessionStartPath with mode 0600', async () => {
-      await writeSessionStartFile({
-        stateDir,
-        sessionId: SID,
-        pid: 1,
-        startedAt: 'x',
-        cwd: '/tmp',
-        transcript_path: '/x.jsonl',
-      });
-      const path = sessionStartPath({ stateDir, sessionId: SID });
-      expect(path).toBe(join(stateDir, `${SID}${SESSION_START_SUFFIX}`));
-      const stats = await stat(path);
-      expect(stats.mode & 0o777).toBe(0o600);
+    it('parseStopFilename returns null for non-matching names', () => {
+      expect(parseStopFilename(`${SID}.Stop.x`)).toBeNull(); // legacy sid-keyed
+      expect(parseStopFilename('IMWork')).toBeNull();
+      expect(parseStopFilename(`${PANE_ID}.IMOrigin`)).toBeNull();
     });
 
-    it('omits paneId from JSON when not provided (cc outside wezterm)', async () => {
-      await writeSessionStartFile({
-        stateDir,
+    it('parseStopFilename accepts absolute path (chokidar gives full path)', () => {
+      const path = join('/state', `${PANE_ID}_${SID}.Stop.foo`);
+      expect(parseStopFilename(path)).toEqual({
+        paneId: PANE_ID,
         sessionId: SID,
-        pid: 12345,
-        startedAt: 'Tue May  4 16:38:00 2026',
-        cwd: '/private/tmp/cc-probe',
-        transcript_path: '/x.jsonl',
+        timestamp: 'foo',
       });
-      const filePath = sessionStartPath({ stateDir, sessionId: SID });
-      const raw = JSON.parse(await readFile(filePath, 'utf-8'));
-      expect('paneId' in raw).toBe(false);
-      const result = await readSessionStartFile({ stateDir, sessionId: SID });
-      expect(result?.paneId).toBeUndefined();
-      expect(result?.pid).toBe(12345);
     });
 
-    it('readSessionStartFile returns null when file missing (ENOENT)', async () => {
+    it('parsePermissionFilename matches request + response variants', () => {
+      const reqName = `${PANE_ID}_${SID}.PermissionRequest.deadbeef.json`;
+      expect(parsePermissionFilename(reqName)).toEqual({
+        paneId: PANE_ID,
+        sessionId: SID,
+        kind: 'request',
+        requestId: 'deadbeef',
+      });
+      const resName = `${PANE_ID}_${SID}.PermissionResponse.cafef00d.json`;
+      expect(parsePermissionFilename(resName)).toEqual({
+        paneId: PANE_ID,
+        sessionId: SID,
+        kind: 'response',
+        requestId: 'cafef00d',
+      });
+    });
+
+    it('parsePermissionFilename returns null on bad shape', () => {
+      expect(parsePermissionFilename(`${SID}.Permission.x.json`)).toBeNull();
+    });
+
+    it('parseIMOriginFilename matches <paneId>.IMOrigin', () => {
+      expect(parseIMOriginFilename(`${PANE_ID}.IMOrigin`)).toEqual({
+        paneId: PANE_ID,
+      });
+    });
+
+    it('parseIMOriginFilename rejects non-numeric prefix', () => {
+      expect(parseIMOriginFilename(`abc.IMOrigin`)).toBeNull();
+      expect(parseIMOriginFilename(`${SID}.IMOrigin`)).toBeNull();
+    });
+
+    it('extractPaneIdFromFilename covers Stop / Permission / IMOrigin', () => {
       expect(
-        await readSessionStartFile({ stateDir, sessionId: SID }),
-      ).toBeNull();
-    });
-
-    it('deleteSessionStartFile is ENOENT-safe (no throw on missing)', async () => {
-      await expect(
-        deleteSessionStartFile({ stateDir, sessionId: SID }),
-      ).resolves.toBeUndefined();
+        extractPaneIdFromFilename(`${PANE_ID}_${SID}.Stop.foo`),
+      ).toBe(PANE_ID);
+      expect(
+        extractPaneIdFromFilename(
+          `${PANE_ID}_${SID}.PermissionRequest.x.json`,
+        ),
+      ).toBe(PANE_ID);
+      expect(extractPaneIdFromFilename(`${PANE_ID}.IMOrigin`)).toBe(PANE_ID);
+      expect(extractPaneIdFromFilename('IMWork')).toBeNull();
+      expect(extractPaneIdFromFilename(`${SID}.SessionStart`)).toBeNull();
     });
   });
 
-  describe('SessionEnd file', () => {
-    it('writeSessionEndFile creates a 0-byte tombstone', async () => {
-      await writeSessionEndFile({ stateDir, sessionId: SID });
-      const path = sessionEndPath({ stateDir, sessionId: SID });
-      expect(path).toBe(join(stateDir, `${SID}${SESSION_END_SUFFIX}`));
-      const stats = await stat(path);
-      expect(stats.size).toBe(0);
-    });
-
-    it('existsSessionEndFile returns true after write, false when missing', async () => {
-      expect(
-        await existsSessionEndFile({ stateDir, sessionId: SID }),
-      ).toBe(false);
-      await writeSessionEndFile({ stateDir, sessionId: SID });
-      expect(
-        await existsSessionEndFile({ stateDir, sessionId: SID }),
-      ).toBe(true);
-    });
-
-    it('deleteSessionEndFile is ENOENT-safe', async () => {
-      await expect(
-        deleteSessionEndFile({ stateDir, sessionId: SID }),
-      ).resolves.toBeUndefined();
-      // After write+delete, exists should be false again
-      await writeSessionEndFile({ stateDir, sessionId: SID });
-      await deleteSessionEndFile({ stateDir, sessionId: SID });
-      expect(
-        await existsSessionEndFile({ stateDir, sessionId: SID }),
-      ).toBe(false);
-    });
-  });
-
-  describe('Stop file', () => {
-    it('writeStopFile + readStopFile round-trip via path', async () => {
-      const timestamp = '2026-05-06T16-20-15-123Z';
+  describe('Stop file (paneId-keyed)', () => {
+    it('writeStopFile + readStopFile round-trip preserves last_assistant_message', async () => {
+      const ts = '2026-05-08T01-43-40-131Z';
       await writeStopFile({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp,
-        last_assistant_message: 'hello world',
+        timestamp: ts,
+        last_assistant_message: '多行\n第二行 ✨',
       });
-      const path = stopFilePath({ stateDir, sessionId: SID, timestamp });
-      expect(path).toBe(
-        join(stateDir, `${SID}${STOP_PREFIX}${timestamp}`),
-      );
-      expect(await readStopFile(path)).toEqual({
-        last_assistant_message: 'hello world',
-      });
-    });
-
-    it('readStopFile returns null on ENOENT (daemon-double-event guard)', async () => {
       const path = stopFilePath({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp: '2026-05-06T16-20-15-123Z',
+        timestamp: ts,
+      });
+      expect(path.endsWith(`${PANE_ID}_${SID}${STOP_PREFIX}${ts}`)).toBe(true);
+      const got = await readStopFile(path);
+      expect(got?.last_assistant_message).toBe('多行\n第二行 ✨');
+    });
+
+    it('stopFilePath embeds <paneId>_<sid>.Stop.<ts>', () => {
+      const path = stopFilePath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T1',
+      });
+      expect(path).toBe(join(stateDir, `${PANE_ID}_${SID}.Stop.T1`));
+    });
+
+    it('listStopFiles returns sorted (chronological) files for that pane+sid', async () => {
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T2',
+        last_assistant_message: 'b',
+      });
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T1',
+        last_assistant_message: 'a',
+      });
+      // Different pane shouldn't appear.
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID2,
+        sessionId: SID,
+        timestamp: 'T1',
+        last_assistant_message: 'other-pane',
+      });
+      const list = await listStopFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      expect(list).toHaveLength(2);
+      expect(list[0]?.endsWith('T1')).toBe(true);
+      expect(list[1]?.endsWith('T2')).toBe(true);
+    });
+
+    it('readStopFile returns null on ENOENT (chokidar double-event race)', async () => {
+      const path = stopFilePath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'never',
       });
       expect(await readStopFile(path)).toBeNull();
     });
 
-    it('deleteStopFile is ENOENT-safe', async () => {
+    it('deleteStopFile is idempotent', async () => {
+      const ts = 'T1';
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: ts,
+        last_assistant_message: 'x',
+      });
       const path = stopFilePath({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp: '2026-05-06T16-20-15-123Z',
+        timestamp: ts,
       });
+      await deleteStopFile(path);
       await expect(deleteStopFile(path)).resolves.toBeUndefined();
-    });
-
-    it('listStopFiles returns paths sorted ascending by timestamp', async () => {
-      const timestamps = [
-        '2026-05-06T16-20-16-000Z',
-        '2026-05-06T16-20-15-123Z',
-        '2027-01-01T00-00-00-000Z',
-      ];
-      // Write in non-sorted order to confirm sort behavior is real
-      for (const timestamp of timestamps) {
-        await writeStopFile({
-          stateDir,
-          sessionId: SID,
-          timestamp,
-          last_assistant_message: `msg-${timestamp}`,
-        });
-      }
-      const result = await listStopFiles({ stateDir, sessionId: SID });
-      expect(result).toEqual([
-        join(stateDir, `${SID}${STOP_PREFIX}2026-05-06T16-20-15-123Z`),
-        join(stateDir, `${SID}${STOP_PREFIX}2026-05-06T16-20-16-000Z`),
-        join(stateDir, `${SID}${STOP_PREFIX}2027-01-01T00-00-00-000Z`),
-      ]);
-    });
-
-    it('listStopFiles for nonexistent stateDir returns []', async () => {
-      const missing = join(stateDir, 'does-not-exist');
-      expect(
-        await listStopFiles({ stateDir: missing, sessionId: SID }),
-      ).toEqual([]);
-    });
-
-    it('listStopFiles only includes files for the requested sessionId', async () => {
-      const SID2 = '5780668a-0000-4fe4-b01d-aaaaaaaaaaaa';
-      await writeStopFile({
-        stateDir,
-        sessionId: SID,
-        timestamp: '2026-05-06T16-20-15-123Z',
-        last_assistant_message: 'a',
-      });
-      await writeStopFile({
-        stateDir,
-        sessionId: SID2,
-        timestamp: '2026-05-06T16-20-16-000Z',
-        last_assistant_message: 'b',
-      });
-      const result = await listStopFiles({ stateDir, sessionId: SID });
-      expect(result).toHaveLength(1);
-      expect(result[0]).toContain(SID);
-      expect(result[0]).not.toContain(SID2);
     });
   });
 
-  describe('IMWork file (global IM-mode tombstone)', () => {
-    it('writeIMWorkFile creates a 0-byte file at <stateDir>/IMWork', async () => {
-      await writeIMWorkFile(stateDir);
-      const stats = await stat(imWorkPath(stateDir));
-      expect(stats.isFile()).toBe(true);
-      expect(stats.size).toBe(0);
+  describe('Permission Request / Response (paneId-keyed)', () => {
+    it('writePermissionRequestFile + readPermissionRequestFile round-trip', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'deadbeef',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        createdAt: 1700000000000,
+      });
+      const path = permissionRequestPath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'deadbeef',
+      });
+      expect(
+        path.endsWith(
+          `${PANE_ID}_${SID}${PERMISSION_REQUEST_PREFIX}deadbeef.json`,
+        ),
+      ).toBe(true);
+      const got = await readPermissionRequestFile(path);
+      expect(got?.requestId).toBe('deadbeef');
+      expect(got?.toolName).toBe('Bash');
+      expect(got?.toolInput).toEqual({ command: 'ls' });
     });
 
-    it('existsIMWorkFile returns false before write, true after', async () => {
+    it('writePermissionResponseFile + readPermissionResponseFile round-trip', async () => {
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'cafef00d',
+        decision: 'allow',
+        reason: 'IM user approved',
+      });
+      const path = permissionResponsePath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'cafef00d',
+      });
+      expect(
+        path.endsWith(
+          `${PANE_ID}_${SID}${PERMISSION_RESPONSE_PREFIX}cafef00d.json`,
+        ),
+      ).toBe(true);
+      const got = await readPermissionResponseFile(path);
+      expect(got?.decision).toBe('allow');
+      expect(got?.reason).toBe('IM user approved');
+    });
+
+    it('deletePermissionRequestFile + deletePermissionResponseFile idempotent', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 1,
+      });
+      await deletePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+      });
+      await expect(
+        deletePermissionRequestFile({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'r1',
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        deletePermissionResponseFile({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'r-missing',
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('deletePermissionFileByPath unlinks at exact path', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r2',
+        toolName: 'Edit',
+        toolInput: {},
+        createdAt: 0,
+      });
+      const path = permissionRequestPath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r2',
+      });
+      await deletePermissionFileByPath(path);
+      const after = await listPermissionRequestFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      expect(after).toHaveLength(0);
+    });
+
+    it('listPermissionRequestFiles / listPermissionResponseFiles filter by pane+sid', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      });
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+        decision: 'allow',
+        reason: 'ok',
+      });
+      // Different sid — should not appear.
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID2,
+        requestId: 'r1',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      });
+      const reqs = await listPermissionRequestFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      const ress = await listPermissionResponseFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      expect(reqs).toHaveLength(1);
+      expect(ress).toHaveLength(1);
+    });
+  });
+
+  describe('IMWork file (top-level tombstone)', () => {
+    it('writeIMWorkFile creates 0-byte file at top-level (no paneId/sid)', async () => {
+      await writeIMWorkFile(stateDir);
+      const path = imWorkPath(stateDir);
+      expect(path).toBe(join(stateDir, IM_WORK_FILE_NAME));
+      const buf = await readFile(path);
+      expect(buf.byteLength).toBe(0);
+    });
+
+    it('existsIMWorkFile / deleteIMWorkFile lifecycle', async () => {
       expect(await existsIMWorkFile(stateDir)).toBe(false);
       await writeIMWorkFile(stateDir);
       expect(await existsIMWorkFile(stateDir)).toBe(true);
-    });
-
-    it('deleteIMWorkFile is idempotent (ENOENT-safe)', async () => {
-      await deleteIMWorkFile(stateDir);
-      await writeIMWorkFile(stateDir);
-      await deleteIMWorkFile(stateDir);
       await deleteIMWorkFile(stateDir);
       expect(await existsIMWorkFile(stateDir)).toBe(false);
-    });
-
-    it('IM_WORK_FILE_NAME is "IMWork" (no .suffix — it lives at top level not per-session)', () => {
-      expect(IM_WORK_FILE_NAME).toBe('IMWork');
-      expect(imWorkPath(stateDir)).toBe(join(stateDir, 'IMWork'));
-    });
-
-    it('existsIMWorkFile returns false when stateDir itself is missing', async () => {
-      const missing = join(stateDir, 'does-not-exist');
-      expect(await existsIMWorkFile(missing)).toBe(false);
+      // Idempotent.
+      await expect(deleteIMWorkFile(stateDir)).resolves.toBeUndefined();
     });
   });
 
-  describe('IMOrigin file (per-session IMReplyContext snapshot)', () => {
-    it('writeIMOriginFile persists JSON ctx, readIMOriginFile reads it back verbatim', async () => {
-      const ctx = { to: 'wxid_owner', contextToken: 'abc123' };
-      await writeIMOriginFile({ stateDir, sessionId: SID, replyCtx: ctx });
-      expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual(ctx);
+  describe('IMOrigin (per-pane single-key)', () => {
+    it('imOriginPath uses <paneId>.IMOrigin', () => {
+      const path = imOriginPath({ stateDir, paneId: PANE_ID });
+      expect(path).toBe(join(stateDir, `${PANE_ID}${IM_ORIGIN_SUFFIX}`));
     });
 
-    it('writeIMOriginFile overwrites prior content (B2 — newest ctx wins)', async () => {
+    it('writeIMOriginFile + readIMOriginFile round-trip wechat ctx', async () => {
       await writeIMOriginFile({
         stateDir,
-        sessionId: SID,
-        replyCtx: { contextToken: 'first' },
+        paneId: PANE_ID,
+        replyCtx: WECHAT_CTX,
       });
-      await writeIMOriginFile({
-        stateDir,
-        sessionId: SID,
-        replyCtx: { contextToken: 'second' },
-      });
-      expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual({
-        contextToken: 'second',
-      });
+      const got = await readIMOriginFile({ stateDir, paneId: PANE_ID });
+      expect(got).toEqual(WECHAT_CTX);
     });
 
-    it('readIMOriginFile returns null when file does not exist', async () => {
+    it('writeIMOriginFile rejects ctx without imType discriminator', async () => {
+      await expect(
+        writeIMOriginFile({
+          stateDir,
+          paneId: PANE_ID,
+          replyCtx: { to: 'u', contextToken: 'x' } as unknown as IMReplyContext,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('writeIMOriginFile rejects unknown imType', async () => {
+      await expect(
+        writeIMOriginFile({
+          stateDir,
+          paneId: PANE_ID,
+          replyCtx: { imType: 'mystery', x: 1 } as unknown as IMReplyContext,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('readIMOriginFile returns null on ENOENT', async () => {
       expect(
-        await readIMOriginFile({ stateDir, sessionId: SID }),
+        await readIMOriginFile({ stateDir, paneId: PANE_ID }),
       ).toBeNull();
     });
 
-    it('existsIMOriginFile returns false before write, true after', async () => {
-      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(false);
+    it('readIMOriginFile throws on schema mismatch (corruption)', async () => {
+      // Write malformed JSON → schema parse should reject.
+      await writeFile(
+        imOriginPath({ stateDir, paneId: PANE_ID }),
+        JSON.stringify({ no: 'imType' }),
+      );
+      await expect(
+        readIMOriginFile({ stateDir, paneId: PANE_ID }),
+      ).rejects.toThrow();
+    });
+
+    it('existsIMOriginFile / deleteIMOriginFile lifecycle', async () => {
+      expect(
+        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
+      ).toBe(false);
       await writeIMOriginFile({
         stateDir,
-        sessionId: SID,
-        replyCtx: { foo: 'bar' },
+        paneId: PANE_ID,
+        replyCtx: WECHAT_CTX,
       });
-      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(true);
+      expect(
+        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
+      ).toBe(true);
+      await deleteIMOriginFile({ stateDir, paneId: PANE_ID });
+      expect(
+        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
+      ).toBe(false);
+      await expect(
+        deleteIMOriginFile({ stateDir, paneId: PANE_ID }),
+      ).resolves.toBeUndefined();
     });
 
-    it('deleteIMOriginFile is idempotent (ENOENT-safe)', async () => {
-      await deleteIMOriginFile({ stateDir, sessionId: SID });
+    it('listIMOriginFiles returns all <paneId>.IMOrigin files', async () => {
       await writeIMOriginFile({
         stateDir,
-        sessionId: SID,
-        replyCtx: { x: 1 },
-      });
-      await deleteIMOriginFile({ stateDir, sessionId: SID });
-      await deleteIMOriginFile({ stateDir, sessionId: SID });
-      expect(await existsIMOriginFile({ stateDir, sessionId: SID })).toBe(false);
-    });
-
-    it('opaque ctx — bridge stores any JSON-serializable shape (forward compat for tg/lark)', async () => {
-      // Schema is adapter-defined; bridge layer must NOT inspect it.
-      // Test with three different shapes.
-      const wechat = { to: 'wxid_owner', contextToken: 'tk123' };
-      const telegram = { chatId: 12345, messageId: 678 };
-      const lark = { openId: 'ou_xxx', chatId: 'oc_yyy' };
-      for (const ctx of [wechat, telegram, lark]) {
-        await writeIMOriginFile({ stateDir, sessionId: SID, replyCtx: ctx });
-        expect(await readIMOriginFile({ stateDir, sessionId: SID })).toEqual(ctx);
-      }
-    });
-
-    it('listIMOriginFiles returns absolute paths of all <sid>.IMOrigin files', async () => {
-      const SID2 = 'aaaaaaaa-0000-4fe4-b01d-bbbbbbbbbbbb';
-      await writeIMOriginFile({
-        stateDir,
-        sessionId: SID,
-        replyCtx: { x: 1 },
+        paneId: PANE_ID,
+        replyCtx: WECHAT_CTX,
       });
       await writeIMOriginFile({
         stateDir,
-        sessionId: SID2,
-        replyCtx: { y: 2 },
+        paneId: PANE_ID2,
+        replyCtx: WECHAT_CTX,
       });
-      const result = await listIMOriginFiles(stateDir);
-      expect(result).toHaveLength(2);
-      expect(result.some((p) => p.includes(SID))).toBe(true);
-      expect(result.some((p) => p.includes(SID2))).toBe(true);
-      expect(result.every((p) => p.endsWith(IM_ORIGIN_SUFFIX))).toBe(true);
-    });
-
-    it('listIMOriginFiles for nonexistent stateDir returns []', async () => {
-      const missing = join(stateDir, 'does-not-exist');
-      expect(await listIMOriginFiles(missing)).toEqual([]);
-    });
-
-    it('listIMOriginFiles does not include other state file types', async () => {
-      await writeIMOriginFile({
-        stateDir,
-        sessionId: SID,
-        replyCtx: { x: 1 },
-      });
-      await writeSessionEndFile({ stateDir, sessionId: SID });
-      await writeStopFile({
-        stateDir,
-        sessionId: SID,
-        timestamp: '2026-05-08T10-00-00-000Z',
-        last_assistant_message: 'hi',
-      });
-      const result = await listIMOriginFiles(stateDir);
-      expect(result).toHaveLength(1);
-      expect(result[0]).toContain(IM_ORIGIN_SUFFIX);
+      // Decoy: top-level IMWork should not appear.
+      await writeIMWorkFile(stateDir);
+      const list = await listIMOriginFiles(stateDir);
+      expect(list).toHaveLength(2);
+      const basenames = list.map((p) => p.split('/').pop()).sort();
+      expect(basenames).toEqual(
+        [`${PANE_ID2}.IMOrigin`, `${PANE_ID}.IMOrigin`].sort(),
+      );
     });
   });
 
-  describe('daemon.pid file (PID lock for daemon process)', () => {
-    it('DAEMON_PID_FILE_NAME is "daemon.pid"', () => {
-      expect(DAEMON_PID_FILE_NAME).toBe('daemon.pid');
-      expect(daemonPidPath(stateDir)).toBe(join(stateDir, 'daemon.pid'));
+  describe('daemon.pid', () => {
+    it('writeDaemonPidFile + readDaemonPidFile round-trip', async () => {
+      await writeDaemonPidFile({ stateDir, pid: 12345, startedAt: 'lstart-x' });
+      const path = daemonPidPath(stateDir);
+      expect(path).toBe(join(stateDir, DAEMON_PID_FILE_NAME));
+      const got = await readDaemonPidFile(stateDir);
+      expect(got).toEqual({ pid: 12345, startedAt: 'lstart-x' });
     });
 
-    it('write + read roundtrip', async () => {
-      await writeDaemonPidFile({
-        stateDir,
-        pid: 12345,
-        startedAt: 'Mon May  9 10:00:00 2026',
-      });
-      expect(await readDaemonPidFile(stateDir)).toEqual({
-        pid: 12345,
-        startedAt: 'Mon May  9 10:00:00 2026',
-      });
-    });
-
-    it('readDaemonPidFile returns null when file does not exist', async () => {
+    it('readDaemonPidFile returns null on ENOENT', async () => {
       expect(await readDaemonPidFile(stateDir)).toBeNull();
     });
 
-    it('deleteDaemonPidFile is idempotent (ENOENT-safe)', async () => {
-      await deleteDaemonPidFile(stateDir);
-      await writeDaemonPidFile({
-        stateDir,
-        pid: 12345,
-        startedAt: 'now',
-      });
-      await deleteDaemonPidFile(stateDir);
-      await deleteDaemonPidFile(stateDir);
-      expect(await readDaemonPidFile(stateDir)).toBeNull();
+    it('deleteDaemonPidFile idempotent', async () => {
+      await expect(deleteDaemonPidFile(stateDir)).resolves.toBeUndefined();
     });
 
-    it('captureProcessLstart for current PID returns non-empty string', async () => {
-      const lstart = await captureProcessLstart(process.pid);
-      expect(lstart).toBeTypeOf('string');
-      expect(lstart!.length).toBeGreaterThan(0);
+    it('captureProcessLstart returns a non-empty string for pid=process.pid', async () => {
+      const got = await captureProcessLstart(process.pid);
+      // ps -o lstart= returns something like "Tue May  4 16:38:00 2026" (>= 16 chars).
+      expect(got).not.toBeNull();
+      expect((got ?? '').length).toBeGreaterThanOrEqual(10);
     });
 
-    it('captureProcessLstart for nonexistent PID returns null', async () => {
-      // PID 999999 is unlikely to exist on a normal system
-      const lstart = await captureProcessLstart(999_999);
-      expect(lstart).toBeNull();
+    it('captureProcessLstart returns null for very high (likely-dead) pid', async () => {
+      const got = await captureProcessLstart(2_000_000_000);
+      expect(got).toBeNull();
     });
 
-    it('isDaemonAlive returns false when daemon.pid file missing', async () => {
+    it('isDaemonAlive returns false when no pid file', async () => {
       expect(await isDaemonAlive(stateDir)).toBe(false);
     });
 
-    it('isDaemonAlive returns false when PID does not exist', async () => {
-      await writeDaemonPidFile({
-        stateDir,
-        pid: 999_999,
-        startedAt: 'whatever',
-      });
-      expect(await isDaemonAlive(stateDir)).toBe(false);
-    });
-
-    it('isDaemonAlive returns false when PID exists but lstart mismatches (PID-reuse defense)', async () => {
-      // Simulate: PID 12345 belonged to dead daemon X (lstart = "old time"),
-      // OS recycled PID 12345 to current test process (lstart = something
-      // else). Recorded daemon.pid still says { pid: <current>, startedAt: "wrong time" }.
-      // isDaemonAlive should detect mismatch and return false.
+    it('isDaemonAlive returns true for the running test process', async () => {
+      const lstart = (await captureProcessLstart(process.pid)) ?? 'unknown';
       await writeDaemonPidFile({
         stateDir,
         pid: process.pid,
-        startedAt: 'WRONG-LSTART-2020-01-01',
-      });
-      expect(await isDaemonAlive(stateDir)).toBe(false);
-    });
-
-    it('isDaemonAlive returns true when PID exists AND lstart matches', async () => {
-      const actualLstart = await captureProcessLstart(process.pid);
-      expect(actualLstart).not.toBeNull();
-      await writeDaemonPidFile({
-        stateDir,
-        pid: process.pid,
-        startedAt: actualLstart!,
+        startedAt: lstart,
       });
       expect(await isDaemonAlive(stateDir)).toBe(true);
     });
 
-    it('writeDaemonPidFile uses atomic-write (mode 0600 — bot_token-style protection by analogy)', async () => {
+    it('isDaemonAlive returns false on lstart mismatch (PID reuse defense)', async () => {
       await writeDaemonPidFile({
         stateDir,
-        pid: 12345,
-        startedAt: 'now',
+        pid: process.pid,
+        startedAt: 'wrong lstart string that will not match',
       });
-      // We don't strictly need 0600 for daemon.pid (no secrets), but the
-      // atomic-write helper used by all our state files defaults to a
-      // restrictive mode. Sanity check it's at least a regular file we can
-      // read back.
-      const stats = await stat(daemonPidPath(stateDir));
-      expect(stats.isFile()).toBe(true);
-      expect(stats.size).toBeGreaterThan(0);
+      expect(await isDaemonAlive(stateDir)).toBe(false);
+    });
+  });
+
+  describe('atomic write permissions (0600)', () => {
+    it('writeIMOriginFile produces 0600 file', async () => {
+      await writeIMOriginFile({
+        stateDir,
+        paneId: PANE_ID,
+        replyCtx: WECHAT_CTX,
+      });
+      const st = await stat(imOriginPath({ stateDir, paneId: PANE_ID }));
+      // 0o777 is the rwx mask; check the lower bits == 0o600.
+      expect(st.mode & 0o777).toBe(0o600);
     });
   });
 });

@@ -2,79 +2,61 @@ import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
+  IM_WORK_FILE_NAME,
   daemonPidPath,
+  extractPaneIdFromFilename,
   isDaemonAlive,
 } from '@multi-cc-im/cli-cc';
 
 /**
- * Daemon startup state-directory sweep.
+ * Daemon startup / `multi-cc-im cleanup` state-directory sweep.
  *
- * Cleans up two categories of stale files:
+ * Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+ * (DD #61): state files are pane-keyed (`<paneId>_<sid>.<event>` and
+ * `<paneId>.IMOrigin`). The wezterm `cli list` paneId set is the ground
+ * truth — files for paneIds **not in the live set** are stale and get
+ * cleaned.
  *
- * 1. **Paired `<sid>.SessionStart` + `<sid>.SessionEnd`**: cc died (gracefully
- *    or while daemon was down). Delete the pair plus any leftover
- *    `<sid>.Stop.*` files for that sid.
+ * Cleanup classes:
  *
- * 2. **Lone `<sid>.SessionStart` with leftover `<sid>.Stop.*`** (no
- *    SessionEnd): cc is probably still alive but the daemon was down when
- *    the cc replied. The wechat replyCtx is in-memory only and was lost on
- *    daemon restart, so we have nowhere to forward those replies — delete
- *    the Stop files so they don't replay endlessly.
+ * 1. **Pane-keyed orphans** — any `<paneId>...` file whose paneId is not in
+ *    the current wezterm paneId set. These came from cc sessions that have
+ *    since exited (the wezterm pane closed too) or pre-DD-#61 schema
+ *    artifacts (sid-keyed files don't extract a paneId, so they're treated
+ *    as orphans automatically).
  *
- * 3. **Legacy state files from pre-redesign installs**: `<sid>.cc-pid`,
- *    `<sid>.events.jsonl`, `<sid>.ended`, `<sid>.last-hook-at`, and the
- *    top-level `current-session` pointer. These have no consumers in the
- *    new design; delete on sight to keep `state/` clean.
+ * 2. **Stale `daemon.pid`** — file exists but `isDaemonAlive` returns false
+ *    (PID dead OR lstart mismatch from PID reuse). Per
+ *    [DD: daemon liveness](../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
+ *    A live daemon's lock file is **kept**, so `multi-cc-im cleanup` is safe
+ *    to run while the daemon is up.
  *
- * The sweep MUST run before chokidar starts watching (otherwise the
- * unlinks would fire spurious chokidar events).
+ * 3. **Legacy state files from pre-DD-#61 installs** — `<sid>.SessionStart`,
+ *    `<sid>.SessionEnd`, sid-keyed Stop/Permission/IMOrigin, and even
+ *    older legacy (`<sid>.cc-pid`, `current-session`, `<sid>.events.jsonl`,
+ *    etc.). These don't have a paneId we can extract → swept regardless.
+ *
+ * Top-level files NEVER swept here:
+ * - `IMWork` (managed by daemon start/stop + IM `/start /stop`)
+ * - `wechat-cursor` (iLink protocol state, must persist across restart)
+ *
+ * The sweep MUST run before chokidar starts watching at daemon start
+ * (otherwise the unlinks would fire spurious chokidar events).
  */
 
-interface SidGroup {
-  sid: string;
-  hasStart: boolean;
-  hasEnd: boolean;
-  stopFiles: string[];
-  legacyFiles: string[];
-  permissionFiles: string[];
-  imOriginFile: string | null;
-}
-
-const LEGACY_SUFFIXES = [
-  '.cc-pid',
-  '.events.jsonl',
-  '.ended',
-  '.last-hook-at',
-];
-
 export interface SweepStaleStateFilesResult {
-  /** Number of fully-completed (SessionStart+SessionEnd) sessions cleaned up. */
-  pairedCleaned: number;
-  /** Number of orphan Stop files deleted (daemon-down accumulation). */
-  orphanStopsCleaned: number;
-  /** Number of legacy pre-redesign state files deleted. */
+  /** Files removed because their paneId no longer exists in wezterm. */
+  orphanPaneFilesCleaned: number;
+  /**
+   * Files removed because they don't match any current naming convention
+   * (legacy `<sid>.SessionStart` etc. from pre-DD-#61 schema). Distinct
+   * from orphanPaneFilesCleaned: legacy files don't have a paneId in their
+   * name at all.
+   */
   legacyCleaned: number;
   /**
-   * Number of orphan PermissionRequest/Response files deleted. Hook subprocess
-   * normally cleans up both files itself; orphans only appear when the
-   * subprocess crashed or the daemon died mid-flow.
-   */
-  orphanPermissionCleaned: number;
-  /**
-   * Number of `<sid>.IMOrigin` files deleted. Per [DD: IMWork+IMOrigin] —
-   * sweep runs at daemon start (always cleans) and from `multi-cc-im cleanup`
-   * (cleans only IMOrigin for sids that already have SessionEnd, i.e. cc
-   * already dead — running cleanup with a live cc must NOT clobber its
-   * pending reply ctx). IMWork file itself is **NOT** swept here (A scheme):
-   * cleanup leaves user's manual IM-mode toggle intact; only `daemon start`
-   * separately deletes IMWork.
-   */
-  orphanIMOriginCleaned: number;
-  /**
-   * Number of stale `daemon.pid` files deleted. Per [DD: daemon liveness] —
-   * sweep keeps daemon.pid if PID is alive + lstart matches recorded value
-   * (so `cleanup` is safe to run while daemon is live: it won't blow away
-   * the live lock); otherwise treats it as stale and deletes.
+   * 1 if `daemon.pid` was stale (PID dead / lstart mismatch) and got
+   * cleaned, 0 otherwise (file absent OR daemon alive — kept).
    */
   staleDaemonPidCleaned: number;
 }
@@ -85,12 +67,41 @@ export interface SweepStaleStateFilesOpts {
    * Used by `multi-cc-im cleanup --dry-run`. Default false (real delete).
    */
   dryRun?: boolean;
+  /**
+   * Source of truth for "currently alive" wezterm panes. If omitted, the
+   * sweep treats EVERY pane-keyed file as orphan (= "no panes alive
+   * anywhere", scorched-earth daemon-start mode). Caller (daemon start)
+   * passes a real `() => listPanes()` so live cc files survive.
+   *
+   * Returning [] (no panes) is fine — interpreted as "wezterm not running
+   * or empty, all files are orphans".
+   *
+   * Returning a function that **throws** is treated as "cannot determine
+   * truth → keep all pane-keyed files" (defensive fail-safe; better to
+   * leak a few orphan files than wipe a live cc's state).
+   */
+  livePaneIds?: () => Promise<readonly number[]>;
 }
 
+const LEGACY_BASE_NAMES_TOP_LEVEL = new Set([
+  // pre-DD-#61 top-level legacy
+  'current-session',
+]);
+
+const LEGACY_SUFFIXES = [
+  // pre-DD-#61 sid-keyed schema (everything that wasn't paneId-prefixed)
+  '.SessionStart',
+  '.SessionEnd',
+  '.cc-pid',
+  '.events.jsonl',
+  '.ended',
+  '.last-hook-at',
+];
+
 /**
- * Sweep `<stateDir>` per the rules in the module header. Returns a summary
- * the caller can log; throws on unexpected fs errors (ENOENT on stateDir
- * itself is treated as no-op, not an error).
+ * Sweep `<stateDir>` per the rules above. Returns a summary the caller can
+ * log; throws on unexpected fs errors (ENOENT on stateDir itself is
+ * treated as no-op, not an error).
  */
 export async function sweepStaleStateFiles(
   stateDir: string,
@@ -101,168 +112,100 @@ export async function sweepStaleStateFiles(
     if (dryRun) return;
     await unlinkSafely(filePath);
   };
+
   let entries: string[];
   try {
     entries = await readdir(stateDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return {
-        pairedCleaned: 0,
-        orphanStopsCleaned: 0,
+        orphanPaneFilesCleaned: 0,
         legacyCleaned: 0,
-        orphanPermissionCleaned: 0,
-        orphanIMOriginCleaned: 0,
         staleDaemonPidCleaned: 0,
       };
     }
     throw err;
   }
 
-  const groups = new Map<string, SidGroup>();
-  let topLevelLegacyCount = 0;
+  // Resolve live paneId set (defensive — if caller's listPanes throws,
+  // keep all pane-keyed files).
+  let liveSet: Set<number> | null = null;
+  if (sweepOpts.livePaneIds) {
+    try {
+      const ids = await sweepOpts.livePaneIds();
+      liveSet = new Set(ids);
+    } catch {
+      // Defensive: cannot determine truth → assume "all alive" so we
+      // don't accidentally wipe live cc state.
+      liveSet = null;
+    }
+  } else {
+    liveSet = new Set();
+  }
+
+  let orphanPaneFilesCleaned = 0;
+  let legacyCleaned = 0;
   let staleDaemonPidCleaned = 0;
 
   for (const name of entries) {
-    if (name === 'current-session') {
-      // Top-level legacy file from PR-B1 era — delete unconditionally.
-      await remove(join(stateDir, name));
-      topLevelLegacyCount++;
-      continue;
-    }
+    // Top-level files we never touch:
+    if (name === IM_WORK_FILE_NAME) continue;
+    if (name === 'wechat-cursor') continue;
 
+    // daemon.pid — check liveness; keep if alive.
     if (name === DAEMON_PID_FILE_NAME) {
-      // Per [DD: daemon liveness](../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md):
-      // keep daemon.pid only if it points at a live daemon (PID + lstart
-      // both match). Otherwise it's a stale lock from a crashed daemon —
-      // delete so next daemon start has a clean slate.
-      //
-      // Safety for `multi-cc-im cleanup` run while daemon is live: live
-      // daemon's PID + lstart match, so isDaemonAlive returns true and we
-      // keep the file.
-      const alive = await isDaemonAlive(stateDir);
+      const alive = await isDaemonAlive(stateDir).catch(() => false);
       if (!alive) {
         await remove(daemonPidPath(stateDir));
-        staleDaemonPidCleaned++;
+        staleDaemonPidCleaned = 1;
       }
       continue;
     }
 
-    const sid = extractSid(name);
-    if (!sid) continue;
-    const rest = name.slice(sid.length);
-    let group = groups.get(sid);
-    if (!group) {
-      group = {
-        sid,
-        hasStart: false,
-        hasEnd: false,
-        stopFiles: [],
-        legacyFiles: [],
-        permissionFiles: [],
-        imOriginFile: null,
-      };
-      groups.set(sid, group);
-    }
-
-    if (rest === '.SessionStart') group.hasStart = true;
-    else if (rest === '.SessionEnd') group.hasEnd = true;
-    else if (rest.startsWith('.Stop.')) {
-      group.stopFiles.push(join(stateDir, name));
-    } else if (
-      rest.startsWith('.PermissionRequest.') ||
-      rest.startsWith('.PermissionResponse.')
-    ) {
-      // Hook subprocess + daemon both clean these up in the happy path.
-      // Sweep on startup is the safety net for crash-mid-flow orphans —
-      // they're meaningless on a fresh daemon (the polling subprocess is
-      // gone) so always drop.
-      group.permissionFiles.push(join(stateDir, name));
-    } else if (rest === '.IMOrigin') {
-      group.imOriginFile = join(stateDir, name);
-    } else if (LEGACY_SUFFIXES.some((suf) => rest === suf)) {
-      group.legacyFiles.push(join(stateDir, name));
-    }
-  }
-
-  let pairedCleaned = 0;
-  let orphanStopsCleaned = 0;
-  let legacyCleaned = topLevelLegacyCount;
-  let orphanPermissionCleaned = 0;
-  let orphanIMOriginCleaned = 0;
-
-  for (const group of groups.values()) {
-    // Always cleanup legacy files regardless of paired/lone state.
-    for (const f of group.legacyFiles) {
-      await remove(f);
+    // Top-level legacy file from pre-DD-#61 era.
+    if (LEGACY_BASE_NAMES_TOP_LEVEL.has(name)) {
+      await remove(join(stateDir, name));
       legacyCleaned++;
+      continue;
     }
 
-    // Permission Request/Response files are always orphans on daemon
-    // startup — the polling hook subprocess they refer to is gone.
-    for (const f of group.permissionFiles) {
-      await remove(f);
-      orphanPermissionCleaned++;
+    // Per-pane file (paneId-keyed): extract paneId, check live set.
+    const paneId = extractPaneIdFromFilename(name);
+    if (paneId !== null) {
+      if (liveSet === null) continue; // defensive — keep, can't verify
+      if (!liveSet.has(paneId)) {
+        await remove(join(stateDir, name));
+        orphanPaneFilesCleaned++;
+      }
+      continue;
     }
 
-    if (group.hasStart && group.hasEnd) {
-      // Completed session — delete the 3-set (start + end + leftover stops)
-      // PLUS any IMOrigin (cc dead → no further forwards needed).
-      await remove(join(stateDir, `${group.sid}.SessionStart`));
-      await remove(join(stateDir, `${group.sid}.SessionEnd`));
-      for (const f of group.stopFiles) await remove(f);
-      if (group.imOriginFile !== null) {
-        await remove(group.imOriginFile);
-        orphanIMOriginCleaned++;
-      }
-      pairedCleaned++;
-      orphanStopsCleaned += group.stopFiles.length;
-    } else if (group.hasStart && !group.hasEnd) {
-      // cc still alive (probably) but daemon-down accumulated Stop files
-      // can't be forwarded — replyCtx is in-memory and was lost. Delete
-      // Stop files so they don't replay forever. IMOrigin is **kept** —
-      // cc is alive, so the next IM dispatch may reuse it. (For daemon
-      // start sweep, callers explicitly clean ALL IMOrigin via separate
-      // step in start.ts; cleanup command must NOT clobber a live cc's
-      // pending IM ctx, so the kept-here logic protects that case.)
-      for (const f of group.stopFiles) await remove(f);
-      orphanStopsCleaned += group.stopFiles.length;
-    } else if (!group.hasStart && group.hasEnd) {
-      // Orphan SessionEnd (shouldn't happen — defensive cleanup).
-      await remove(join(stateDir, `${group.sid}.SessionEnd`));
-      if (group.imOriginFile !== null) {
-        await remove(group.imOriginFile);
-        orphanIMOriginCleaned++;
-      }
-    } else {
-      // No SessionStart, no SessionEnd, possibly some Stop files from a
-      // very stale daemon-down state. Drop them. IMOrigin without any
-      // SessionStart marker → the cc that owned it is gone; clean it.
-      for (const f of group.stopFiles) await remove(f);
-      orphanStopsCleaned += group.stopFiles.length;
-      if (group.imOriginFile !== null) {
-        await remove(group.imOriginFile);
-        orphanIMOriginCleaned++;
-      }
+    // Legacy sid-keyed file (no paneId in name) — pre-DD-#61 schema artifact.
+    if (LEGACY_SUFFIXES.some((suf) => name.endsWith(suf))) {
+      await remove(join(stateDir, name));
+      legacyCleaned++;
+      continue;
     }
+
+    // Unknown file with sid-prefix shape (pre-DD-#61 IMOrigin / Stop /
+    // Permission* before paneId got prefixed). Match common sid-prefixed
+    // patterns and treat as legacy.
+    const SID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./;
+    if (SID_RE.test(name)) {
+      await remove(join(stateDir, name));
+      legacyCleaned++;
+      continue;
+    }
+
+    // Anything else — leave alone (logs / config spillover / user files).
   }
 
   return {
-    pairedCleaned,
-    orphanStopsCleaned,
+    orphanPaneFilesCleaned,
     legacyCleaned,
-    orphanPermissionCleaned,
-    orphanIMOriginCleaned,
     staleDaemonPidCleaned,
   };
-}
-
-/** UUID v4 prefix matcher for our state-file naming convention. */
-const SID_PATTERN =
-  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
-
-function extractSid(name: string): string | null {
-  const m = SID_PATTERN.exec(name);
-  return m ? m[1]! : null;
 }
 
 async function unlinkSafely(filePath: string): Promise<void> {

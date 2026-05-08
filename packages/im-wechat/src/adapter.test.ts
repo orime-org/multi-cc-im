@@ -8,6 +8,7 @@ import type {
   CursorStore,
   IMHandler,
   IncomingMessage,
+  IMReplyContext,
 } from '@multi-cc-im/shared';
 import type { WeixinCredentials } from './credentials.js';
 import {
@@ -159,7 +160,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
   it('throws if send() is called before start()', async () => {
     const adapter = makeAdapter();
     await expect(
-      adapter.send('hi', { to: 'u1', contextToken: undefined }),
+      adapter.send('hi', { imType: 'wechat', to: 'u1', contextToken: undefined }),
     ).rejects.toThrow(/before start/);
   });
 
@@ -189,7 +190,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
       from: 'wxid_user',
       text: 'hello',
       attachments: [],
-      replyCtx: { to: 'wxid_user', contextToken: undefined },
+      replyCtx: { imType: 'wechat', to: 'wxid_user', contextToken: undefined },
       timestamp: 1700000000000,
     });
     await adapter.stop();
@@ -245,6 +246,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
     await adapter.start(makeHandler());
 
     await adapter.send('reply text', {
+      imType: 'wechat',
       to: 'wxid_user',
       contextToken: 'ctx-1',
     });
@@ -265,7 +267,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
     const adapter = makeAdapter();
     await adapter.start(makeHandler());
     await expect(
-      adapter.send('hi', { contextToken: 'x' } as unknown),
+      adapter.send('hi', { contextToken: 'x' } as unknown as IMReplyContext),
     ).rejects.toThrow(/replyCtx/);
     await adapter.stop();
   });
@@ -296,7 +298,7 @@ describe('createWeixinAdapter — sendImage / sendFile', () => {
     if (!isImageSender(a)) throw new Error('not ImageSender');
     await a.start(makeHandler());
 
-    await a.sendImage('/tmp/photo.png', { to: 'wxid_user', contextToken: 'ctx-2' });
+    await a.sendImage('/tmp/photo.png', { imType: 'wechat', to: 'wxid_user', contextToken: 'ctx-2' });
 
     expect(mockUploadFileToWeixin).toHaveBeenCalledTimes(1);
     expect(mockUploadFileToWeixin).toHaveBeenCalledWith(
@@ -323,7 +325,7 @@ describe('createWeixinAdapter — sendImage / sendFile', () => {
     if (!isFileSender(a)) throw new Error('not FileSender');
     await a.start(makeHandler());
 
-    await a.sendFile('/tmp/report.pdf', { to: 'wxid_user', contextToken: 'ctx-3' });
+    await a.sendFile('/tmp/report.pdf', { imType: 'wechat', to: 'wxid_user', contextToken: 'ctx-3' });
 
     expect(mockUploadFileAttachmentToWeixin).toHaveBeenCalledTimes(1);
     expect(mockUploadFileAttachmentToWeixin).toHaveBeenCalledWith(
@@ -350,10 +352,10 @@ describe('createWeixinAdapter — sendImage / sendFile', () => {
     await a.start(makeHandler());
 
     await expect(
-      a.sendImage('/tmp/x.png', { contextToken: 'x' } as unknown),
+      a.sendImage('/tmp/x.png', { contextToken: 'x' } as unknown as IMReplyContext),
     ).rejects.toThrow(/replyCtx/);
     await expect(
-      a.sendFile('/tmp/x.pdf', { contextToken: 'x' } as unknown),
+      a.sendFile('/tmp/x.pdf', { contextToken: 'x' } as unknown as IMReplyContext),
     ).rejects.toThrow(/replyCtx/);
     await a.stop();
   });
@@ -362,10 +364,10 @@ describe('createWeixinAdapter — sendImage / sendFile', () => {
     const a = makeAdapter();
     if (!isImageSender(a) || !isFileSender(a)) throw new Error('caps missing');
     await expect(
-      a.sendImage('/tmp/x.png', { to: 'u', contextToken: undefined }),
+      a.sendImage('/tmp/x.png', { imType: 'wechat', to: 'u', contextToken: undefined }),
     ).rejects.toThrow(/before start/);
     await expect(
-      a.sendFile('/tmp/x.pdf', { to: 'u', contextToken: undefined }),
+      a.sendFile('/tmp/x.pdf', { imType: 'wechat', to: 'u', contextToken: undefined }),
     ).rejects.toThrow(/before start/);
   });
 });
@@ -376,7 +378,7 @@ describe('createWeixinAdapter — startTyping', () => {
     if (!isTypingIndicator(a)) throw new Error('not TypingIndicator');
     await a.start(makeHandler());
 
-    const cancel = await a.startTyping({ to: 'wxid_user', contextToken: 'ctx' });
+    const cancel = await a.startTyping({ imType: 'wechat', to: 'wxid_user', contextToken: 'ctx' });
 
     expect(mockGetConfig).toHaveBeenCalledTimes(1);
     expect(mockGetConfig).toHaveBeenCalledWith(
@@ -417,8 +419,8 @@ describe('createWeixinAdapter — startTyping', () => {
     if (!isTypingIndicator(a)) throw new Error('not TypingIndicator');
     await a.start(makeHandler());
 
-    await a.startTyping({ to: 'wxid_user', contextToken: 'ctx' });
-    await a.startTyping({ to: 'wxid_user', contextToken: 'ctx' });
+    await a.startTyping({ imType: 'wechat', to: 'wxid_user', contextToken: 'ctx' });
+    await a.startTyping({ imType: 'wechat', to: 'wxid_user', contextToken: 'ctx' });
 
     // Same userId twice → cache hit on second call.
     expect(mockGetConfig).toHaveBeenCalledTimes(1);
@@ -431,7 +433,7 @@ describe('createWeixinAdapter — startTyping', () => {
     if (!isTypingIndicator(a)) throw new Error('not TypingIndicator');
     await a.start(makeHandler());
 
-    const cancel = await a.startTyping({ to: 'u', contextToken: undefined });
+    const cancel = await a.startTyping({ imType: 'wechat', to: 'u', contextToken: undefined });
     expect(mockSendTyping).not.toHaveBeenCalled();
     cancel();
     await new Promise((r) => setImmediate(r));
@@ -443,7 +445,7 @@ describe('createWeixinAdapter — startTyping', () => {
     const a = makeAdapter();
     if (!isTypingIndicator(a)) throw new Error('not TypingIndicator');
     await expect(
-      a.startTyping({ to: 'u', contextToken: undefined }),
+      a.startTyping({ imType: 'wechat', to: 'u', contextToken: undefined }),
     ).rejects.toThrow(/before start/);
   });
 });

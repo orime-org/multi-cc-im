@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReplyContextSchema } from './adapter/im.js';
 
 // Brand helper for nominal types
 declare const __brand: unique symbol;
@@ -38,12 +39,14 @@ export const PaneIdSchema = z
   .transform((n) => n as PaneId);
 
 /**
- * Reverse lookup `pane_id → session_id`. Bridge router owns the map (built
- * from `WEZTERM_PANE` env captured at SessionStart hook); term-wezterm's
- * PaneAlive capability consumes via DI.
+ * @deprecated Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+ * daemon no longer maintains a paneId↔sessionId reverse map. Bridge router
+ * uses `TermListPanes.listPanes()` directly as the source of truth.
+ *
+ * Kept here only because `@multi-cc-im/im-wechat` re-exports the type
+ * historically; new code should not implement or consume this.
  */
 export interface PaneToSessionMap {
-  /** Returns the session_id tracked for this pane, or `null` if unknown. */
   get(paneId: PaneId): SessionId | null;
 }
 
@@ -67,12 +70,13 @@ export const IncomingMessageSchema = z.object({
   attachments: z.array(AttachmentSchema).default([]),
   timestamp: z.number(),
   /**
-   * Adapter-specific reply context, opaque to bridge core. Bridge stores it
-   * per-session (`lastReplyCtxBySession`) so that when cc Stop hook fires for
-   * that session, the reply can be routed back via `IMAdapter.send(content,
-   * replyCtx)`. Each IMAdapter constructs the value and casts on send (e.g.
-   * wechat: `{ to: from_user_id, contextToken: msg.context_token }`).
+   * Adapter-specific reply context, discriminated by `imType`. Bridge stores
+   * it per-pane (`<paneId>.IMOrigin`) so that when cc Stop hook fires for
+   * that pane, the reply can be routed back via `IMAdapter.send(content,
+   * replyCtx)`. Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+   * the union is locked at compile time; multi-IM threading uses the
+   * discriminator at runtime.
    */
-  replyCtx: z.unknown(),
+  replyCtx: ReplyContextSchema,
 });
 export type IncomingMessage = z.infer<typeof IncomingMessageSchema>;

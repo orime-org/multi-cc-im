@@ -5,7 +5,7 @@ import type {
   VoiceSender,
   TypingIndicator,
 } from './adapter/im.js';
-import type { Adapter as TermAdapter, PaneAlive } from './adapter/term.js';
+import type { Adapter as TermAdapter, ListPanes } from './adapter/term.js';
 
 /**
  * Type guards for adapter capabilities. Per adapter DD (TS-first hybrid),
@@ -29,6 +29,6 @@ export function isTypingIndicator(a: IMAdapter): a is TypingIndicator {
   return typeof (a as Partial<TypingIndicator>).startTyping === 'function';
 }
 
-export function isPaneAlive(a: TermAdapter): a is PaneAlive {
-  return typeof (a as Partial<PaneAlive>).isPaneAlive === 'function';
+export function isListPanes(a: TermAdapter): a is ListPanes {
+  return typeof (a as Partial<ListPanes>).listPanes === 'function';
 }

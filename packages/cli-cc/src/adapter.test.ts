@@ -1,69 +1,56 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   CLIHandler,
   PreToolUsePayload,
-  SessionEndPayload,
   SessionId,
-  SessionStartPayload,
   StopPayload,
 } from '@multi-cc-im/shared';
 import { createCcCliAdapter } from './adapter.js';
 import { resolveInjectionQueuePath } from './injection-queue.js';
 import {
-  sessionEndPath,
-  sessionStartPath,
+  permissionRequestPath,
   stopFilePath,
-  writeSessionEndFile,
-  writeSessionStartFile,
+  writePermissionRequestFile,
   writeStopFile,
 } from './state-files.js';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
 const SID2 = '5780668a-0000-4fe4-b01d-aaaaaaaaaaaa';
-const TX = '/Users/x/.claude/projects/-private-tmp/91215578.jsonl';
-const CWD = '/private/tmp/cc-probe';
+const PANE_ID = 42;
+const PANE_ID2 = 99;
 
 interface RecordedEvent {
-  kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
+  kind: 'PreToolUse' | 'Stop';
   payload:
-    | SessionStartPayload
-    | (PreToolUsePayload & { requestId: string })
-    | StopPayload
-    | SessionEndPayload;
+    | (PreToolUsePayload & { requestId: string; paneId: number })
+    | (StopPayload & { paneId: number });
 }
 
 function makeRecorder(overrides?: {
-  onSessionStartThrow?: Error;
   onStopThrow?: Error;
-  onSessionEndThrow?: Error;
   onPreToolUseThrow?: Error;
 }): { events: RecordedEvent[]; handler: CLIHandler } {
   const events: RecordedEvent[] = [];
   const handler: CLIHandler = {
-    async onSessionStart(p: SessionStartPayload) {
-      events.push({ kind: 'SessionStart', payload: p });
-      if (overrides?.onSessionStartThrow) throw overrides.onSessionStartThrow;
-    },
     async onPreToolUse(p) {
-      events.push({ kind: 'PreToolUse', payload: p });
+      events.push({
+        kind: 'PreToolUse',
+        payload: p as PreToolUsePayload & {
+          requestId: string;
+          paneId: number;
+        },
+      });
       if (overrides?.onPreToolUseThrow) throw overrides.onPreToolUseThrow;
     },
-    async onStop(p: StopPayload) {
-      events.push({ kind: 'Stop', payload: p });
+    async onStop(p) {
+      events.push({
+        kind: 'Stop',
+        payload: p as StopPayload & { paneId: number },
+      });
       if (overrides?.onStopThrow) throw overrides.onStopThrow;
-    },
-    async onSessionEnd(p: SessionEndPayload) {
-      events.push({ kind: 'SessionEnd', payload: p });
-      if (overrides?.onSessionEndThrow) throw overrides.onSessionEndThrow;
     },
   };
   return { events, handler };
@@ -90,427 +77,371 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-const SESSION_START_FILE = {
-  pid: 12345,
-  startedAt: 'Tue May  4 16:38:00 2026',
-  cwd: CWD,
-  transcript_path: TX,
-};
-
 describe('createCcCliAdapter', () => {
   let stateDir: string;
 
   beforeEach(async () => {
-    stateDir = await mkdtemp(join(tmpdir(), 'cli-adp-'));
+    stateDir = await mkdtemp(join(tmpdir(), 'cli-cc-adapter-'));
   });
 
   afterEach(async () => {
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  it('exposes name = "claude-code"', () => {
-    const adapter = createCcCliAdapter({ stateDir });
-    expect(adapter.name).toBe('claude-code');
+  describe('start / stop lifecycle', () => {
+    it('start() then stop() succeeds without watcher errors', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      const { handler } = makeRecorder();
+      await adapter.start(handler);
+      await adapter.stop();
+    });
+
+    it('start() throws when called twice (already started)', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      const { handler } = makeRecorder();
+      await adapter.start(handler);
+      await expect(adapter.start(handler)).rejects.toThrow(/already started/);
+      await adapter.stop();
+    });
+
+    it('stop() is idempotent', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      const { handler } = makeRecorder();
+      await adapter.start(handler);
+      await adapter.stop();
+      await expect(adapter.stop()).resolves.toBeUndefined();
+    });
   });
 
-  describe('backlog dispatch on start()', () => {
-    it('pre-existing <sid>.SessionStart → handler.onSessionStart called', async () => {
-      await writeSessionStartFile({
-        stateDir,
-        sessionId: SID,
-        ...SESSION_START_FILE,
-      });
+  describe('Stop file dispatch (live event)', () => {
+    it('dispatches onStop with paneId + sessionId in payload', async () => {
       const adapter = createCcCliAdapter({ stateDir });
       const { events, handler } = makeRecorder();
       await adapter.start(handler);
-      try {
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('SessionStart');
-        const payload = events[0]!.payload as SessionStartPayload;
-        expect(payload.session_id).toBe(SID);
-        expect(payload.cwd).toBe(CWD);
-        expect(payload.transcript_path).toBe(TX);
-        // SessionStart file is NOT unlinked — long-lived snapshot.
-        expect(
-          await fileExists(sessionStartPath({ stateDir, sessionId: SID })),
-        ).toBe(true);
-      } finally {
-        await adapter.stop();
-      }
-    });
 
-    it('pre-existing <sid>.Stop.<ts> → handler.onStop called + file unlinked', async () => {
-      const timestamp = '2026-05-06T16-20-15-123Z';
       await writeStopFile({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp,
+        timestamp: '2026-05-08T01-43-40-131Z',
         last_assistant_message: 'hello',
       });
+
+      await waitFor(() =>
+        events.some(
+          (e) =>
+            e.kind === 'Stop' &&
+            (e.payload as StopPayload).last_assistant_message === 'hello',
+        ),
+      );
+      const ev = events.find((e) => e.kind === 'Stop')!;
+      expect((ev.payload as StopPayload & { paneId: number }).paneId).toBe(
+        PANE_ID,
+      );
+      expect(ev.payload.session_id).toBe(SID);
+
+      await adapter.stop();
+    });
+
+    it('unlinks the Stop file after successful onStop', async () => {
       const adapter = createCcCliAdapter({ stateDir });
       const { events, handler } = makeRecorder();
       await adapter.start(handler);
-      try {
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('Stop');
-        expect(
-          (events[0]!.payload as StopPayload).last_assistant_message,
-        ).toBe('hello');
-        // File unlinked after successful dispatch.
-        await waitFor(async () => {
-          return !(await fileExists(
-            stopFilePath({ stateDir, sessionId: SID, timestamp }),
-          ));
-        });
-      } finally {
-        await adapter.stop();
-      }
-    });
 
-    it('pre-existing <sid>.SessionEnd → handler.onSessionEnd called + file kept as tombstone', async () => {
-      await writeSessionEndFile({ stateDir, sessionId: SID });
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('SessionEnd');
-        // Tombstone preserved.
-        expect(
-          await fileExists(sessionEndPath({ stateDir, sessionId: SID })),
-        ).toBe(true);
-      } finally {
-        await adapter.stop();
-      }
-    });
-  });
-
-  describe('live add dispatch', () => {
-    it('SessionStart create after start → dispatched (file not unlinked)', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        await writeSessionStartFile({
-          stateDir,
-          sessionId: SID,
-          ...SESSION_START_FILE,
-        });
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('SessionStart');
-        expect(
-          await fileExists(sessionStartPath({ stateDir, sessionId: SID })),
-        ).toBe(true);
-      } finally {
-        await adapter.stop();
-      }
-    });
-
-    it('Stop create → dispatched + unlinked', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        const timestamp = '2026-05-06T16-20-15-123Z';
-        await writeStopFile({
-          stateDir,
-          sessionId: SID,
-          timestamp,
-          last_assistant_message: 'live-msg',
-        });
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('Stop');
-        expect(
-          (events[0]!.payload as StopPayload).last_assistant_message,
-        ).toBe('live-msg');
-        await waitFor(async () => {
-          return !(await fileExists(
-            stopFilePath({ stateDir, sessionId: SID, timestamp }),
-          ));
-        });
-      } finally {
-        await adapter.stop();
-      }
-    });
-
-    it('SessionEnd create → dispatched, NOT unlinked', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        await writeSessionEndFile({ stateDir, sessionId: SID });
-        await waitFor(() => events.length === 1);
-        expect(events[0]!.kind).toBe('SessionEnd');
-        expect(
-          await fileExists(sessionEndPath({ stateDir, sessionId: SID })),
-        ).toBe(true);
-      } finally {
-        await adapter.stop();
-      }
-    });
-  });
-
-  describe('basename classification', () => {
-    it('ignores files that do not match the SID-prefix + known suffix pattern', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        // Legacy / unrelated names that should never trigger dispatch.
-        await writeFile(join(stateDir, `${SID}.cc-pid`), '{}');
-        await writeFile(join(stateDir, `${SID}.events.jsonl`), '{}\n');
-        await writeFile(join(stateDir, 'current-session'), 'x');
-        await writeFile(join(stateDir, 'random.txt'), 'x');
-        // Give the watcher a beat to NOT process them.
-        await new Promise((r) => setTimeout(r, 200));
-        expect(events).toHaveLength(0);
-      } finally {
-        await adapter.stop();
-      }
-    });
-  });
-
-  describe('per-session ordering', () => {
-    it('multiple Stop files for the same sid dispatch in timestamp order', async () => {
-      const t1 = '2026-05-06T16-20-15-123Z';
-      const t2 = '2026-05-06T16-20-16-000Z';
-      const t3 = '2026-05-06T16-20-17-456Z';
-      // Pre-populate so chokidar emits all 3 'add' events near-simultaneously
-      // during initial scan; per-session chain must serialize in t1<t2<t3
-      // order regardless of FS ordering.
-      await writeStopFile({
+      const ts = '2026-05-08T01-43-40-131Z';
+      const path = stopFilePath({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp: t1,
-        last_assistant_message: 'first',
+        timestamp: ts,
       });
       await writeStopFile({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp: t2,
-        last_assistant_message: 'second',
-      });
-      await writeStopFile({
-        stateDir,
-        sessionId: SID,
-        timestamp: t3,
-        last_assistant_message: 'third',
+        timestamp: ts,
+        last_assistant_message: 'x',
       });
 
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        await waitFor(() => events.length === 3);
-        const messages = events.map(
-          (e) => (e.payload as StopPayload).last_assistant_message,
-        );
-        expect(messages).toEqual(['first', 'second', 'third']);
-      } finally {
-        await adapter.stop();
-      }
+      await waitFor(() => events.length === 1);
+      await waitFor(async () => !(await fileExists(path)));
+
+      await adapter.stop();
     });
 
-    it('events from different sessions both dispatch', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
-      try {
-        await writeSessionEndFile({ stateDir, sessionId: SID });
-        await writeStopFile({
-          stateDir,
-          sessionId: SID2,
-          timestamp: '2026-05-06T16-20-15-123Z',
-          last_assistant_message: 'msg2',
-        });
-        await waitFor(() => events.length === 2);
-        const kinds = events.map((e) => e.kind).sort();
-        expect(kinds).toEqual(['SessionEnd', 'Stop']);
-      } finally {
-        await adapter.stop();
-      }
-    });
-  });
-
-  describe('handler errors', () => {
-    it('handler error during Stop: onHandlerError called, file NOT unlinked', async () => {
-      const handlerErrors: { kind: string; sid: string; err: unknown }[] = [];
+    it('keeps the Stop file when handler throws (next-run retry)', async () => {
       const adapter = createCcCliAdapter({
         stateDir,
-        onHandlerError: (err, ctx) =>
-          handlerErrors.push({
-            kind: ctx.kind,
-            sid: ctx.sessionId,
-            err,
-          }),
+        onHandlerError: () => undefined,
       });
       const { handler } = makeRecorder({ onStopThrow: new Error('boom') });
-      const timestamp = '2026-05-06T16-20-15-123Z';
-      const path = stopFilePath({ stateDir, sessionId: SID, timestamp });
+      await adapter.start(handler);
+
+      const ts = '2026-05-08T01-43-40-131Z';
+      const path = stopFilePath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: ts,
+      });
       await writeStopFile({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp,
-        last_assistant_message: 'will-fail',
+        timestamp: ts,
+        last_assistant_message: 'x',
       });
+
+      await waitFor(async () => await fileExists(path));
+      // Wait a beat to make sure dispatch finished even though handler threw.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(await fileExists(path)).toBe(true);
+
+      await adapter.stop();
+    });
+  });
+
+  describe('PermissionRequest dispatch', () => {
+    it('dispatches onPreToolUse with paneId + requestId in payload', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      const { events, handler } = makeRecorder();
       await adapter.start(handler);
-      try {
-        await waitFor(() => handlerErrors.length === 1);
-        expect(handlerErrors[0]!.kind).toBe('Stop');
-        expect(handlerErrors[0]!.sid).toBe(SID);
-        expect((handlerErrors[0]!.err as Error).message).toBe('boom');
-        // File preserved so next run can retry.
-        expect(await fileExists(path)).toBe(true);
-      } finally {
-        await adapter.stop();
-      }
+
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'deadbeef',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        createdAt: 1700000000000,
+      });
+
+      await waitFor(() => events.length === 1);
+      const ev = events[0]!;
+      expect(ev.kind).toBe('PreToolUse');
+      const p = ev.payload as PreToolUsePayload & {
+        paneId: number;
+        requestId: string;
+      };
+      expect(p.paneId).toBe(PANE_ID);
+      expect(p.requestId).toBe('deadbeef');
+      expect(p.tool_name).toBe('Bash');
+      expect(p.tool_input).toEqual({ command: 'ls' });
+
+      await adapter.stop();
     });
 
-    it('handler error during SessionStart: onHandlerError called', async () => {
-      const handlerErrors: { kind: string; err: unknown }[] = [];
-      const adapter = createCcCliAdapter({
-        stateDir,
-        onHandlerError: (err, ctx) =>
-          handlerErrors.push({ kind: ctx.kind, err }),
-      });
-      const { handler } = makeRecorder({
-        onSessionStartThrow: new Error('start-fail'),
-      });
-      await writeSessionStartFile({
-        stateDir,
-        sessionId: SID,
-        ...SESSION_START_FILE,
-      });
+    it('does NOT unlink the Request file (hook owns cleanup)', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      const { events, handler } = makeRecorder();
       await adapter.start(handler);
-      try {
-        await waitFor(() => handlerErrors.length === 1);
-        expect(handlerErrors[0]!.kind).toBe('SessionStart');
-        expect((handlerErrors[0]!.err as Error).message).toBe('start-fail');
-      } finally {
-        await adapter.stop();
-      }
-    });
 
-    it('handler error keeps the watcher alive (subsequent events still dispatch)', async () => {
-      const handlerErrors: unknown[] = [];
-      const adapter = createCcCliAdapter({
+      const path = permissionRequestPath({
         stateDir,
-        onHandlerError: (err) => handlerErrors.push(err),
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'aabb1111',
       });
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'aabb1111',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 0,
+      });
+
+      await waitFor(() => events.length === 1);
+      // Confirm file is still there (hook owns cleanup).
+      expect(await fileExists(path)).toBe(true);
+
+      await adapter.stop();
+    });
+  });
+
+  describe('per-pane+sid serial dispatch', () => {
+    it('serializes Stop events for the same (paneId, sid)', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
       const events: string[] = [];
       const handler: CLIHandler = {
-        async onSessionStart() {
-          events.push('SessionStart');
-          throw new Error('boom');
-        },
-        async onPreToolUse() {
-          events.push('PreToolUse');
-        },
-        async onStop() {
-          events.push('Stop');
-        },
-        async onSessionEnd() {
-          events.push('SessionEnd');
+        async onPreToolUse() {},
+        async onStop(p) {
+          // Slow dispatch — second event must wait.
+          events.push(`start:${p.last_assistant_message}`);
+          await new Promise((r) => setTimeout(r, 80));
+          events.push(`end:${p.last_assistant_message}`);
         },
       };
       await adapter.start(handler);
-      try {
-        await writeSessionStartFile({
-          stateDir,
-          sessionId: SID,
-          ...SESSION_START_FILE,
-        });
-        await writeSessionEndFile({ stateDir, sessionId: SID });
-        await waitFor(() => events.length === 2);
-        expect(handlerErrors).toHaveLength(1);
-        expect(events).toContain('SessionStart');
-        expect(events).toContain('SessionEnd');
-      } finally {
-        await adapter.stop();
-      }
+
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T1',
+        last_assistant_message: 'a',
+      });
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T2',
+        last_assistant_message: 'b',
+      });
+
+      await waitFor(() => events.length === 4);
+      // start:a → end:a → start:b → end:b (NOT interleaved)
+      expect(events).toEqual([
+        'start:a',
+        'end:a',
+        'start:b',
+        'end:b',
+      ]);
+
+      await adapter.stop();
+    });
+
+    it('parallel dispatch for different (paneId, sid) pairs', async () => {
+      const adapter = createCcCliAdapter({ stateDir });
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const handler: CLIHandler = {
+        async onPreToolUse() {},
+        async onStop() {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 80));
+          inFlight--;
+        },
+      };
+      await adapter.start(handler);
+
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T1',
+        last_assistant_message: 'a',
+      });
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID2,
+        sessionId: SID2,
+        timestamp: 'T1',
+        last_assistant_message: 'b',
+      });
+
+      await waitFor(() => maxInFlight === 2 || inFlight === 0);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(maxInFlight).toBe(2);
+
+      await adapter.stop();
+    });
+  });
+
+  describe('initial scan (backlog)', () => {
+    it('drains backlog Stop files in chronological (filename-sorted) order', async () => {
+      // Pre-seed before start().
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T2',
+        last_assistant_message: 'b',
+      });
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: 'T1',
+        last_assistant_message: 'a',
+      });
+
+      const adapter = createCcCliAdapter({ stateDir });
+      const { events, handler } = makeRecorder();
+      await adapter.start(handler);
+
+      await waitFor(() => events.length === 2);
+      const messages = events.map(
+        (e) => (e.payload as StopPayload).last_assistant_message,
+      );
+      expect(messages).toEqual(['a', 'b']);
+
+      await adapter.stop();
+    });
+
+    it('ignores top-level files like IMWork / daemon.pid / wechat-cursor', async () => {
+      await import('node:fs/promises').then(async (fs) => {
+        await fs.writeFile(join(stateDir, 'IMWork'), '');
+        await fs.writeFile(join(stateDir, 'daemon.pid'), '{"pid":1}');
+        await fs.writeFile(join(stateDir, 'wechat-cursor'), '0');
+      });
+
+      const adapter = createCcCliAdapter({ stateDir });
+      const { events, handler } = makeRecorder();
+      await adapter.start(handler);
+
+      // Wait a beat — none of these top-level files should dispatch.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(events).toHaveLength(0);
+
+      await adapter.stop();
     });
   });
 
   describe('enqueueInjection', () => {
-    it('delegates to injection-queue (file is appended FIFO)', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      await adapter.enqueueInjection(SID as SessionId, 'first');
-      await adapter.enqueueInjection(SID as SessionId, 'second');
-      const queuePath = resolveInjectionQueuePath({
-        stateDir,
-        sessionId: SID,
-      });
-      const lines = (await readFile(queuePath, 'utf-8'))
-        .trim()
-        .split('\n');
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!).content).toBe('first');
-      expect(JSON.parse(lines[1]!).content).toBe('second');
-    });
-  });
-
-  describe('lifecycle', () => {
-    it('start twice throws (single subscriber model)', async () => {
+    it('appends content to <stateDir>/<sid>.injection-queue.jsonl', async () => {
       const adapter = createCcCliAdapter({ stateDir });
       const { handler } = makeRecorder();
       await adapter.start(handler);
-      try {
-        await expect(adapter.start(handler)).rejects.toThrow(
-          /already started/,
-        );
-      } finally {
-        await adapter.stop();
-      }
-    });
 
-    it('stop drains in-flight dispatches before resolving', async () => {
-      // Use a slow handler so dispatch is in-flight when stop() is called.
-      let resolveStop: (() => void) | undefined;
-      const inFlight = new Promise<void>((r) => {
-        resolveStop = r;
-      });
-      let stopCallCompleted = false;
-      const handler: CLIHandler = {
-        async onSessionStart() {},
-        async onPreToolUse() {},
-        async onStop() {
-          await inFlight;
-          stopCallCompleted = true;
-        },
-        async onSessionEnd() {},
-      };
-      const adapter = createCcCliAdapter({ stateDir });
-      await adapter.start(handler);
-      const timestamp = '2026-05-06T16-20-15-123Z';
-      await writeStopFile({
+      await adapter.enqueueInjection(SID as unknown as SessionId, 'wake-cc');
+
+      const path = resolveInjectionQueuePath({
         stateDir,
-        sessionId: SID,
-        timestamp,
-        last_assistant_message: 'slow',
+        sessionId: SID as unknown as SessionId,
       });
-      // Wait for handler.onStop to begin (file dispatch is queued).
-      await new Promise((r) => setTimeout(r, 100));
-      // Initiate stop — must wait for inFlight to drain.
-      const stopPromise = adapter.stop();
-      // Release the handler.
-      resolveStop?.();
-      await stopPromise;
-      expect(stopCallCompleted).toBe(true);
-    });
+      const buf = await readFile(path, 'utf-8');
+      expect(buf.trim()).toBe(JSON.stringify({ content: 'wake-cc' }));
 
-    it('after stop, no further callbacks fire for new files', async () => {
-      const adapter = createCcCliAdapter({ stateDir });
-      const { events, handler } = makeRecorder();
-      await adapter.start(handler);
       await adapter.stop();
+    });
+  });
+
+  describe('error reporting', () => {
+    it('calls onHandlerError with kind/paneId/sessionId on Stop throw', async () => {
+      const errors: Array<{
+        err: unknown;
+        context: { kind: string; paneId: number; sessionId: string };
+      }> = [];
+      const adapter = createCcCliAdapter({
+        stateDir,
+        onHandlerError: (err, context) => {
+          errors.push({ err, context });
+        },
+      });
+      const { handler } = makeRecorder({ onStopThrow: new Error('boom') });
+      await adapter.start(handler);
+
       await writeStopFile({
         stateDir,
+        paneId: PANE_ID,
         sessionId: SID,
-        timestamp: '2026-05-06T16-20-15-123Z',
-        last_assistant_message: 'after-stop',
+        timestamp: 'T1',
+        last_assistant_message: 'x',
       });
-      await new Promise((r) => setTimeout(r, 200));
-      expect(events).toHaveLength(0);
+
+      await waitFor(() => errors.length === 1);
+      expect(errors[0]?.context).toEqual({
+        kind: 'Stop',
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      expect((errors[0]?.err as Error).message).toBe('boom');
+
+      await adapter.stop();
     });
   });
 });

@@ -6,14 +6,11 @@ export interface RunHookCommandOpts {
   /** Where state files live (e.g. `~/.multi-cc-im/state/`). */
   stateDir: string;
   /**
-   * Override `process.ppid` + `ps -o lstart=` capture for tests / sandboxed
-   * environments. See `@multi-cc-im/cli-cc` `RunHookReceiverOpts.capturePid`.
+   * Override `process.env.WEZTERM_PANE` lookup for tests / sandboxed
+   * environments. Returning undefined simulates "cc not in wezterm" — hook
+   * silently exits per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
    */
-  capturePid?: () => Promise<{
-    pid: number;
-    startedAt: string;
-    paneId?: number | undefined;
-  }>;
+  resolvePaneId?: () => number | undefined;
 }
 
 export interface HookCommandResult {
@@ -76,7 +73,7 @@ export async function runHookCommand(
     decision = await runHookReceiver({
       stateDir: opts.stateDir,
       payload,
-      ...(opts.capturePid ? { capturePid: opts.capturePid } : {}),
+      ...(opts.resolvePaneId ? { resolvePaneId: opts.resolvePaneId } : {}),
     });
   } catch (err) {
     return {

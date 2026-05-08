@@ -1,35 +1,37 @@
-import type { IncomingMessage, SessionId } from '@multi-cc-im/shared';
-import { matchSession, type MatchResult, type SessionInfo } from './matcher.js';
-import { parse, type ParsedMessage } from './parser.js';
+import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
+import { matchSession, type SessionInfo } from './matcher.js';
+import { parse } from './parser.js';
 
 /**
- * Lookup interface for currently-alive cc sessions. Bridge orchestrator
- * implements this by joining cli-cc state files (alive sessions) with the
- * latest wezterm pane titles (cc `/rename`). Router stays IO-free /
- * pure-function-ish — orchestrator must call `listAlive()` after refreshing
- * tab titles so each `SessionInfo.tabTitle` reflects the user's current
- * naming.
+ * Lookup interface for currently visible panes. Bridge orchestrator
+ * implements this by calling `TermListPanes.listPanes()` directly (wezterm
+ * cli list snapshot). Router stays IO-free / pure-function-ish.
+ *
+ * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+ * the panes returned here include any wezterm pane (zsh / vim / cc / etc.)
+ * — daemon doesn't filter for cc-only. The matcher routes by user-set tab
+ * title (cc `/rename`); panes without titles aren't IM-addressable.
  */
-export interface SessionRegistry {
-  listAlive(): Promise<readonly SessionInfo[]>;
+export interface PaneRegistry {
+  listPanes(): Promise<readonly SessionInfo[]>;
 }
 
 /**
  * Persistent-ish state for last-explicit-mention sticky default. Bridge
- * orchestrator backs this with an in-memory ref + optional persistence (see
- * follow-up wiring PR). Router treats it as a tiny mutable holder.
+ * orchestrator backs this with an in-memory ref. Sticky key is `paneId`
+ * (per DD #61 — daemon no longer tracks sessionId; if cc dies + new cc
+ * starts in same pane, paneId stays = sticky to "whatever cc is in pane X").
  */
 export interface RouterState {
-  getCurrent(): SessionId | null;
-  setCurrent(id: SessionId | null): void;
+  getCurrent(): PaneId | null;
+  setCurrent(paneId: PaneId | null): void;
 }
 
 export interface RouterOpts {
-  registry: SessionRegistry;
+  registry: PaneRegistry;
   state: RouterState;
   /**
-   * Whether `<stateDir>/IMWork` exists at the moment of routing. Per
-   * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md):
+   * Whether `<stateDir>/IMWork` exists at the moment of routing.
    *   - `false` (default if omitted) → "talk to cc" messages (mention / plain /
    *     broadcast) are rejected with "IMWork off — please /start" hint
    *   - `true` → normal dispatch
@@ -67,33 +69,30 @@ export interface RouterResult {
   /**
    * Set when the IM user invoked `@multi-cc-im /start` or `/stop`. Orchestrator
    * acts on it after `route()` returns: writes / deletes `<stateDir>/IMWork`.
-   * Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
    */
   imWorkAction?: 'enable' | 'disable';
 }
 
 /**
- * Route a wechat IncomingMessage per [DD: routing-syntax G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
- *
- * High-level pipeline:
+ * Route an IncomingMessage. High-level pipeline:
  *   1. parse text → ParsedMessage (parser.ts)
- *   2. handle control commands (@list / @help / @current) — no dispatch
- *   3. handle broadcast (@all) — fan out to all alive
- *   4. handle mention(s) — match each via 4-level fallback (matcher.ts)
- *   5. handle plain — dispatch to current_session (sticky); auto-set current
- *      when only 1 session alive
- *   6. assemble visible echo + dispatch list
+ *   2. handle bridge commands (@multi-cc-im /list / /help / /current / /start / /stop) — always pass IMWork gate
+ *   3. handle permission_response (@<tab> /1 /2) — always pass IMWork gate
+ *   4. IMWork gate: mention / plain / broadcast require IMWork on
+ *   5. handle broadcast (@all) — fan out to all alive
+ *   6. handle mention(s) — match each via 4-level fallback (matcher.ts)
+ *   7. handle plain — dispatch to current_pane (sticky); auto-set when only 1 pane
  *
  * State invariants:
- *   - **Single-mention with body** updates `current_session` (last-explicit)
+ *   - **Single-mention with body** updates `current_pane` (last-explicit)
  *   - **Multi-mention / @all / control / plain** does NOT update current
- *   - When `current_session` is dead at routing time, auto-unset + error
+ *   - When `current_pane` is dead at routing time, auto-unset + error
  */
 export async function route(
   incoming: IncomingMessage,
   opts: RouterOpts,
 ): Promise<RouterResult> {
-  const sessions = await opts.registry.listAlive();
+  const sessions = await opts.registry.listPanes();
   const text = incoming.text;
   // Image-/attachment-only messages have no text — router has nothing to do
   // (orchestrator handles attachment forwarding separately based on its own
@@ -106,7 +105,7 @@ export async function route(
 
   // IMWork gate: "talk to cc" message types require IMWork on. Bridge
   // commands (`@multi-cc-im /...`) + permission responses (`@<tab> /1` `/2`)
-  // + parse errors always pass through. Per [DD: IMWork+IMOrigin].
+  // + parse errors always pass through.
   if (
     !imWorkOn &&
     (parsed.type === 'mention' ||
@@ -114,8 +113,7 @@ export async function route(
       parsed.type === 'broadcast')
   ) {
     return {
-      echo:
-        '❌ IMWork off — 请先发 `@multi-cc-im /start` 开启 IM 模式',
+      echo: '❌ IMWork off — 请先发 `@multi-cc-im /start` 开启 IM 模式',
       dispatches: [],
     };
   }
@@ -134,7 +132,7 @@ export async function route(
       );
 
     case 'broadcast':
-      return handleBroadcast(parsed.body, sessions, opts.state);
+      return handleBroadcast(parsed.body, sessions);
 
     case 'mention':
       return handleMention(parsed.mentions, parsed.body, sessions, opts.state);
@@ -167,12 +165,10 @@ function handlePermissionResponse(
     return {
       echo: `❌ \`@${tabName}\` is ambiguous — matches: ${result.candidates
         .map(displayName)
-        .join(', ')}. Use a longer prefix or \`$<sid8>\`.`,
+        .join(', ')}. /rename one of them.`,
       dispatches: [],
     };
   }
-  // Unique match. Orchestrator will check whether the session has a pending
-  // PermissionRequest file and either write the Response or echo "no pending".
   const verb = decision === 'allow' ? '允许' : '拒绝';
   return {
     echo: `→ ${displayName(result.session)} permission ${verb}`,
@@ -182,7 +178,7 @@ function handlePermissionResponse(
 }
 
 // ============================================================================
-// Plain (no @<name>): dispatch to current_session
+// Plain (no @<name>): dispatch to current_pane
 // ============================================================================
 
 function handlePlain(
@@ -190,24 +186,23 @@ function handlePlain(
   sessions: readonly SessionInfo[],
   state: RouterState,
 ): RouterResult {
-  if (sessions.length === 0) {
+  const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
+  if (namedSessions.length === 0) {
     return {
-      echo: '❌ no active sessions — start a cc in any wezterm tab first',
+      echo:
+        '❌ no addressable cc — start cc in a wezterm tab and run `/rename <name>` inside it first',
       dispatches: [],
     };
   }
 
-  const currentId = state.getCurrent();
+  const currentPaneId = state.getCurrent();
 
-  // If user previously picked a target, that decision is sticky — even when
-  // it died (don't silently re-route to whoever's still alive). Stale current
-  // → unset + error so user re-picks intentionally.
-  if (currentId !== null) {
-    const current = sessions.find((s) => s.sessionId === currentId);
+  if (currentPaneId !== null) {
+    const current = namedSessions.find((s) => s.paneId === currentPaneId);
     if (!current) {
       state.setCurrent(null);
       return {
-        echo: `⚠️ previous current session disconnected, current cleared. Use \`@<name>\` to pick a target.`,
+        echo: '⚠️ previous current pane disconnected, current cleared. Use `@<name>` to pick a target.',
         dispatches: [],
       };
     }
@@ -217,11 +212,9 @@ function handlePlain(
     };
   }
 
-  // No current set: pleasant single-cc UX — auto-current to the only alive
-  // session. With multiple alive, force user to pick explicitly.
-  if (sessions.length === 1) {
-    const only = sessions[0]!;
-    state.setCurrent(only.sessionId);
+  if (namedSessions.length === 1) {
+    const only = namedSessions[0]!;
+    state.setCurrent(only.paneId);
     return {
       echo: `→ ${displayName(only)}`,
       dispatches: [{ session: only, content: body }],
@@ -229,7 +222,7 @@ function handlePlain(
   }
 
   return {
-    echo: `❌ no current session — send \`@<name>\` first or \`@list\` to see all`,
+    echo: '❌ no current session — send `@<name>` first or `@multi-cc-im /list`',
     dispatches: [],
   };
 }
@@ -244,9 +237,6 @@ function handleMention(
   sessions: readonly SessionInfo[],
   state: RouterState,
 ): RouterResult {
-  // Resolve each mention; collect failures up-front so the whole message is
-  // rejected atomically (per DD: "any one @ ambiguous/unmatched → entire
-  // message rejected").
   const resolved: SessionInfo[] = [];
   const errors: string[] = [];
 
@@ -261,10 +251,11 @@ function handleMention(
           .join(', ')}`,
       );
     } else {
+      const named = sessions.filter((s) => s.tabTitle.length > 0);
       errors.push(
-        sessions.length === 0
-          ? `❌ \`@${m}\` not found — no active sessions`
-          : `❌ \`@${m}\` not found — alive: ${sessions.map(displayName).join(', ')}`,
+        named.length === 0
+          ? `❌ \`@${m}\` not found — no /rename'd cc panes`
+          : `❌ \`@${m}\` not found — alive: ${named.map(displayName).join(', ')}`,
       );
     }
   }
@@ -273,11 +264,9 @@ function handleMention(
     return { echo: errors.join('\n'), dispatches: [] };
   }
 
-  // Empty body: still set current on single mention (so user can follow with
-  // a body in the next message). No dispatch.
   if (body.length === 0) {
     if (resolved.length === 1) {
-      state.setCurrent(resolved[0]!.sessionId);
+      state.setCurrent(resolved[0]!.paneId);
       return {
         echo: `📌 current = ${displayName(resolved[0]!)} (empty body, nothing to send)`,
         dispatches: [],
@@ -289,16 +278,14 @@ function handleMention(
     };
   }
 
-  // Single mention with body → set current (last-explicit-mention sticky)
   if (resolved.length === 1) {
-    state.setCurrent(resolved[0]!.sessionId);
+    state.setCurrent(resolved[0]!.paneId);
     return {
       echo: `📌 current = ${displayName(resolved[0]!)}`,
       dispatches: [{ session: resolved[0]!, content: body }],
     };
   }
 
-  // Multi-mention with body → dispatch to all, do NOT change current
   return {
     echo: `→ ${resolved.map(displayName).join(', ')}`,
     dispatches: resolved.map((session) => ({ session, content: body })),
@@ -312,11 +299,11 @@ function handleMention(
 function handleBroadcast(
   body: string,
   sessions: readonly SessionInfo[],
-  _state: RouterState,
 ): RouterResult {
-  if (sessions.length === 0) {
+  const named = sessions.filter((s) => s.tabTitle.length > 0);
+  if (named.length === 0) {
     return {
-      echo: '❌ no active sessions',
+      echo: '❌ no /rename\'d cc panes',
       dispatches: [],
     };
   }
@@ -327,8 +314,8 @@ function handleBroadcast(
     };
   }
   return {
-    echo: `📢 broadcast to ${sessions.length} session${sessions.length === 1 ? '' : 's'}: ${sessions.map(displayName).join(', ')}`,
-    dispatches: sessions.map((session) => ({ session, content: body })),
+    echo: `📢 broadcast to ${named.length} session${named.length === 1 ? '' : 's'}: ${named.map(displayName).join(', ')}`,
+    dispatches: named.map((session) => ({ session, content: body })),
   };
 }
 
@@ -336,11 +323,6 @@ function handleBroadcast(
 // Bridge commands: @multi-cc-im /<command> [args]
 // ============================================================================
 
-/**
- * Handle bridge slash commands. Supports `/list`, `/help`, `/current`,
- * `/start`, `/stop`. Unknown commands return an error echo so users learn
- * the right form (and can extend by adding cases here).
- */
 function handleBridgeCommand(
   command: string,
   _args: string,
@@ -350,13 +332,8 @@ function handleBridgeCommand(
 ): RouterResult {
   switch (command) {
     case 'list':
-      if (sessions.length === 0) {
-        return { echo: 'no active sessions', dispatches: [] };
-      }
       return {
-        echo: sessions
-          .map((s, i) => `${i + 1}. ${displayName(s)} (pane ${s.paneId})`)
-          .join('\n'),
+        echo: formatSessionInventory(sessions).join('\n'),
         dispatches: [],
       };
 
@@ -364,33 +341,33 @@ function handleBridgeCommand(
       return {
         echo: [
           'Routing:',
-          '  @<name> body          → 1 session (sets current)',
-          '  @<a> @<b> body        → multiple sessions',
-          '  @all body             → all alive sessions',
-          '  body (no @)           → current session',
-          'Matching: $<sid-prefix> → =strict → exact → prefix → glob (*?)',
+          '  @<name> body          → 1 cc (sets current)',
+          '  @<a> @<b> body        → multiple cc',
+          '  @all body             → all /rename\'d cc',
+          '  body (no @)           → current cc',
+          'Matching: =strict → exact → prefix → glob (*?)',
           'Bridge commands: /list | /help | /current | /start | /stop',
           'Permission: @<tab> /1 (allow) | @<tab> /2 (deny) — 10s default allow',
           'Tip: /rename inside cc TUI sets the @<name> identifier (real-time).',
+          'Tab title 不要用纯数字 — 易混淆 (paneId 显示也是数字)。',
         ].join('\n'),
         dispatches: [],
       };
 
     case 'current': {
-      const id = state.getCurrent();
+      const paneId = state.getCurrent();
       const imWorkLine = `IMWork = ${imWorkOn ? 'ON' : 'OFF'}`;
-      if (id === null) {
+      if (paneId === null) {
         return {
           echo: `current = none\n${imWorkLine}`,
           dispatches: [],
         };
       }
-      const session = sessions.find((s) => s.sessionId === id);
+      const session = sessions.find((s) => s.paneId === paneId);
       if (!session) {
-        // Stale current — clear it and report
         state.setCurrent(null);
         return {
-          echo: `current = none (previous session disconnected)\n${imWorkLine}`,
+          echo: `current = none (previous pane disconnected)\n${imWorkLine}`,
           dispatches: [],
         };
       }
@@ -401,36 +378,30 @@ function handleBridgeCommand(
     }
 
     case 'start':
-      // /start: enable IM mode. Idempotent — re-running when already on
-      // refreshes the cc-list echo (lets user re-check cc inventory).
-      if (imWorkOn) {
-        return {
-          echo: [
-            'ℹ️ IMWork already ON',
-            '',
-            ...formatSessionInventory(sessions),
-          ].join('\n'),
-          dispatches: [],
-        };
-      }
+      // /start: enable IM mode + show pane inventory + warnings.
+      // Idempotent — already-on case still re-renders the inventory so user
+      // can re-check what's available.
       return {
         echo: [
-          '✓ IMWork ON',
+          imWorkOn ? 'ℹ️ IMWork already ON' : '✓ IMWork ON',
           '',
           ...formatSessionInventory(sessions),
+          ...formatNumericTabWarning(sessions),
+          ...formatDuplicateTabWarning(sessions),
           '',
           '⚠️ 规则：',
-          '  - 只处理从 IM 发出的消息',
-          '  - cc 调工具时 IM 收到提示，10 秒内回复 /1 (允许) 或 /2 (拒绝)',
+          '  - IM 路由只用 tab title (cc /rename 设的)',
+          '  - 没 /rename 的 cc 只能在 cc TUI 里用，IM 寻址不到',
+          '  - 建议 tab title 用字母/单词，**不要用纯数字** (易混淆)',
+          '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)',
           '  - 超过 10 秒默认放行',
-          '  - 终端 cc TUI 直接打字的对话不会 forward 到 IM',
+          '  - 终端 cc TUI 直接打字不会 forward 到 IM',
         ].join('\n'),
         dispatches: [],
-        imWorkAction: 'enable',
+        ...(imWorkOn ? {} : { imWorkAction: 'enable' as const }),
       };
 
     case 'stop':
-      // /stop: disable IM mode. Idempotent.
       if (!imWorkOn) {
         return { echo: 'ℹ️ IMWork already OFF', dispatches: [] };
       }
@@ -448,7 +419,7 @@ function handleBridgeCommand(
   }
 }
 
-/** Render the cc-list block shown by `/start` echo (numbered, with pane id and rename hint). */
+/** Render the cc-list block for `/start` + `/list` echoes. */
 function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
   if (sessions.length === 0) {
     return ['当前可用 cc sessions: (无 — 请先在 wezterm tab 启动 cc)'];
@@ -456,11 +427,46 @@ function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
   const lines = ['当前可用 cc sessions:'];
   sessions.forEach((s, i) => {
     const renameHint =
-      s.tabTitle && s.tabTitle.length > 0 ? '' : ', 未 /rename';
+      s.tabTitle.length > 0
+        ? ''
+        : ', 未 /rename — 不能从 IM 寻址，请进 cc TUI 跑 /rename <name>';
     lines.push(
       `  ${i + 1}. ${displayName(s)} (pane ${s.paneId}${renameHint})`,
     );
   });
+  return lines;
+}
+
+/** If any /renamed tab title is purely numeric → warn (looks like paneId). */
+function formatNumericTabWarning(sessions: readonly SessionInfo[]): string[] {
+  const numeric = sessions.filter((s) => /^\d+$/.test(s.tabTitle));
+  if (numeric.length === 0) return [];
+  return [
+    '',
+    `⚠️ 注意：${numeric.length} 个 cc 的 tab title 是纯数字 (${numeric
+      .map((s) => `"${s.tabTitle}"`)
+      .join(', ')})，建议改名 (在 cc TUI 跑 /rename <非数字名>)`,
+  ];
+}
+
+/** If multiple panes share the same /renamed title → warn (matcher will reject). */
+function formatDuplicateTabWarning(sessions: readonly SessionInfo[]): string[] {
+  const counts = new Map<string, SessionInfo[]>();
+  for (const s of sessions) {
+    if (s.tabTitle.length === 0) continue;
+    const arr = counts.get(s.tabTitle) ?? [];
+    arr.push(s);
+    counts.set(s.tabTitle, arr);
+  }
+  const dups = [...counts.entries()].filter(([, arr]) => arr.length > 1);
+  if (dups.length === 0) return [];
+  const lines = ['', '⚠️ 同名 cc 冲突，IM 寻址不到下列任一：'];
+  for (const [title, arr] of dups) {
+    lines.push(
+      `  - tab "${title}" 在 ${arr.map((s) => `pane ${s.paneId}`).join(' + ')}`,
+    );
+  }
+  lines.push('  请进 cc TUI 把其中一个 /rename 成别的名');
   return lines;
 }
 
@@ -469,9 +475,8 @@ function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
 // ============================================================================
 
 function displayName(s: SessionInfo): string {
-  if (s.tabTitle && s.tabTitle.length > 0) return s.tabTitle;
-  // Fall back to short session-id hash so user always has SOMETHING to address.
-  // SessionStart hook also pushes a one-time IM hint pointing the user at
-  // `/rename` when this fallback path triggers — see orchestrator.
-  return `$${s.sessionId.slice(0, 8)}`;
+  if (s.tabTitle.length > 0) return s.tabTitle;
+  // No /rename — display by paneId. User can't IM-route to this pane until
+  // they /rename, but we still want /list etc. to show it exists.
+  return `(pane ${s.paneId})`;
 }

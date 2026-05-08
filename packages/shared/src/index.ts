@@ -6,17 +6,22 @@ export type {
   Adapter as IMAdapter,
   Handler as IMHandler,
   ReplyContext as IMReplyContext,
+  WechatReplyContext as IMWechatReplyContext,
+  TelegramReplyContext as IMTelegramReplyContext,
+  LarkReplyContext as IMLarkReplyContext,
   ImageSender as IMImageSender,
   FileSender as IMFileSender,
   VoiceSender as IMVoiceSender,
   TypingIndicator as IMTypingIndicator,
 } from './adapter/im.js';
+export { ReplyContextSchema as IMReplyContextSchema } from './adapter/im.js';
 
 // Term adapter
 export type {
   Adapter as TermAdapter,
   Handler as TermHandler,
-  PaneAlive as TermPaneAlive,
+  ListPanes as TermListPanes,
+  PaneInfo as TermPaneInfo,
 } from './adapter/term.js';
 
 // CLI adapter (incl. cc hook payload union types)
@@ -25,10 +30,8 @@ export type {
   Handler as CLIHandler,
   HookPayload,
   HookDecision,
-  SessionStartPayload,
   PreToolUsePayload,
   StopPayload,
-  SessionEndPayload,
 } from './adapter/cli.js';
 
 // Storage capability interfaces (concrete impl in packages/storage-files)
