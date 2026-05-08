@@ -164,8 +164,8 @@ Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.
 | `@multi-cc-im /list` | List alive cc sessions (tab title + pane id). The bot echoes; nothing dispatched to any cc |
 | `@multi-cc-im /help` | Built-in help text |
 | `@multi-cc-im /current` | Show `current_session` + IMWork status |
-| `@multi-cc-im /start` | **Enable IM mode** (cc tool prompts will forward to WeChat) |
-| `@multi-cc-im /stop` | **Disable IM mode** (cc tool prompts shown in cc TUI) |
+| `@multi-cc-im /start` | **Enable IM mode** (cc replies + tool prompts both forward to WeChat) |
+| `@multi-cc-im /stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 
@@ -176,8 +176,8 @@ Before dispatching to cc, the bot sends a visible echo to WeChat for every route
 Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
 
 ```
-@multi-cc-im /start    →  IM mode ON (cc tool prompts forward to WeChat)
-@multi-cc-im /stop     →  IM mode OFF (cc tool prompts handled in TUI)
+@multi-cc-im /start    →  IM mode ON (cc replies + tool prompts both forward to WeChat)
+@multi-cc-im /stop     →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
 @multi-cc-im /current  →  show current target + IMWork status
 ```
 
