@@ -57,9 +57,20 @@ export interface PreToolUseHookOutput {
 /**
  * Polling cadence + max wait for the PermissionResponse file. Per
  * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+ *
+ * **Why 8s and not 10s** (the cc-side `timeout: 10` configured in
+ * `apps/setup-hooks.ts`): cc kills the hook subprocess once its own timeout
+ * elapses. If hook's internal poll deadline equals cc's kill deadline,
+ * there's a race — hook finishes polling at exactly 10s, computes
+ * default-allow, attempts to write stdout, but cc has already started
+ * SIGKILL'ing it. Reserving 2s margin lets hook deterministically write
+ * its decision JSON to stdout before cc considers the hook hung.
+ *
+ * Net user-perceptible window: still ~10s before default-allow takes
+ * effect (cc replied 8s + cleanup + cc reads stdout ~2s).
  */
 const PERMISSION_POLL_INTERVAL_MS = 200;
-const PERMISSION_TIMEOUT_MS = 10_000;
+const PERMISSION_TIMEOUT_MS = 8_000;
 
 /**
  * cc tools that are read-only by design — Read / Grep / Glob / NotebookRead.

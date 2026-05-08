@@ -165,3 +165,133 @@ describe("sendTyping", () => {
     ).rejects.toThrow("sendTyping 500");
   });
 });
+
+describe("apiPostFetch transient retry (PR-F: ECONNRESET / undici socket errors)", () => {
+  /**
+   * Build an Error mimicking what Node 22 fetch surfaces on TCP-level
+   * network failures: outer is a generic `fetch failed` Error with the
+   * underlying TypeError (or NodeError) on `.cause`, which itself carries
+   * the `.code` like 'ECONNRESET'.
+   */
+  function makeTransientFetchError(code: string): Error {
+    const cause = new Error(`Client network socket disconnected before secure TLS connection was established`);
+    (cause as Error & { code?: string }).code = code;
+    const outer = new Error("fetch failed");
+    (outer as Error & { cause?: unknown }).cause = cause;
+    return outer;
+  }
+
+  it("ECONNRESET on first attempt → retries, second attempt succeeds", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: { to_user_id: "u" } } }),
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("ECONNRESET twice → retries again, third attempt succeeds", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("ECONNRESET 3 times in a row → gives up, throws original error with cause", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).rejects.toThrow("fetch failed");
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("HTTP 500 → does NOT retry (deterministic server answer)", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse("server bad", 500, false));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).rejects.toThrow("sendMessage 500");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("HTTP 4xx → does NOT retry", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse("forbidden", 403, false));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).rejects.toThrow("sendMessage 403");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("AbortError (caller-side timeout) → does NOT retry", async () => {
+    const abort = new Error("AbortError");
+    abort.name = "AbortError";
+    // No .code → not transient.
+    mockFetch.mockRejectedValueOnce(abort);
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).rejects.toThrow();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retry reuses same body (idempotent — caller's client_id stays stable across retries)", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("ECONNRESET"))
+      .mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await sendMessage({
+      baseUrl: "https://api.example.com/",
+      body: { msg: { client_id: "stable-client-id-12345", to_user_id: "u" } },
+    });
+    const [, opts1] = mockFetch.mock.calls[0];
+    const [, opts2] = mockFetch.mock.calls[1];
+    // Both attempts send the SAME body — server can dedupe by client_id.
+    expect(opts1.body).toBe(opts2.body);
+    expect(opts1.body).toContain("stable-client-id-12345");
+  });
+
+  it("retry uses fresh AbortController (slow server gets full timeoutMs per attempt, not split)", async () => {
+    // First attempt's signal is aborted by the test (simulating mid-flight RST).
+    // The retry's fetch must receive a NEW signal, not the already-aborted one.
+    const signals: AbortSignal[] = [];
+    mockFetch.mockImplementation((url, opts) => {
+      signals.push(opts.signal);
+      if (signals.length === 1) {
+        return Promise.reject(makeTransientFetchError("ECONNRESET"));
+      }
+      return Promise.resolve(mockResponse({ ret: 0 }));
+    });
+    await sendMessage({
+      baseUrl: "https://api.example.com/",
+      body: { msg: {} },
+    });
+    expect(signals).toHaveLength(2);
+    // Second attempt's signal is fresh — not yet aborted.
+    expect(signals[1].aborted).toBe(false);
+  });
+
+  it("undici-specific UND_ERR_SOCKET → also retried", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("UND_ERR_SOCKET"))
+      .mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("ETIMEDOUT (connect-level) → retried", async () => {
+    mockFetch
+      .mockRejectedValueOnce(makeTransientFetchError("ETIMEDOUT"))
+      .mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await expect(
+      sendMessage({ baseUrl: "https://api.example.com/", body: { msg: {} } }),
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
