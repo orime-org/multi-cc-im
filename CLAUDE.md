@@ -86,7 +86,7 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | **Local-first** | 所有用户数据落本机文件（toml + JSONL + 0600 凭据 + state 文件），**不上传任何外部服务**；v1 不引 SQL DB（[Storage DD](docs/superpowers/specs/2026-04-29-storage-strategy-dd.md)）|
 | **iLink 长轮询必须有** | timeout（35s+）+ 退避重试 + cursor 持久化（重启后续接，不掉消息）|
 | **iLink business send 必须有 transient retry** | `apiPostFetch`（sendMessage / sendImage / sendFile / sendTyping / getConfig）对 ECONNRESET / ECONNREFUSED / ETIMEDOUT / UND_ERR_SOCKET 等 TCP/网络瞬时错误最多 retry 2 次（200ms / 500ms 退避）；HTTP 4xx/5xx **不** retry。idempotent 安全：caller 在外层生成 `client_id`，retry 用同一 body 同 client_id，server 端按 client_id 去重。漏 retry → multi-cc concurrent 场景偶发 IM forward 消失，cc 默认 yes，user 看不到 prompt |
-| **Hook 内部 timeout < cc-side hook timeout** | cc settings.json 给 hook 的 `timeout` 是 cc kill 子进程的 deadline；hook 自己 `PERMISSION_TIMEOUT_MS` 必须**小于**它（PR-F：8s vs 10s），给 hook 写 stdout + exit 留 margin，否则 race 时 cc 拿不到 hook decision、行为不确定 |
+| **Hook 内部 timeout < cc-side hook timeout** | cc settings.json 给 hook 的 `timeout` 是 cc kill 子进程的 deadline；hook 自己 `PERMISSION_TIMEOUT_MS` 必须**小于**它（PR-G：10s vs 20s）。10s margin 覆盖：(1) hook 写 stdout + cleanup；(2) daemon-side apiPostFetch transient retry 预算（unhealthy iLink LB IP 时）；(3) 网络抖动。否则 race 时 cc 拿不到 hook decision、行为不确定 |
 | **send-text 注入两步法** | Step1 默认 paste 内容（任意 `\n` / 元字符 / Unicode 安全），Step2 `--no-paste $'\r'` 提交。混用 `--no-paste` 发内容 = 注入面（cc TUI 解释快捷键）|
 | **multi-cc-im hook 不许写非协议 stdout** | cc 把 hook stdout 当 system context 注入（attachment 机制）→ 烧 token + 行为不可预测。受控 JSON（`{"decision":"block",...}` / PreToolUse `{hookSpecificOutput:...}`）除外，其他一律走 stderr 或文件 |
 | **idle 唤醒用 `stop_hook_active` 防死循环** | Stop hook 处理时先 `if (stdin.stop_hook_active) return;`。stdin 字段是 cc 原生防护，零 race，比文件标记可靠 |

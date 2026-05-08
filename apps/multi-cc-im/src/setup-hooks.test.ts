@@ -124,16 +124,18 @@ describe('runSetupHooksCommand', () => {
       }
     });
 
-    it('PreToolUse hook entry includes timeout: 10 (IM permission gate RTT budget)', async () => {
-      // Per DD #51/#52 (revised in DD #61): 10s gives enough headroom for IM
-      // round-trip + user reply; longer would block cc TUI for too long when
-      // the user is unreachable; shorter would defeat IM RTT.
+    it('PreToolUse hook entry includes timeout: 20 (IM permission gate RTT budget + daemon retry margin)', async () => {
+      // Per PR-G race fix: 20s = 10s IM-reply window for user
+      // (PERMISSION_TIMEOUT_MS) + 10s margin for hook stdout write + daemon
+      // apiPostFetch transient retry budget. cc-side timeout > hook internal
+      // poll deadline is mandatory (CLAUDE.md "Hook 内部 timeout < cc-side
+      // hook timeout") to avoid SIGKILL-vs-stdout race.
       const r = await run();
       const hooks = r.settings.hooks as Record<
         string,
         Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
       >;
-      expect(hooks.PreToolUse![0]!.hooks[0]!.timeout).toBe(10);
+      expect(hooks.PreToolUse![0]!.hooks[0]!.timeout).toBe(20);
     });
 
     it('Stop hook entry does NOT include timeout field', async () => {

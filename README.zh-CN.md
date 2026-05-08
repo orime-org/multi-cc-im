@@ -95,7 +95,7 @@ CLI 入口是 `bin/multi-cc-im` bash wrapper。**Production 模式**（推荐）
 
 | 事件 | 用途 |
 |---|---|
-| `PreToolUse` | 把工具权限审批转发到微信（`/1` 允许 / `/2` 拒绝，10s 超时默认放行）—— `matcher: "*"`, `timeout: 10` |
+| `PreToolUse` | 把工具权限审批转发到微信（`/1` 允许 / `/2` 拒绝，**10s** 超时默认放行）—— `matcher: "*"`, `timeout: 20`（cc 端；**=10s IM 回复窗口 + 10s margin** 给 hook 写 stdout + daemon retry）|
 | `Stop` | cc 的回复送进 bridge router 转发到微信 |
 
 `SessionStart` / `SessionEnd` / `UserPromptSubmit` / `PostToolUse` **不订阅**。hook 入口先看 `process.env.WEZTERM_PANE`，没有就静默退出（cc 不在 wezterm 里跑 —— 比如 ssh / VS Code 终端 —— multi-cc-im 没东西可桥接）。有的话，paneId 进入每一个 state 文件的命名（见 [State files reference](#state-files-reference)）。cc 自己的 transcript jsonl（`~/.claude/projects/<dir>/<sid>.jsonl`）就是对话内容的 source of truth；以后做 analytics 直接读它就行。

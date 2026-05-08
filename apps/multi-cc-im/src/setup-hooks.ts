@@ -37,9 +37,18 @@ const HOOK_EVENTS = ['PreToolUse', 'Stop'] as const;
 /** Hook entries for these events match all tool names (`matcher: "*"`). */
 const TOOL_MATCHED_EVENTS = new Set<(typeof HOOK_EVENTS)[number]>(['PreToolUse']);
 
-/** Hook entries for these events get a custom `timeout` (seconds). */
+/**
+ * Hook entries for these events get a custom `timeout` (seconds).
+ *
+ * **PreToolUse: 20s** = 10s IM-reply window for the user (`PERMISSION_TIMEOUT_MS`
+ * in `cli-cc/hook-receiver.ts`) + 10s margin for: (a) hook subprocess to write
+ * its decision JSON to stdout deterministically, (b) daemon-side `apiPostFetch`
+ * transient retry budget when iLink LB hits an unhealthy backend IP, and (c)
+ * any network jitter. Race-free: cc only SIGKILLs hook at 20s, well after
+ * hook's 10s internal poll has finished + written stdout.
+ */
 const HOOK_TIMEOUTS: Partial<Record<(typeof HOOK_EVENTS)[number], number>> = {
-  PreToolUse: 10,
+  PreToolUse: 20,
 };
 
 interface HookHandler {

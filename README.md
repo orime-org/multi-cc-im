@@ -95,7 +95,7 @@ The 2 events:
 
 | Event | Purpose |
 |---|---|
-| `PreToolUse` | Forwards tool permission prompts to WeChat (`/1` allow / `/2` deny, 10s timeout default-allow) — `matcher: "*"`, `timeout: 10` |
+| `PreToolUse` | Forwards tool permission prompts to WeChat (`/1` allow / `/2` deny, **10s** timeout default-allow) — `matcher: "*"`, `timeout: 20` (cc-side; **=10s IM reply window + 10s margin** for hook stdout write + daemon retry) |
 | `Stop` | Carries the assistant reply into the bridge router for forwarding to WeChat |
 
 `SessionStart` / `SessionEnd` / `UserPromptSubmit` / `PostToolUse` are **not** subscribed. The hook entry checks `process.env.WEZTERM_PANE` first — if it's undefined, the hook silently exits (cc isn't running inside wezterm — e.g. ssh, VS Code terminal — so multi-cc-im has nothing to bridge). When defined, the paneId becomes part of every state-file name (see [State files reference](#state-files-reference)). cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) is the source of truth for conversation content; analytics work reads it directly.
