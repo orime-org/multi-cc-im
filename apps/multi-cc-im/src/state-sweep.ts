@@ -2,6 +2,7 @@ import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
+  IM_ORIGIN_FILE_NAME,
   IM_WORK_FILE_NAME,
   daemonPidPath,
   extractPaneIdFromFilename,
@@ -38,6 +39,7 @@ import {
  *
  * Top-level files NEVER swept here:
  * - `IMWork` (managed by daemon start/stop + IM `/start /stop`)
+ * - `IMOrigin` (managed by daemon start/stop + every inbound — DD: IMOrigin global)
  * - `wechat-cursor` (iLink protocol state, must persist across restart)
  *
  * The sweep MUST run before chokidar starts watching at daemon start
@@ -150,6 +152,7 @@ export async function sweepStaleStateFiles(
   for (const name of entries) {
     // Top-level files we never touch:
     if (name === IM_WORK_FILE_NAME) continue;
+    if (name === IM_ORIGIN_FILE_NAME) continue;
     if (name === 'wechat-cursor') continue;
 
     // daemon.pid — check liveness; keep if alive.

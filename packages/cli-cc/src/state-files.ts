@@ -18,15 +18,16 @@ import {
  * **Top-level (per-daemon):**
  * - `IMWork`         — JSON `{auto:boolean}`; user controls via @multi-cc-im /start [auto] /stop.
  *                      File existence ⇔ IM mode ON. 0-byte (legacy) → `{auto:false}`.
+ * - `IMOrigin`       — JSON `IMReplyContext`; latest server-side ctx (token + to).
+ *                      Every IM inbound overwrites; daemon start/stop deletes
+ *                      (always-fresh, like IMWork). Per [DD: IMOrigin global](../../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md).
  * - `daemon.pid`     — daemon PID lock (JSON `{pid, startedAt}`)
  * - `wechat-cursor`  — iLink long-poll cursor (handled by im-wechat package, not here)
  *
- * **Per-pane (cc-fired or daemon-fired, prefixed by wezterm pane id):**
+ * **Per-pane (cc-fired, prefixed by wezterm pane id):**
  * - `<paneId>_<sid>.Stop.<ts>`                    — cc Stop hook writes
  * - `<paneId>_<sid>.PermissionRequest.<id>.json`  — cc PreToolUse hook writes
  * - `<paneId>_<sid>.PermissionResponse.<id>.json` — daemon writes (mirrors Request key)
- * - `<paneId>.IMOrigin`                           — daemon writes (single paneId — daemon
- *                                                   doesn't know sid at IM dispatch time)
  *
  * **Filter-by-naming**: the `<paneId>_<sid>.<event>` format is itself the
  * proof of authenticity. Only a hook subprocess invoked by cc inside a
@@ -71,8 +72,6 @@ export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
 export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
 /** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
 export const IM_WORK_FILE_NAME = 'IMWork';
-/** Per [DD: pane-keyed state](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md) — per-pane IM reply ctx. */
-export const IM_ORIGIN_SUFFIX = '.IMOrigin';
 /** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
 export const DAEMON_PID_FILE_NAME = 'daemon.pid';
 
@@ -154,13 +153,20 @@ export function parsePermissionFilename(
   };
 }
 
-export interface ParsedIMOriginFilename {
+export interface ParsedLegacyPaneOriginFilename {
   paneId: number;
 }
 
-export function parseIMOriginFilename(
+/**
+ * Parse the **legacy** `<paneId>.IMOrigin` filename (DD #61 schema, pre-DD
+ * #_imorigin_global_). New schema is daemon-global single file `IMOrigin`
+ * (no paneId). This parser is kept only so state-sweep can identify old
+ * per-pane files left over after upgrade and clean them up via the same
+ * orphan-paneId logic.
+ */
+export function parseLegacyPaneOriginFilename(
   name: string,
-): ParsedIMOriginFilename | null {
+): ParsedLegacyPaneOriginFilename | null {
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(/^(\d+)\.IMOrigin$/);
   if (!m) return null;
@@ -170,14 +176,17 @@ export function parseIMOriginFilename(
 /**
  * Generic "is this filename a pane-prefixed cc-hook file?" check.
  * Used by state-sweep to decide whether a file falls under "per-pane" cleanup
- * (vs top-level files like IMWork / daemon.pid / wechat-cursor).
+ * (vs top-level files like IMWork / IMOrigin / daemon.pid / wechat-cursor).
+ *
+ * Recognizes the new pane-keyed naming `<paneId>_<sid>.<event>` AND the
+ * legacy `<paneId>.IMOrigin` (auto-migrated when paneId not in live set).
  */
 export function extractPaneIdFromFilename(name: string): number | null {
   const base = name.includes('/') ? name.split('/').pop()! : name;
   // <paneId>_<sid>.<event> (Stop / Permission*)
   const m1 = base.match(PANE_SID_PATTERN);
   if (m1) return Number(m1[1]);
-  // <paneId>.IMOrigin
+  // Legacy <paneId>.IMOrigin (pre-DD-#_imorigin_global_; auto-cleaned)
   const m2 = base.match(/^(\d+)\.IMOrigin$/);
   if (m2) return Number(m2[1]);
   return null;
@@ -465,53 +474,74 @@ export async function deleteIMWorkFile(stateDir: string): Promise<void> {
 }
 
 // ============================================================================
-// IMOrigin: per-pane IMReplyContext snapshot. Filename is `<paneId>.IMOrigin`
-// (single key — daemon writes it on inbound IM dispatch and at that point
-// daemon doesn't know the cc sessionId).
+// IMOrigin: daemon-global IMReplyContext snapshot. Single file `state/IMOrigin`.
 //
 // Contents: `IMReplyContext` JSON (discriminated union with `imType`
 // discriminator, validated by `IMReplyContextSchema` from `@multi-cc-im/shared`).
 //
-// Lifecycle (per DD #58 / DD #61):
-//   - daemon writes/overwrites on every IM dispatch to this pane (B2 — newest ctx wins)
-//   - daemon deletes after cc Stop forward (one-shot)
-//   - daemon start sweep (orphan cleanup — pane no longer alive)
+// Per [DD: IMOrigin global + always-fresh](../../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)
+// (refines DD #57 / DD #61 — fixes stale `context_token` bug):
+//
+// **Why global, not per-pane?** iLink's `context_token` is per-user-bot
+// conversation **latest** (vendored `contextTokenStore` overwrites; server
+// invalidates older tokens after a few inbound msgs). Owner-only ACL means
+// there's only one user-bot conversation ⇒ one IMOrigin is enough; multiple
+// pane-keyed copies would diverge into stale tokens.
+//
+// **Why each inbound overwrites (not just `dispatchOne`)?** Server issues a
+// fresh token on **every** inbound (bridge cmd / permission response /
+// dispatch / etc.). Inbound echo path uses `msg.replyCtx` directly (always
+// fresh). Async outbound (cc PreToolUse / Stop forward) reads IMOrigin —
+// it must be the same fresh source. Writing on every inbound keeps both
+// paths in sync.
+//
+// **Lifecycle**:
+//   - write: every inbound IM message overwrites (latest wins; same source
+//     as the synchronous echo path's `msg.replyCtx`)
+//   - delete (cc Stop forward done): NEVER — old one-shot semantic dropped;
+//     anti-misforward protection is now `IMWork`-gated (DD #57 belt-and-
+//     suspenders is no longer needed once IMWork toggle exists)
+//   - delete (`/stop` router cmd): NEVER — IMWork delete is sufficient gate
+//     (hook E2 reads IMWork, not IMOrigin)
+//   - delete (daemon stop, graceful Ctrl+C): YES — happy-path cleanup,
+//     mirrors `IMWork` lifecycle
+//   - delete (daemon start): YES — crash-path safety net (defense vs SIGKILL
+//     / OOM leftover stale token); mirrors IMWork's "always reset on start"
+//     pattern from [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
 // ============================================================================
 
-export interface IMOriginIO {
-  stateDir: string;
-  paneId: number;
-}
+export const IM_ORIGIN_FILE_NAME = 'IMOrigin';
 
-export function imOriginPath(opts: IMOriginIO): string {
-  return join(opts.stateDir, `${opts.paneId}${IM_ORIGIN_SUFFIX}`);
+export function imOriginPath(stateDir: string): string {
+  return join(stateDir, IM_ORIGIN_FILE_NAME);
 }
 
 export async function writeIMOriginFile(
-  opts: IMOriginIO & { replyCtx: IMReplyContext },
+  stateDir: string,
+  replyCtx: IMReplyContext,
 ): Promise<void> {
   // Defense-in-depth: validate the ctx shape before persisting so disk never
   // ends up with a malformed IMReplyContext that breaks future readers.
-  IMReplyContextSchema.parse(opts.replyCtx);
-  await atomicWrite(imOriginPath(opts), JSON.stringify(opts.replyCtx, null, 2));
+  IMReplyContextSchema.parse(replyCtx);
+  await atomicWrite(imOriginPath(stateDir), JSON.stringify(replyCtx, null, 2));
 }
 
 /**
- * Read + zod-validate `<paneId>.IMOrigin`. Returns null on ENOENT.
+ * Read + zod-validate `state/IMOrigin`. Returns null on ENOENT.
  * Throws on JSON parse failure or schema mismatch (corruption, or a future
  * daemon wrote an `imType` an older client doesn't know).
  */
 export async function readIMOriginFile(
-  opts: IMOriginIO,
+  stateDir: string,
 ): Promise<IMReplyContext | null> {
-  const raw = await readJsonOrNull<unknown>(imOriginPath(opts));
+  const raw = await readJsonOrNull<unknown>(imOriginPath(stateDir));
   if (raw === null) return null;
   return IMReplyContextSchema.parse(raw);
 }
 
-export async function existsIMOriginFile(opts: IMOriginIO): Promise<boolean> {
+export async function existsIMOriginFile(stateDir: string): Promise<boolean> {
   try {
-    await readFile(imOriginPath(opts));
+    await readFile(imOriginPath(stateDir));
     return true;
   } catch (err) {
     if (isENOENT(err)) return false;
@@ -519,22 +549,8 @@ export async function existsIMOriginFile(opts: IMOriginIO): Promise<boolean> {
   }
 }
 
-export async function deleteIMOriginFile(opts: IMOriginIO): Promise<void> {
-  await unlinkOrIgnoreENOENT(imOriginPath(opts));
-}
-
-/** List all `<paneId>.IMOrigin` files in the state dir (daemon start sweep). */
-export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
-  let entries: string[];
-  try {
-    entries = await readdir(stateDir);
-  } catch (err) {
-    if (isENOENT(err)) return [];
-    throw err;
-  }
-  return entries
-    .filter((name) => parseIMOriginFilename(name) !== null)
-    .map((name) => join(stateDir, name));
+export async function deleteIMOriginFile(stateDir: string): Promise<void> {
+  await unlinkOrIgnoreENOENT(imOriginPath(stateDir));
 }
 
 // ============================================================================

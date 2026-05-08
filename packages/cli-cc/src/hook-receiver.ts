@@ -213,10 +213,11 @@ export async function runHookReceiver(
         };
       }
 
-      // E3: IMWork on but no IM thread bound for this pane → silent exit so
-      // user's allow rules still apply; otherwise cc falls back to its TUI
-      // first-time prompt.
-      if (!(await existsIMOriginFile({ stateDir, paneId }))) {
+      // E3: IMWork on but no IM thread bound (no recent inbound from user)
+      // → silent exit so user's allow rules still apply; otherwise cc falls
+      // back to its TUI first-time prompt. Per [DD: IMOrigin global](../../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)
+      // IMOrigin is daemon-global (no paneId).
+      if (!(await existsIMOriginFile(stateDir))) {
         return; // E3: silent exit, defer to cc native permission flow
       }
 
@@ -313,7 +314,8 @@ export async function runHookReceiver(
       //   E3 !daemon alive → return void (no listener)
 
       if (!(await existsIMWorkFile(stateDir))) return;
-      if (!(await existsIMOriginFile({ stateDir, paneId }))) return;
+      // IMOrigin is daemon-global (DD: IMOrigin global) — no paneId.
+      if (!(await existsIMOriginFile(stateDir))) return;
       if (!(await isDaemonAlive(stateDir))) return;
 
       // Clear stale Stop.* for this pane+sid before writing fresh.

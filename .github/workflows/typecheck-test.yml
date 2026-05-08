@@ -128,7 +128,7 @@ jobs:
           }
 
       - name: Smoke — Stop hook writes <paneId>_<sid>.Stop file in IM mode (forward path)
-        # When WEZTERM_PANE + IMWork + <paneId>.IMOrigin + daemon.pid are all
+        # When WEZTERM_PANE + IMWork + global IMOrigin + daemon.pid are all
         # set, Stop hook writes <home>/state/<paneId>_<sid>.Stop.<ISO-ts>.
         # Daemon would forward + unlink, but no daemon here so the file persists.
         run: |
@@ -137,14 +137,14 @@ jobs:
           export WEZTERM_PANE=42
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
 
-          # Set up forward-path prerequisites per DD #61:
+          # Set up forward-path prerequisites per DD #61 + DD: IMOrigin global:
           #   - IMWork tombstone (top-level)
-          #   - <paneId>.IMOrigin with discriminated wechat ctx
+          #   - state/IMOrigin (global, no paneId — overwritten by every inbound)
           #   - daemon.pid pointing at this shell (PID + lstart match)
           mkdir -p "$MULTI_CC_IM_HOME/state"
           : > "$MULTI_CC_IM_HOME/state/IMWork"
           echo '{"imType":"wechat","to":"u","contextToken":"smoke-test"}' \
-            > "$MULTI_CC_IM_HOME/state/${WEZTERM_PANE}.IMOrigin"
+            > "$MULTI_CC_IM_HOME/state/IMOrigin"
           SHELL_PID=$$
           LSTART="$(ps -o lstart= -p "$SHELL_PID" | sed 's/^ *//;s/ *$//')"
           jq -n --argjson pid "$SHELL_PID" --arg startedAt "$LSTART" \

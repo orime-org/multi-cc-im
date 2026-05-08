@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
-  IM_ORIGIN_SUFFIX,
+  IM_ORIGIN_FILE_NAME,
   IM_WORK_FILE_NAME,
   STOP_PREFIX,
   PERMISSION_REQUEST_PREFIX,
@@ -25,11 +25,10 @@ import {
   imOriginPath,
   imWorkPath,
   isDaemonAlive,
-  listIMOriginFiles,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
   listStopFiles,
-  parseIMOriginFilename,
+  parseLegacyPaneOriginFilename,
   parsePermissionFilename,
   parseStopFilename,
   permissionRequestPath,
@@ -133,18 +132,18 @@ describe('state-files', () => {
       expect(parsePermissionFilename(`${SID}.Permission.x.json`)).toBeNull();
     });
 
-    it('parseIMOriginFilename matches <paneId>.IMOrigin', () => {
-      expect(parseIMOriginFilename(`${PANE_ID}.IMOrigin`)).toEqual({
+    it('parseLegacyPaneOriginFilename matches old <paneId>.IMOrigin (DD #_imorigin_global_ migration)', () => {
+      expect(parseLegacyPaneOriginFilename(`${PANE_ID}.IMOrigin`)).toEqual({
         paneId: PANE_ID,
       });
     });
 
-    it('parseIMOriginFilename rejects non-numeric prefix', () => {
-      expect(parseIMOriginFilename(`abc.IMOrigin`)).toBeNull();
-      expect(parseIMOriginFilename(`${SID}.IMOrigin`)).toBeNull();
+    it('parseLegacyPaneOriginFilename rejects non-numeric prefix', () => {
+      expect(parseLegacyPaneOriginFilename(`abc.IMOrigin`)).toBeNull();
+      expect(parseLegacyPaneOriginFilename(`${SID}.IMOrigin`)).toBeNull();
     });
 
-    it('extractPaneIdFromFilename covers Stop / Permission / IMOrigin', () => {
+    it('extractPaneIdFromFilename covers Stop / Permission / legacy <paneId>.IMOrigin', () => {
       expect(
         extractPaneIdFromFilename(`${PANE_ID}_${SID}.Stop.foo`),
       ).toBe(PANE_ID);
@@ -153,8 +152,11 @@ describe('state-files', () => {
           `${PANE_ID}_${SID}.PermissionRequest.x.json`,
         ),
       ).toBe(PANE_ID);
+      // Legacy pane-keyed IMOrigin still recognized so state-sweep can clean it up.
       expect(extractPaneIdFromFilename(`${PANE_ID}.IMOrigin`)).toBe(PANE_ID);
+      // Top-level files (incl. new global IMOrigin) are NOT pane-keyed.
       expect(extractPaneIdFromFilename('IMWork')).toBeNull();
+      expect(extractPaneIdFromFilename('IMOrigin')).toBeNull();
       expect(extractPaneIdFromFilename(`${SID}.SessionStart`)).toBeNull();
     });
   });
@@ -464,99 +466,73 @@ describe('state-files', () => {
     });
   });
 
-  describe('IMOrigin (per-pane single-key)', () => {
-    it('imOriginPath uses <paneId>.IMOrigin', () => {
-      const path = imOriginPath({ stateDir, paneId: PANE_ID });
-      expect(path).toBe(join(stateDir, `${PANE_ID}${IM_ORIGIN_SUFFIX}`));
+  describe('IMOrigin (daemon-global single file, post-DD #_imorigin_global_)', () => {
+    it('imOriginPath uses top-level IMOrigin (no paneId)', () => {
+      const path = imOriginPath(stateDir);
+      expect(path).toBe(join(stateDir, IM_ORIGIN_FILE_NAME));
+      expect(IM_ORIGIN_FILE_NAME).toBe('IMOrigin');
     });
 
     it('writeIMOriginFile + readIMOriginFile round-trip wechat ctx', async () => {
-      await writeIMOriginFile({
-        stateDir,
-        paneId: PANE_ID,
-        replyCtx: WECHAT_CTX,
-      });
-      const got = await readIMOriginFile({ stateDir, paneId: PANE_ID });
+      await writeIMOriginFile(stateDir, WECHAT_CTX);
+      const got = await readIMOriginFile(stateDir);
       expect(got).toEqual(WECHAT_CTX);
     });
 
     it('writeIMOriginFile rejects ctx without imType discriminator', async () => {
       await expect(
-        writeIMOriginFile({
+        writeIMOriginFile(
           stateDir,
-          paneId: PANE_ID,
-          replyCtx: { to: 'u', contextToken: 'x' } as unknown as IMReplyContext,
-        }),
+          { to: 'u', contextToken: 'x' } as unknown as IMReplyContext,
+        ),
       ).rejects.toThrow();
     });
 
     it('writeIMOriginFile rejects unknown imType', async () => {
       await expect(
-        writeIMOriginFile({
+        writeIMOriginFile(
           stateDir,
-          paneId: PANE_ID,
-          replyCtx: { imType: 'mystery', x: 1 } as unknown as IMReplyContext,
-        }),
+          { imType: 'mystery', x: 1 } as unknown as IMReplyContext,
+        ),
       ).rejects.toThrow();
     });
 
     it('readIMOriginFile returns null on ENOENT', async () => {
-      expect(
-        await readIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).toBeNull();
+      expect(await readIMOriginFile(stateDir)).toBeNull();
     });
 
     it('readIMOriginFile throws on schema mismatch (corruption)', async () => {
-      // Write malformed JSON → schema parse should reject.
-      await writeFile(
-        imOriginPath({ stateDir, paneId: PANE_ID }),
-        JSON.stringify({ no: 'imType' }),
-      );
-      await expect(
-        readIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).rejects.toThrow();
+      await writeFile(imOriginPath(stateDir), JSON.stringify({ no: 'imType' }));
+      await expect(readIMOriginFile(stateDir)).rejects.toThrow();
+    });
+
+    it('latest-wins: second writeIMOriginFile overwrites first (modeling each inbound covers prior token)', async () => {
+      await writeIMOriginFile(stateDir, {
+        imType: 'wechat',
+        to: 'wxid_user',
+        contextToken: 'token-A',
+      });
+      await writeIMOriginFile(stateDir, {
+        imType: 'wechat',
+        to: 'wxid_user',
+        contextToken: 'token-B',
+      });
+      const got = await readIMOriginFile(stateDir);
+      expect(got).toEqual({
+        imType: 'wechat',
+        to: 'wxid_user',
+        contextToken: 'token-B',
+      });
     });
 
     it('existsIMOriginFile / deleteIMOriginFile lifecycle', async () => {
-      expect(
-        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).toBe(false);
-      await writeIMOriginFile({
-        stateDir,
-        paneId: PANE_ID,
-        replyCtx: WECHAT_CTX,
-      });
-      expect(
-        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).toBe(true);
-      await deleteIMOriginFile({ stateDir, paneId: PANE_ID });
-      expect(
-        await existsIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).toBe(false);
-      await expect(
-        deleteIMOriginFile({ stateDir, paneId: PANE_ID }),
-      ).resolves.toBeUndefined();
-    });
-
-    it('listIMOriginFiles returns all <paneId>.IMOrigin files', async () => {
-      await writeIMOriginFile({
-        stateDir,
-        paneId: PANE_ID,
-        replyCtx: WECHAT_CTX,
-      });
-      await writeIMOriginFile({
-        stateDir,
-        paneId: PANE_ID2,
-        replyCtx: WECHAT_CTX,
-      });
-      // Decoy: top-level IMWork should not appear.
-      await writeIMWorkFile(stateDir);
-      const list = await listIMOriginFiles(stateDir);
-      expect(list).toHaveLength(2);
-      const basenames = list.map((p) => p.split('/').pop()).sort();
-      expect(basenames).toEqual(
-        [`${PANE_ID2}.IMOrigin`, `${PANE_ID}.IMOrigin`].sort(),
-      );
+      expect(await existsIMOriginFile(stateDir)).toBe(false);
+      await writeIMOriginFile(stateDir, WECHAT_CTX);
+      expect(await existsIMOriginFile(stateDir)).toBe(true);
+      await deleteIMOriginFile(stateDir);
+      expect(await existsIMOriginFile(stateDir)).toBe(false);
+      // Idempotent.
+      await expect(deleteIMOriginFile(stateDir)).resolves.toBeUndefined();
     });
   });
 
@@ -615,12 +591,8 @@ describe('state-files', () => {
 
   describe('atomic write permissions (0600)', () => {
     it('writeIMOriginFile produces 0600 file', async () => {
-      await writeIMOriginFile({
-        stateDir,
-        paneId: PANE_ID,
-        replyCtx: WECHAT_CTX,
-      });
-      const st = await stat(imOriginPath({ stateDir, paneId: PANE_ID }));
+      await writeIMOriginFile(stateDir, WECHAT_CTX);
+      const st = await stat(imOriginPath(stateDir));
       // 0o777 is the rwx mask; check the lower bits == 0o600.
       expect(st.mode & 0o777).toBe(0o600);
     });

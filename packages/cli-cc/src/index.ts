@@ -12,8 +12,11 @@ export type { ParsedHookPayload } from './payloads.js';
 // State-file IO for cc session lifecycle. Per
 // [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
 // hook subprocess writes <paneId>_<sid>.<event> (the file format itself is
-// the proof "this came from cc fired in wezterm"). daemon writes
-// <paneId>.IMOrigin (single key — daemon doesn't know sid at IM dispatch).
+// the proof "this came from cc fired in wezterm"). Per
+// [DD: IMOrigin global](../../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md):
+// daemon writes a single global state/IMOrigin (no paneId — owner-only ACL
+// makes per-pane unnecessary; every inbound overwrites; daemon start/stop
+// always-fresh, mirroring IMWork lifecycle).
 //
 // SessionStart / SessionEnd hooks + files removed (DD #61):
 //   - cc lifecycle no longer needs file-based markers: wezterm cli list is
@@ -25,12 +28,12 @@ export {
   PERMISSION_REQUEST_PREFIX,
   PERMISSION_RESPONSE_PREFIX,
   IM_WORK_FILE_NAME,
-  IM_ORIGIN_SUFFIX,
+  IM_ORIGIN_FILE_NAME,
   DAEMON_PID_FILE_NAME,
   formatStopTimestamp,
   parseStopFilename,
   parsePermissionFilename,
-  parseIMOriginFilename,
+  parseLegacyPaneOriginFilename,
   extractPaneIdFromFilename,
   stopFilePath,
   permissionRequestPath,
@@ -60,7 +63,6 @@ export {
   readIMOriginFile,
   existsIMOriginFile,
   deleteIMOriginFile,
-  listIMOriginFiles,
   writeDaemonPidFile,
   readDaemonPidFile,
   deleteDaemonPidFile,
@@ -69,14 +71,13 @@ export {
 } from './state-files.js';
 export type {
   PerPaneIO,
-  IMOriginIO,
   StopFile,
   PermissionRequestFile,
   PermissionResponseFile,
   DaemonPidFile,
   ParsedStopFilename,
   ParsedPermissionFilename,
-  ParsedIMOriginFilename,
+  ParsedLegacyPaneOriginFilename,
   IMWorkFile,
 } from './state-files.js';
 

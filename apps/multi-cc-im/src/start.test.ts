@@ -220,4 +220,38 @@ describe('runStartCommand — pre-flight failures', () => {
     expect(result.exitCode).toBe(0);
     await result.shutdown!();
   });
+
+  it('daemon start wipes any leftover state/IMOrigin (crash-path safety per DD: IMOrigin global)', async () => {
+    // Simulate: previous daemon was SIGKILL'd / OOM'd → no graceful stop hook
+    // → state/IMOrigin remains on disk with a stale `context_token`.
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    const stateDir = join(root, 'state');
+    await mkdir(stateDir, { recursive: true });
+    const { writeIMOriginFile, existsIMOriginFile } = await import(
+      '@multi-cc-im/cli-cc'
+    );
+    await writeIMOriginFile(stateDir, {
+      imType: 'wechat',
+      to: 'wxid_owner',
+      contextToken: 'stale-from-crashed-daemon',
+    });
+    expect(await existsIMOriginFile(stateDir)).toBe(true);
+
+    const result = await runStartCommand({
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    // Crash-leftover IMOrigin wiped — fresh daemon won't reply with a token
+    // the iLink server already invalidated.
+    expect(await existsIMOriginFile(stateDir)).toBe(false);
+    await result.shutdown!();
+  });
 });
