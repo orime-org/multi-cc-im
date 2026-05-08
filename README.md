@@ -1,5 +1,7 @@
 # multi-cc-im
 
+**English** | [中文](README.zh-CN.md)
+
 A personal local bridge that exposes **multiple Claude Code (cc) sessions running in WezTerm tabs** to WeChat via Tencent's iLink Bot API. Use the terminal in the office, WeChat outside, both at once. Includes `@session` routing, IM-side tool permission gate (PreToolUse → WeChat reply with `/1` allow / `/2` deny), and a pluggable architecture for additional IMs / terminals / CLIs.
 
 > **Status**: v1.3 implementation complete (2026-05-09) — 7 packages + 1 app shipped (`apps/multi-cc-im/` is the executable CLI). 58 test files / 903 unit tests / coverage ≥ 80%. v1.2 added IMWork (manual remote-mode toggle) + IMOrigin (per-session ctx) + read-only tool allowlist + daemon reaper; v1.3 added daemon-liveness PID lock (`state/daemon.pid`) + double-start guard + Ctrl+C cleanup. Remaining follow-ups: real-environment WezTerm + cc + WeChat end-to-end smoke test, Telegram / Lark IM adapters, analytics package.
