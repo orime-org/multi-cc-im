@@ -92,16 +92,54 @@ jobs:
           out="$(./bin/multi-cc-im --version)"
           test "$out" = "0.0.0"
 
-      - name: Smoke — hook subcommand round-trip (Stop)
+      - name: Smoke — Stop hook short-circuits in local mode (no IMWork)
+        # Per [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)
+        # + [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md):
+        # Stop hook returns void without writing anything when IMWork is
+        # absent (= user is in local mode). state/ dir won't even be
+        # created since no atomicWrite is invoked.
         run: |
           set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
           PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
           echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
+          # Hook E1 short-circuit → no Stop file, no legacy files, no state/ dir at all.
+          test ! -d "$MULTI_CC_IM_HOME/state" || {
+            echo "FAIL: state/ should not exist after short-circuit"
+            ls -la "$MULTI_CC_IM_HOME/state/"
+            exit 1
+          }
+
+      - name: Smoke — Stop hook writes Stop file in IM mode (forward path)
+        # When IMWork + IMOrigin + daemon.pid are all set, Stop hook writes
+        # <home>/state/<sid>.Stop.<ISO-ts> as before. Daemon would forward +
+        # unlink, but no daemon here so the file persists.
+        run: |
+          set -x
+          export MULTI_CC_IM_HOME="$(mktemp -d)"
+          SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
+
+          # Set up forward-path prerequisites: IMWork tombstone + IMOrigin
+          # ctx + daemon.pid pointing at this shell (PID + lstart match so
+          # isDaemonAlive returns true).
+          mkdir -p "$MULTI_CC_IM_HOME/state"
+          : > "$MULTI_CC_IM_HOME/state/IMWork"
+          echo '{"contextToken":"smoke-test"}' > "$MULTI_CC_IM_HOME/state/${SID}.IMOrigin"
+          SHELL_PID=$$
+          # `ps -o lstart=` output is whitespace-padded; trim leading/trailing.
+          LSTART="$(ps -o lstart= -p "$SHELL_PID" | sed 's/^ *//;s/ *$//')"
+          # Use jq to ensure the JSON escaping of LSTART is correct (the
+          # string contains spaces and may contain colons — both safe but
+          # jq is the canonical way).
+          jq -n --argjson pid "$SHELL_PID" --arg startedAt "$LSTART" \
+            '{pid:$pid, startedAt:$startedAt}' \
+            > "$MULTI_CC_IM_HOME/state/daemon.pid"
+
+          PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
+          echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
           ls -la "$MULTI_CC_IM_HOME/state/"
-          # Stop hook writes <home>/state/<sid>.Stop.<ISO-ts>; daemon would
-          # forward + unlink, but no daemon here so the file persists.
+
           shopt -s nullglob
           stop_files=("$MULTI_CC_IM_HOME/state/$SID".Stop.*)
           [ "${#stop_files[@]}" -eq 1 ]
