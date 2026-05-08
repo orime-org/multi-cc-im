@@ -216,7 +216,9 @@ cc wants to call <tool> → cc fires PreToolUse hook
    → 否则走 PR-D forward 路径：
        sweep stale <paneId>_<sid>.Permission*.json
        write <paneId>_<sid>.PermissionRequest.<reqId>.json
-       poll <paneId>_<sid>.PermissionResponse.<reqId>.json every 200ms, max 10s
+       poll <paneId>_<sid>.PermissionResponse.<reqId>.json every 200ms, max 8s
+       (8s < cc settings.json hook timeout 10s — 留 2s margin 给 hook 写 stdout
+        + exit；race 时 cc 才能拿到 decision，否则 cc 的 default behavior unstable)
 
 chokidar add event → cli-cc adapter dispatches PreToolUse
    → orchestrator.handlePreToolUse({ paneId, sid, requestId, ... })
@@ -283,6 +285,22 @@ DD #61 之后：**daemon 不再独立追踪 cc 死活**。每次 IM 事件直接
 - 用户关掉 wezterm tab：listPanes 不再返回这个 paneId → matcher 找不到 → echo 报告"未 /rename 或不存在"
 
 权衡：偶尔残留 zsh 的 pane 被注入是用户可见的痛感（自己关 tab 就好），换来 daemon 端零状态、零 stale-tracking 风险。SessionEnd hook + sid-keyed 文件 + PaneAlive 验证全部撤销。详见 [DD: pane-keyed state files](superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)。
+
+## iLink 网络韧性 (transient retry)
+
+`packages/im-wechat/lib/ilink/api/api.ts` 的 `apiPostFetch` (sendMessage / sendImage / sendFile / sendTyping / getConfig 共用) 对 TCP/网络瞬时错误自动 retry：
+
+| 错误码 | 处理 |
+|---|---|
+| `ECONNRESET` / `ECONNREFUSED` / `ETIMEDOUT` / `ENOTFOUND` / `ENETUNREACH` / `EHOSTUNREACH` / `EPIPE` / `UND_ERR_SOCKET` / `UND_ERR_CONNECT_TIMEOUT` | retry 最多 2 次（200ms / 500ms 退避） |
+| HTTP 4xx / 5xx (server 给了 response body) | **不** retry — server-side 确定性答案 |
+| AbortError (本地 timeout) | **不** retry — 已经到 budget |
+
+**起源**: PR #62 (DD #61) 之后 user 实测多 cc 并发场景偶发 ECONNRESET，导致 IM forward 消失，cc 默认 yes，user 看不到 prompt 就工具被允许了。根因是 server-side（LB 健康度 / anti-abuse 限速）+ 缺 client-side retry。`getUpdates` 长轮询自带 retry 没事，但业务 send (sendMessage 等) 漏 retry。
+
+**Idempotent 安全**: caller 在 `sendMessageWeixin / sendImageMessageWeixin / sendFileMessageWeixin` 一次性生成 `client_id`，retry 用同一 body 同一 client_id，server 端按 client_id 去重 — 不会发重复消息。
+
+**测试覆盖** (`packages/im-wechat/lib/ilink/api/api.test.ts` 23 cases): retry-on-ECONNRESET / 给-up-after-3 / HTTP-error-not-retried / abort-not-retried / body-stable-across-retries / fresh-AbortController-per-attempt / undici-specific 错误码。
 
 ## /usage /cost 计算（v2 deferred）
 

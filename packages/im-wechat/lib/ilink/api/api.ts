@@ -164,8 +164,68 @@ export async function apiGetFetch(params: {
 }
 
 /**
+ * Transient TCP/network error codes worth retrying. These come from
+ * undici / Node's net layer; they typically mean "connection didn't even
+ * complete TLS handshake" or "server reset us mid-flight" — either way
+ * the request never reached server-side application logic, so retrying
+ * the same body is safe (idempotent at the protocol level).
+ *
+ * HTTP-level errors (4xx / 5xx response bodies) are NOT retried — the
+ * server actually saw the request and gave a deterministic answer.
+ */
+const TRANSIENT_NET_CODES = new Set<string>([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "UND_ERR_SOCKET", // undici-specific socket error
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Walk the error chain (undici nests the underlying network error in
+ * `.cause`) and return the first transient code encountered, or undefined.
+ */
+function extractTransientCode(err: unknown): string | undefined {
+  let cur: unknown = err;
+  let depth = 0;
+  while (cur instanceof Error && depth < 5) {
+    const code = (cur as Error & { code?: unknown }).code;
+    if (typeof code === "string" && TRANSIENT_NET_CODES.has(code)) {
+      return code;
+    }
+    cur = (cur as Error & { cause?: unknown }).cause;
+    depth++;
+  }
+  return undefined;
+}
+
+/** Backoff delays for retries: 200ms, 500ms (total max extra ~700ms). */
+const RETRY_DELAYS_MS = [200, 500] as const;
+
+/** Sleep helper that does not depend on `node:timers/promises` (kept simple). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
  * Common fetch wrapper: POST JSON to a Weixin API endpoint with timeout + abort.
  * Returns the raw response text on success; throws on HTTP error or timeout.
+ *
+ * **Transient retry** (DD doc: PR-F):
+ * - Retries up to 2 times on `ECONNRESET` / `ECONNREFUSED` / `ETIMEDOUT` /
+ *   `ENOTFOUND` / `ENETUNREACH` / `EHOSTUNREACH` / `EPIPE` /
+ *   `UND_ERR_SOCKET` / `UND_ERR_CONNECT_TIMEOUT`. Backoff 200ms / 500ms.
+ * - HTTP 4xx / 5xx are NOT retried (deterministic server answer; retry would
+ *   yield the same response and waste time).
+ * - AbortController timeout is reset per attempt so a slow server still gets
+ *   the full `timeoutMs` budget per try (not split across retries).
+ * - Idempotent against duplicate sends: callers (sendMessage / sendImage /
+ *   sendFile) generate `client_id` once per outer call before reaching here,
+ *   so retries reuse the same `client_id` and the iLink server can dedupe.
  */
 async function apiPostFetch(params: {
   baseUrl: string;
@@ -180,26 +240,50 @@ async function apiPostFetch(params: {
   const hdrs = buildHeaders({ token: params.token, body: params.body });
   logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), params.timeoutMs);
-  try {
-    const res = await fetch(url.toString(), {
-      method: "POST",
-      headers: hdrs,
-      body: params.body,
-      signal: controller.signal,
-    });
-    clearTimeout(t);
-    const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
-    if (!res.ok) {
-      throw new Error(`${params.label} ${res.status}: ${rawText}`);
+  const maxAttempts = 1 + RETRY_DELAYS_MS.length;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), params.timeoutMs);
+    try {
+      const res = await fetch(url.toString(), {
+        method: "POST",
+        headers: hdrs,
+        body: params.body,
+        signal: controller.signal,
+      });
+      clearTimeout(t);
+      const rawText = await res.text();
+      logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
+      if (!res.ok) {
+        // HTTP error — server-side deterministic, do not retry.
+        throw new Error(`${params.label} ${res.status}: ${rawText}`);
+      }
+      return rawText;
+    } catch (err) {
+      clearTimeout(t);
+      lastErr = err;
+      const code = extractTransientCode(err);
+      if (code === undefined) {
+        // Non-transient (HTTP error / abort / unknown) — bail immediately.
+        throw err;
+      }
+      const isLastAttempt = attempt === maxAttempts - 1;
+      if (isLastAttempt) {
+        logger.warn(
+          `${params.label}: ${code} after ${maxAttempts} attempts — giving up`,
+        );
+        throw err;
+      }
+      const delay = RETRY_DELAYS_MS[attempt]!;
+      logger.debug(
+        `${params.label}: transient ${code}, retry ${attempt + 1}/${maxAttempts - 1} in ${delay}ms`,
+      );
+      await sleep(delay);
     }
-    return rawText;
-  } catch (err) {
-    clearTimeout(t);
-    throw err;
   }
+  // Unreachable — loop either returns or throws — but TS can't see that.
+  throw lastErr;
 }
 
 /**
