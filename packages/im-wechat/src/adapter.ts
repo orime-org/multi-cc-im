@@ -38,19 +38,20 @@ import { resolveAccount, type ResolvedAccount } from './accounts.js';
 import { runMonitor } from './monitor.js';
 
 /**
- * Reply context shape (IM-specific). Bridge core passes `replyCtx` received from
- * IMAdapter.send back through verbatim; the adapter casts it internally to this
- * shape to extract `to` + `contextToken` and call the vendored protocol layer's
- * sendXxxWeixin functions.
+ * Reply context shape (wechat-specific variant of the discriminated union
+ * `IMReplyContext` in `@multi-cc-im/shared`).
  *
- * `to` = WeixinMessage.from_user_id (the message originator = the target we're
- * replying to).
+ * `imType: 'wechat'` discriminator is what bridge uses to route a stored
+ * IMOrigin back to this adapter.
+ * `to` = WeixinMessage.from_user_id (the message originator = the target
+ * we're replying to).
  * `contextToken` = WeixinMessage.context_token (required for cc-bot replies;
  * iLink server rejects requests without it).
  */
 export interface WeixinReplyContext {
+  imType: 'wechat';
   to: string;
-  contextToken: string | undefined;
+  contextToken?: string;
 }
 
 export interface WeixinAdapterOpts {
@@ -315,6 +316,7 @@ async function weixinMessageToIncoming(
 
   const text = textParts.length > 0 ? textParts.join('') : null;
   const replyCtx: WeixinReplyContext = {
+    imType: 'wechat',
     to: fromUserId,
     contextToken: msg.context_token,
   };
@@ -424,15 +426,10 @@ function assertReplyContext(
   replyCtx: IMReplyContext,
   caller: string,
 ): WeixinReplyContext {
-  if (
-    typeof replyCtx === 'object' &&
-    replyCtx !== null &&
-    'to' in replyCtx &&
-    typeof (replyCtx as { to: unknown }).to === 'string'
-  ) {
-    return replyCtx as WeixinReplyContext;
+  if (replyCtx.imType !== 'wechat') {
+    throw new Error(
+      `WeixinAdapter.${caller}: replyCtx.imType must be 'wechat', got '${replyCtx.imType}'`,
+    );
   }
-  throw new Error(
-    `WeixinAdapter.${caller}: replyCtx must be { to: string, contextToken?: string }`,
-  );
+  return replyCtx;
 }

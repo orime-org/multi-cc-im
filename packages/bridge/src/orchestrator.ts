@@ -7,17 +7,14 @@ import type {
   IMHandler,
   IMReplyContext,
   IncomingMessage,
-  PaneToSessionMap,
+  PaneId,
   PreToolUsePayload,
-  SessionEndPayload,
-  SessionId,
-  SessionStartPayload,
   StopPayload,
   TermAdapter,
-  TermPaneAlive,
+  TermListPanes,
+  TermPaneInfo,
 } from '@multi-cc-im/shared';
 import {
-  PERMISSION_REQUEST_PREFIX,
   deleteDaemonPidFile,
   deleteIMOriginFile,
   deleteIMWorkFile,
@@ -29,10 +26,11 @@ import {
   writeIMOriginFile,
   writeIMWorkFile,
   writePermissionResponseFile,
+  parsePermissionFilename,
 } from '@multi-cc-im/cli-cc';
 import { readdir } from 'node:fs/promises';
-import { route } from './router.js';
-import type { RouterDispatch, RouterState, SessionRegistry } from './router.js';
+import type { SessionInfo } from './matcher.js';
+import { route, type RouterDispatch, type RouterState, type PaneRegistry } from './router.js';
 
 /**
  * DD-locked Step 1 → Step 2 paste-render delay (ms). [hook+wezterm DD W1](../../../docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)
@@ -40,90 +38,71 @@ import type { RouterDispatch, RouterState, SessionRegistry } from './router.js';
  */
 const DEFAULT_SEND_KEYSTROKE_DELAY_MS = 300;
 
+/** Reaper window — should match hook subprocess timeout (10s). */
+const DEFAULT_REAPER_DELAY_MS = 10_000;
+
 export interface CreateOrchestratorOpts {
   /** Wechat (or future tg / Lark) IM adapter. */
   imAdapter: IMAdapter;
   /**
-   * WezTerm (or future tmux) Term adapter — must satisfy `TermPaneAlive` so
-   * the orchestrator can gate every `sendText` per CLAUDE.md "forbidden list":
-   * "no send-text without verifying cc is alive".
+   * WezTerm (or future tmux) Term adapter — must satisfy `TermListPanes` so
+   * the orchestrator can resolve `@<tabname>` to paneId via `listPanes()`.
+   * No `isPaneAlive` capability needed (DD #61 — daemon trusts user-side
+   * `/start` listing for cc liveness).
    */
-  termAdapter: TermAdapter & TermPaneAlive;
+  termAdapter: TermAdapter & TermListPanes;
   /** Claude Code (or future codex / aider) CLI adapter. */
   cliAdapter: CLIAdapter;
   /**
-   * State dir holding per-session files (e.g. `~/.multi-cc-im/state/`).
-   * Orchestrator needs it to write PermissionResponse files when the IM
-   * user replies `@<tabname> /1` or `/2` per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+   * State dir holding per-pane files (e.g. `~/.multi-cc-im/state/`).
+   * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+   * file naming is `<paneId>_<sid>.<event>` (cc-hook) + `<paneId>.IMOrigin`
+   * (daemon).
    */
   stateDir: string;
-  /** Joined session registry + paneToSession map (`createSessionRegistry`). */
-  registry: SessionRegistry & PaneToSessionMap;
-  /** Persistent or in-memory state for `current_session` last-explicit sticky. */
+  /** In-memory state for `current_pane` last-explicit sticky. */
   state: RouterState;
   /** Step 1 → Step 2 paste-render delay (ms). Default 300 per DD W1. */
   sendKeystrokeDelayMs?: number;
   /**
    * Daemon reaper window (ms) — schedule unlink of orphan
-   * `<sid>.PermissionRequest/Response.<id>.json` files this long after
-   * chokidar surfaces a new Request. Default `10_000` matches the hook
-   * subprocess's PERMISSION_TIMEOUT_MS so reaper runs *just after* the hook
-   * would normally have cleaned up itself. Tests inject a small value.
+   * `<paneId>_<sid>.PermissionRequest/Response.<id>.json` files this long
+   * after chokidar surfaces a new Request. Default `10_000` matches hook
+   * subprocess timeout. Tests inject a small value.
    */
   reaperDelayMs?: number;
-  /**
-   * Non-fatal error sink (IM / Term failures during routing). Default:
-   * silently swallow. Bridge main entry passes its `pino` logger.
-   */
-  onError?: (err: unknown, context: { phase: string; sessionId?: SessionId }) => void;
-  /**
-   * INFO-level event sink — fires for inbound routing decisions, outbound cc
-   * Stop forwards / skips, and SessionStart refreshes. Default: silently
-   * swallow. \`apps/multi-cc-im/src/start.ts\` wires this to the same stderr
-   * logger as its pre-flight banner so users running smoke can watch the
-   * full wechat → cc → wechat round-trip in real time.
-   */
+  /** Non-fatal error sink. */
+  onError?: (
+    err: unknown,
+    context: { phase: string; paneId?: number; sessionId?: string },
+  ) => void;
+  /** INFO-level event sink for routing decisions / forwards. */
   log?: (line: string) => void;
 }
 
 export interface BridgeOrchestrator {
-  /**
-   * Wire all 3 adapters and start their event loops. Order:
-   * 1. CLI (so SessionStart events can populate registry before IM dispatches)
-   * 2. Term (no-op v1)
-   * 3. IM (long-poll begins; new wechat msgs flow through router)
-   */
   start(): Promise<void>;
-  /** Reverse order; await running tasks; clear in-memory state. */
   stop(): Promise<void>;
 }
 
 /**
  * Wire `IMAdapter` (wechat) ↔ `TermAdapter` (wezterm) ↔ `CLIAdapter` (cc) into
- * a working bridge per [DD: routing-syntax G'](../../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md):
+ * a working bridge. Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
  *
- * **Inbound (wechat → cc)**:
- *   IM.onMessage(m) → router.route(m) → for each dispatch:
- *     1. termAdapter.isPaneAlive(paneId) — gate
+ * **Inbound (IM → cc)**:
+ *   IM.onMessage(m) → router.route(m) (using `termAdapter.listPanes()`) →
+ *   for each dispatch:
+ *     1. Write `<paneId>.IMOrigin` with msg.replyCtx (typed; imType discriminator)
  *     2. termAdapter.sendText(paneId, content) — Step 1 paste
  *     3. await sleep(sendKeystrokeDelayMs)
  *     4. termAdapter.sendKeystroke(paneId, '\\r') — Step 2 submit
  *   visible echo (router result + dispatch errors) → IM.send(replyCtx)
  *
- * **Outbound (cc Stop → wechat)**:
- *   CLI.onStop(p) → check `<sid>.IMOrigin` file → if exists, IM.send(reply, ctx)
+ * **Outbound (cc Stop → IM)**:
+ *   CLI.onStop(p) → check `<paneId>.IMOrigin` file → if exists, IM.send(reply, ctx)
  *   and **delete the file**. ONE-SHOT semantic: subsequent Stops without a
- *   fresh IM dispatch (e.g. user typing directly in cc TUI) skip forward.
- *
- * **IMOrigin tracking (per-session, B2 overwrite)**:
- *   Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
- *   On every IM dispatch, write/overwrite `<sid>.IMOrigin` with msg.replyCtx
- *   (newest ctx wins → cc reply threads to user's most recent IM message).
- *   cc Stop forward → delete IMOrigin (one-shot). Multi-target / @all writes
- *   the same ctx for every dispatched session.
- *
- *   IMOrigin lives on disk so the hook subprocess (a different process from
- *   daemon) can also stat it for the E3 early-return check.
+ *   fresh IM dispatch skip forward. `imType` discriminator on stored ctx
+ *   selects which adapter `send()` to call (multi-IM-future-proof).
  *
  * **IMWork (global manual switch)**:
  *   `<stateDir>/IMWork` 0-byte tombstone. User toggles via `@multi-cc-im /start`
@@ -138,30 +117,47 @@ export function createOrchestrator(
     opts.sendKeystrokeDelayMs ?? DEFAULT_SEND_KEYSTROKE_DELAY_MS;
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
-
-  // Reaper timers per request id — track to allow stop() to clear them.
-  const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Reaper window — should match hook subprocess timeout (10s, see DD). */
-  const DEFAULT_REAPER_DELAY_MS = 10_000;
   const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
+
+  // Reaper timers per (paneId, sid, requestId) tuple.
+  const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // PaneRegistry adapter over termAdapter.listPanes — converts
+  // TermPaneInfo[] (paneId, title, cwd) to SessionInfo[] (router shape).
+  const paneRegistry: PaneRegistry = {
+    async listPanes(): Promise<readonly SessionInfo[]> {
+      const panes = await opts.termAdapter.listPanes();
+      return panes.map(paneInfoToSessionInfo);
+    },
+  };
 
   // ============================================================================
   // Inbound: wechat → router → term sendText (two-step send)
   // ============================================================================
 
-  async function dispatchOne(d: RouterDispatch): Promise<string | null> {
-    const alive = await opts.termAdapter
-      .isPaneAlive(d.session.paneId)
-      .catch((err) => {
-        onError(err, {
-          phase: 'isPaneAlive',
-          sessionId: d.session.sessionId,
-        });
-        return false;
+  async function dispatchOne(
+    d: RouterDispatch,
+    msg: IncomingMessage,
+  ): Promise<string | null> {
+    // Per DD #61: no isPaneAlive gate. Trust user-side `/start` listing.
+    // If cc died after user /start, sendText goes to zsh — user notices
+    // via missing IM round-trip.
+
+    // Write <paneId>.IMOrigin with the typed replyCtx (B2 — newest wins).
+    try {
+      await writeIMOriginFile({
+        stateDir: opts.stateDir,
+        paneId: d.session.paneId as unknown as number,
+        replyCtx: msg.replyCtx as IMReplyContext,
       });
-    if (!alive) {
-      return `⚠️ ${displayName(d.session)} not alive — skip`;
+    } catch (err) {
+      onError(err, {
+        phase: 'writeIMOrigin',
+        paneId: d.session.paneId as unknown as number,
+      });
+      return `❌ ${displayName(d.session)} writeIMOrigin failed`;
     }
+
     try {
       await opts.termAdapter.sendText(d.session.paneId, d.content);
       await sleep(sendKeystrokeDelayMs);
@@ -170,29 +166,26 @@ export function createOrchestrator(
     } catch (err) {
       onError(err, {
         phase: 'sendText',
-        sessionId: d.session.sessionId,
+        paneId: d.session.paneId as unknown as number,
       });
-      const msg = err instanceof Error ? err.message : String(err);
-      return `❌ ${displayName(d.session)} send failed: ${msg}`;
+      const msg2 = err instanceof Error ? err.message : String(err);
+      return `❌ ${displayName(d.session)} send failed: ${msg2}`;
     }
   }
 
   async function handleInbound(msg: IncomingMessage): Promise<void> {
-    // Read IMWork state once per inbound — router uses it to gate
-    // mention/plain/broadcast types and to render /current / /start / /stop echoes.
     const imWorkOn = await existsIMWorkFile(opts.stateDir).catch((err) => {
       onError(err, { phase: 'existsIMWorkFile' });
       return false;
     });
 
     const result = await route(msg, {
-      registry: opts.registry,
+      registry: paneRegistry,
       state: opts.state,
       imWorkOn,
     });
 
-    // IMWork toggle: /start / /stop sets `imWorkAction` on the result.
-    // Apply the file IO here in the orchestrator (router stays IO-free).
+    // IMWork toggle from /start /stop
     if (result.imWorkAction === 'enable') {
       try {
         await writeIMWorkFile(opts.stateDir);
@@ -209,40 +202,17 @@ export function createOrchestrator(
       }
     }
 
-    // Permission response path: IM user replied `@<tabname> /1` (allow) or
-    // `/2` (deny). Find the session's pending PermissionRequest file (one
-    // per sid invariant — cc serializes hook subprocesses) and write a
-    // matching PermissionResponse to unblock the polling hook subprocess.
+    // Permission response: @<tab> /1 /2
     if (result.permissionResponse) {
       await handlePermissionResponseFromIM(
-        result.permissionResponse.session.sessionId,
+        result.permissionResponse.session.paneId as unknown as number,
         result.permissionResponse.decision,
-        msg.replyCtx,
+        msg.replyCtx as IMReplyContext,
       );
-      // Continue to send echo + return; no dispatch path for this branch.
     }
 
-    // Empty result (text=null / image-only) — orchestrator no-op for text path.
+    // Empty result (image-only / no text)
     if (result.echo === '' && result.dispatches.length === 0) return;
-
-    // For each dispatched session, persist the replyCtx as <sid>.IMOrigin
-    // (B2 — newest ctx wins, overwrites any prior). hook subprocess reads
-    // this via `existsIMOriginFile` to decide whether to forward IM, and
-    // `handleStop` reads it to forward cc's reply.
-    for (const d of result.dispatches) {
-      try {
-        await writeIMOriginFile({
-          stateDir: opts.stateDir,
-          sessionId: d.session.sessionId,
-          replyCtx: msg.replyCtx,
-        });
-      } catch (err) {
-        onError(err, {
-          phase: 'writeIMOrigin',
-          sessionId: d.session.sessionId,
-        });
-      }
-    }
 
     if (result.dispatches.length > 0) {
       const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
@@ -251,25 +221,14 @@ export function createOrchestrator(
       log(`[wechat] router returned echo only: ${truncate(result.echo, 80)}`);
     }
 
-    // Run dispatches in parallel (each pane is independent; router decisions
-    // guarantee no conflicting dispatches to the same pane).
+    // Run dispatches in parallel (each pane independent).
     const dispatchErrors: string[] = (
-      await Promise.all(result.dispatches.map(dispatchOne))
+      await Promise.all(result.dispatches.map((d) => dispatchOne(d, msg)))
     ).filter((e): e is string => e !== null);
 
     const echoLines: string[] = [];
     if (result.echo.length > 0) echoLines.push(result.echo);
     if (dispatchErrors.length > 0) echoLines.push(...dispatchErrors);
-
-    // Surface "/rename hint" for any dispatched session that still lacks a
-    // tabTitle. Real-time wezterm poll on every IM event means the hint
-    // self-clears once the user runs cc /rename.
-    const unnamed = result.dispatches
-      .map((d) => d.session)
-      .filter((s) => !s.tabTitle || s.tabTitle.length === 0)
-      .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd }));
-    const hint = renameHintFor(unnamed);
-    if (hint) echoLines.push(hint);
 
     if (echoLines.length === 0) return;
     try {
@@ -287,60 +246,53 @@ export function createOrchestrator(
   };
 
   // ============================================================================
-  // Outbound: cc Stop → wechat send via stored replyCtx
+  // Outbound: cc Stop → IM send via stored replyCtx
   // ============================================================================
 
-  async function handleStop(p: StopPayload): Promise<HookDecision | void> {
-    const sid8 = p.session_id.slice(0, 8);
+  async function handleStop(
+    p: StopPayload & { paneId: number },
+  ): Promise<HookDecision | void> {
+    const { paneId } = p;
 
-    // IMWork is the master switch. When off, completely silent — even if
-    // <sid>.IMOrigin somehow exists (race between /stop and a still-running
-    // IM dispatch), we don't forward. User explicitly chose local mode.
+    // IMWork is the master switch.
     if (!(await existsIMWorkFile(opts.stateDir))) {
-      log(`[Stop ${sid8}] IMWork off, skip forward`);
+      log(`[Stop pane=${paneId}] IMWork off, skip forward`);
       return;
     }
 
-    // Read IMOrigin (per-session ctx). Missing → cc Stop is from a session
-    // not bound to any IM thread (cc autonomous activity, or user typed
-    // directly in TUI). Skip forward — we have no reply anchor.
-    const replyCtx = (await readIMOriginFile({
-      stateDir: opts.stateDir,
-      sessionId: p.session_id,
-    })) as IMReplyContext | null;
-    if (replyCtx === null) {
-      log(`[Stop ${sid8}] no IMOrigin, skip forward`);
-      return;
-    }
-
-    // ONE-SHOT: delete IMOrigin immediately so subsequent Stops without a
-    // fresh IM dispatch (e.g. user types directly in cc TUI between IM
-    // turns) are NOT forwarded. User must `@<name> <body>` again to rebind.
+    // Read IMOrigin (per-pane ctx, zod-validated discriminated union).
+    let replyCtx: IMReplyContext | null;
     try {
-      await deleteIMOriginFile({
-        stateDir: opts.stateDir,
-        sessionId: p.session_id,
-      });
+      replyCtx = await readIMOriginFile({ stateDir: opts.stateDir, paneId });
     } catch (err) {
-      onError(err, { phase: 'deleteIMOrigin', sessionId: p.session_id });
+      onError(err, { phase: 'readIMOrigin', paneId });
+      return;
+    }
+    if (replyCtx === null) {
+      log(`[Stop pane=${paneId}] no IMOrigin, skip forward`);
+      return;
+    }
+
+    // ONE-SHOT: delete IMOrigin immediately.
+    try {
+      await deleteIMOriginFile({ stateDir: opts.stateDir, paneId });
+    } catch (err) {
+      onError(err, { phase: 'deleteIMOrigin', paneId });
     }
 
     if (p.last_assistant_message.length === 0) {
-      log(`[Stop ${sid8}] empty assistant message, skip forward`);
+      log(`[Stop pane=${paneId}] empty assistant message, skip forward`);
       return;
     }
 
-    // Refresh registry so we see the freshest tabTitle (user may have
-    // /rename'd since the last call). Look up THIS session for its display
-    // name and prefix the wechat-bound message so the user can tell which
-    // cc is replying.
-    let prefix = `$${sid8}`;
+    // Resolve current tab title for prefix.
+    let prefix = `(pane ${paneId})`;
     try {
-      const sessions = await opts.registry.listAlive();
-      const me = sessions.find((s) => s.sessionId === p.session_id);
-      if (me) prefix = displayName(me);
+      const panes = await opts.termAdapter.listPanes();
+      const me = panes.find((pi) => (pi.paneId as unknown as number) === paneId);
+      if (me && me.title.length > 0) prefix = me.title;
     } catch (err) {
-      onError(err, { phase: 'forwardStopRegistry', sessionId: p.session_id });
+      onError(err, { phase: 'forwardStopListPanes', paneId });
     }
 
     log(
@@ -350,117 +302,112 @@ export function createOrchestrator(
     try {
       await opts.imAdapter.send(body, replyCtx);
     } catch (err) {
-      onError(err, { phase: 'forwardStop', sessionId: p.session_id });
+      onError(err, { phase: 'forwardStop', paneId });
     }
   }
 
   // ============================================================================
-  // Permission response: IM user replied `@<tabname> /1` (allow) or `/2` (deny)
+  // Permission response: IM user replied `@<tab> /1` (allow) or `/2` (deny)
   // ============================================================================
 
-  /**
-   * Locate the session's pending PermissionRequest file (we expect 0 or 1 —
-   * cc serializes hook subprocesses, so a sid never has 2+ pending) and
-   * write a PermissionResponse with the user's decision. The polling hook
-   * subprocess will pick up the response within 200ms and emit the
-   * permission decision to cc.
-   */
   async function handlePermissionResponseFromIM(
-    sessionId: SessionId,
+    paneId: number,
     decision: 'allow' | 'deny',
     replyCtx: IMReplyContext,
   ): Promise<void> {
-    const sid8 = sessionId.slice(0, 8);
     let entries: string[];
     try {
       entries = await readdir(opts.stateDir);
     } catch (err) {
-      onError(err, { phase: 'permissionResponseListDir', sessionId });
+      onError(err, { phase: 'permissionResponseListDir', paneId });
       return;
     }
-    const prefix = `${sessionId}${PERMISSION_REQUEST_PREFIX}`;
-    const pendingNames = entries.filter(
-      (n) => n.startsWith(prefix) && n.endsWith('.json'),
-    );
 
-    if (pendingNames.length === 0) {
-      log(`[PermissionResponse ${sid8}] no pending request — IM reply ignored`);
+    // Find pending PermissionRequest for this paneId. cc serializes hooks
+    // so we expect 0 or 1 in flight.
+    const pending = entries
+      .map((name) => parsePermissionFilename(name))
+      .filter(
+        (
+          x,
+        ): x is NonNullable<ReturnType<typeof parsePermissionFilename>> =>
+          x !== null && x.paneId === paneId && x.kind === 'request',
+      );
+
+    if (pending.length === 0) {
+      log(`[PermissionResponse pane=${paneId}] no pending request — IM reply ignored`);
       try {
         await opts.imAdapter.send(
-          `❌ @${sid8} 当前没在等审批的工具，回复无效。如果想发 prompt 请用 \`@<tabname> <内容>\`。`,
+          `❌ pane ${paneId} 当前没在等审批的工具，回复无效。`,
           replyCtx,
         );
       } catch (err) {
-        onError(err, { phase: 'permissionResponseEcho', sessionId });
+        onError(err, { phase: 'permissionResponseEcho', paneId });
       }
       return;
     }
 
-    // Multiple pending shouldn't happen (cc serializes), but if it does,
-    // process them all with the same decision — user explicitly chose.
-    for (const name of pendingNames) {
-      const requestId = name
-        .slice(prefix.length)
-        .replace(/\.json$/, '');
-      log(`[PermissionResponse ${sid8}] ${decision} request ${requestId}`);
+    for (const p of pending) {
+      log(
+        `[PermissionResponse pane=${paneId} sid=${p.sessionId.slice(0, 8)}] ${decision} request ${p.requestId}`,
+      );
       try {
         await writePermissionResponseFile({
           stateDir: opts.stateDir,
-          sessionId: sessionId as unknown as string,
-          requestId,
+          paneId: p.paneId,
+          sessionId: p.sessionId,
+          requestId: p.requestId,
           decision,
           reason: `IM user replied /${decision === 'allow' ? '1' : '2'}`,
         });
       } catch (err) {
-        onError(err, { phase: 'permissionResponseWrite', sessionId });
+        onError(err, {
+          phase: 'permissionResponseWrite',
+          paneId,
+          sessionId: p.sessionId,
+        });
       }
     }
   }
 
   // ============================================================================
-  // PreToolUse: cc wants to call a tool, ask IM for permission.
+  // PreToolUse: cc wants to call a tool, ask IM
   // ============================================================================
 
   async function handlePreToolUse(
-    p: PreToolUsePayload & { requestId: string },
+    p: PreToolUsePayload & { requestId: string; paneId: number },
   ): Promise<void> {
-    const sid8 = p.session_id.slice(0, 8);
+    const { paneId } = p;
 
-    // Schedule reaper FIRST regardless of forward outcome — even if the hook
-    // subprocess crashes / gets kill -9 between writing Request and our
-    // unlink, this timer cleans up. unlinkOrIgnoreENOENT is idempotent so
-    // racing with the hook's own cleanup is safe.
-    scheduleReaper({ sessionId: p.session_id, requestId: p.requestId });
-
-    // Read IMOrigin (per-session ctx). hook E3 already short-circuits when
-    // IMOrigin is missing, so this should always be present in practice.
-    // Defensive null-handling for race / corruption.
-    const replyCtx = (await readIMOriginFile({
-      stateDir: opts.stateDir,
+    // Schedule reaper FIRST regardless of forward outcome.
+    scheduleReaper({
+      paneId,
       sessionId: p.session_id,
-    }).catch((err) => {
-      onError(err, { phase: 'readIMOrigin', sessionId: p.session_id });
-      return null;
-    })) as IMReplyContext | null;
+      requestId: p.requestId,
+    });
 
+    // Read IMOrigin (per-pane ctx). hook E3 should have short-circuited;
+    // defensive null-handling for race / corruption.
+    let replyCtx: IMReplyContext | null;
+    try {
+      replyCtx = await readIMOriginFile({ stateDir: opts.stateDir, paneId });
+    } catch (err) {
+      onError(err, { phase: 'readIMOrigin', paneId });
+      return;
+    }
     if (replyCtx === null) {
-      // Defensive: hook decided to write Request, but daemon doesn't see
-      // IMOrigin. Could happen if /stop fired between hook E3 check and
-      // hook Request write. Skip forward — hook 10s timeout will default-allow.
-      log(
-        `[PreToolUse ${sid8}] no IMOrigin (race with /stop?) — skip forward`,
-      );
+      log(`[PreToolUse pane=${paneId}] no IMOrigin (race?) — skip forward`);
       return;
     }
 
-    // Resolve the friendly name (cc /rename) for the prefix line.
-    let tabName = `$${sid8}`;
+    // Resolve friendly name.
+    let tabName = `(pane ${paneId})`;
     try {
-      const sessions = await opts.registry.listAlive();
-      const me = sessions.find((s) => s.sessionId === p.session_id);
-      if (me && me.tabTitle && me.tabTitle.length > 0) tabName = me.tabTitle;
+      const panes = await opts.termAdapter.listPanes();
+      const me = panes.find((pi) => (pi.paneId as unknown as number) === paneId);
+      if (me && me.title.length > 0) tabName = me.title;
     } catch (err) {
-      onError(err, { phase: 'preToolUseRegistry', sessionId: p.session_id });
+      onError(err, { phase: 'preToolUseListPanes', paneId });
     }
 
     const summary = summarizeToolInput(p.tool_name, p.tool_input);
@@ -470,30 +417,24 @@ export function createOrchestrator(
       `  @${tabName} /1   = 允许\n` +
       `  @${tabName} /2   = 拒绝`;
 
-    log(`[PreToolUse ${sid8}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
+    log(`[PreToolUse pane=${paneId}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
     try {
       await opts.imAdapter.send(body, replyCtx);
     } catch (err) {
-      onError(err, { phase: 'preToolUseAsk', sessionId: p.session_id });
+      onError(err, { phase: 'preToolUseAsk', paneId });
     }
   }
 
   // ============================================================================
-  // Reaper: backstop unlink for orphan PermissionRequest/Response files.
-  // hook subprocess normally cleans up (10s timeout or success path), but if
-  // it dies abnormally (kill -9 / OOM / wezterm tab closed mid-poll), the
-  // files leak. Schedule a setTimeout to delete them after 10s; hook's own
-  // unlink (when alive) wins the race, our late unlink ENOENT-silent.
-  // Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+  // Reaper: backstop unlink for orphan PermissionRequest/Response files
   // ============================================================================
 
-  function scheduleReaper(opts2: {
-    sessionId: SessionId;
+  function scheduleReaper(o: {
+    paneId: number;
+    sessionId: string;
     requestId: string;
   }): void {
-    const key = `${opts2.sessionId}:${opts2.requestId}`;
-    // If somehow already scheduled (shouldn't happen — sid+reqId is unique),
-    // clear the prior timer.
+    const key = `${o.paneId}:${o.sessionId}:${o.requestId}`;
     const prev = reaperTimers.get(key);
     if (prev !== undefined) clearTimeout(prev);
 
@@ -501,58 +442,36 @@ export function createOrchestrator(
       reaperTimers.delete(key);
       const reqPath = permissionRequestPath({
         stateDir: opts.stateDir,
-        sessionId: opts2.sessionId,
-        requestId: opts2.requestId,
+        paneId: o.paneId,
+        sessionId: o.sessionId,
+        requestId: o.requestId,
       });
       const respPath = permissionResponsePath({
         stateDir: opts.stateDir,
-        sessionId: opts2.sessionId,
-        requestId: opts2.requestId,
+        paneId: o.paneId,
+        sessionId: o.sessionId,
+        requestId: o.requestId,
       });
       try {
         await deletePermissionFileByPath(reqPath);
         await deletePermissionFileByPath(respPath);
       } catch (err) {
-        // unlinkOrIgnoreENOENT inside delete fn already swallows ENOENT;
-        // anything else is a genuine fs error worth surfacing.
-        onError(err, { phase: 'reaper', sessionId: opts2.sessionId });
+        onError(err, {
+          phase: 'reaper',
+          paneId: o.paneId,
+          sessionId: o.sessionId,
+        });
       }
     }, reaperDelayMs);
     reaperTimers.set(key, timer);
   }
 
   const cliHandler: CLIHandler = {
-    async onSessionStart(p: SessionStartPayload): Promise<void> {
-      // Refresh registry so the new session shows up on next inbound dispatch.
-      // listAlive() also rebuilds paneToSession cache used by PaneAlive.
-      const sid8 = p.session_id.slice(0, 8);
-      log(`[SessionStart ${sid8}] cwd=${p.cwd} model=${p.model}`);
-      await opts.registry.listAlive().catch((err) => {
-        onError(err, { phase: 'sessionStartRefresh' });
-      });
-    },
     async onPreToolUse(p): Promise<void> {
       return handlePreToolUse(p);
     },
-    async onStop(p: StopPayload): Promise<HookDecision | void> {
+    async onStop(p): Promise<HookDecision | void> {
       return handleStop(p);
-    },
-    async onSessionEnd(p: SessionEndPayload): Promise<void> {
-      // Drop the IMOrigin file — a future cc that happens to reuse this UUID
-      // (e.g. resume after long delay) shouldn't inherit a stale reply target.
-      const sid8 = p.session_id.slice(0, 8);
-      log(`[SessionEnd ${sid8}] reason=${p.reason}`);
-      try {
-        await deleteIMOriginFile({
-          stateDir: opts.stateDir,
-          sessionId: p.session_id,
-        });
-      } catch (err) {
-        onError(err, { phase: 'sessionEndDeleteIMOrigin', sessionId: p.session_id });
-      }
-      await opts.registry.listAlive().catch((err) => {
-        onError(err, { phase: 'sessionEndRefresh' });
-      });
     },
   };
 
@@ -583,16 +502,11 @@ export function createOrchestrator(
       await opts.cliAdapter.stop().catch((err) => {
         onError(err, { phase: 'stop:cli' });
       });
-      // Cancel any pending reaper timers — daemon is shutting down so the
-      // orphan files (if any) will be cleaned by daemon start sweep next time.
       for (const t of reaperTimers.values()) clearTimeout(t);
       reaperTimers.clear();
 
-      // Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md):
-      // delete IMWork (so next /start flow forces user to re-confirm IM mode)
-      // and daemon.pid (so hooks immediately see "daemon dead" and emit ask).
-      // SIGKILL leaves these files; next daemon start sweep / double-start
-      // check handles stale files defensively.
+      // Cleanup IM-mode lock + daemon lock so hooks immediately see
+      // "daemon not running" + "local mode" after Ctrl+C.
       await deleteIMWorkFile(opts.stateDir).catch((err) => {
         onError(err, { phase: 'stop:deleteIMWork' });
       });
@@ -603,38 +517,23 @@ export function createOrchestrator(
   };
 }
 
-function displayName(s: { tabTitle: string | undefined; sessionId: string }): string {
-  if (s.tabTitle && s.tabTitle.length > 0) return s.tabTitle;
-  return `$${s.sessionId.slice(0, 8)}`;
+function paneInfoToSessionInfo(p: TermPaneInfo): SessionInfo {
+  return {
+    paneId: p.paneId,
+    tabTitle: p.title,
+    cwd: p.cwd,
+  };
 }
 
-/**
- * Produce the one-time "/rename hint" line appended to inbound dispatch
- * echoes when a target cc still has no tab title. User runs cc `/rename
- * <name>` once → next forward observes the new title via real-time
- * `wezterm cli list` poll → hint stops appearing.
- */
-function renameHintFor(
-  unnamedSessions: Array<{ sessionId: string; cwd: string }>,
-): string | null {
-  if (unnamedSessions.length === 0) return null;
-  const lines = unnamedSessions.map((s) => {
-    const sid8 = s.sessionId.slice(0, 8);
-    const cwdName = s.cwd.split('/').filter(Boolean).pop() ?? s.cwd;
-    return `  · $${sid8} (${cwdName})`;
-  });
-  return [
-    '',
-    '[multi-cc-im] tab title missing for:',
-    ...lines,
-    '  Run `/rename <name>` in each cc TUI to set a friendly name.',
-  ].join('\n');
+function displayName(s: SessionInfo): string {
+  if (s.tabTitle.length > 0) return s.tabTitle;
+  return `(pane ${s.paneId})`;
 }
 
 /**
  * Summarize a cc tool_input for human-readable display in the IM
- * permission prompt. Bash gets special-case treatment (just the command
- * line); other tools get a one-line truncated JSON.
+ * permission prompt. Bash gets the command line; Read/Edit/Write get
+ * file_path; WebFetch gets url; everything else falls back to JSON.
  */
 function summarizeToolInput(
   toolName: string,
@@ -659,3 +558,6 @@ function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
 }
+
+// Type re-export so callers can pull bridge orchestrator's view of paneId.
+export type { PaneId };

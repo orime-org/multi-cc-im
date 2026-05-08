@@ -5,21 +5,16 @@ import type {
   CLIHandler,
   CwdAbs,
   PreToolUsePayload,
-  SessionEndPayload,
   SessionId,
-  SessionStartPayload,
   StopPayload,
   TranscriptPath,
 } from '@multi-cc-im/shared';
 import { enqueueInjection } from './injection-queue.js';
 import {
-  PERMISSION_REQUEST_PREFIX,
-  SESSION_END_SUFFIX,
-  SESSION_START_SUFFIX,
-  STOP_PREFIX,
   deleteStopFile,
+  parsePermissionFilename,
+  parseStopFilename,
   readPermissionRequestFile,
-  readSessionStartFile,
   readStopFile,
 } from './state-files.js';
 
@@ -38,48 +33,60 @@ export interface CreateCcCliAdapterOpts {
   onHandlerError?: (
     err: unknown,
     context: {
-      kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
+      kind: 'PreToolUse' | 'Stop';
+      paneId: number;
       sessionId: string;
     },
   ) => void;
 }
 
-/**
- * UUID v4 prefix matcher for our state-file naming convention. Used to
- * extract the sessionId from a state-file basename.
- */
-const SID_PATTERN =
-  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
-
-interface ClassifiedFile {
-  sid: string;
-  kind: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd';
+interface ClassifiedStopFile {
+  kind: 'Stop';
+  paneId: number;
+  sessionId: string;
   filePath: string;
-  /** Set when kind === 'PreToolUse' — the request id from filename suffix. */
-  requestId?: string;
 }
 
-/** Classify a state-dir basename into one of the 3 event types or null. */
-function classifyStateFile(
-  filePath: string,
-  fileBasename: string,
-): ClassifiedFile | null {
-  const m = SID_PATTERN.exec(fileBasename);
-  if (!m) return null;
-  const sid = m[1]!;
-  const rest = fileBasename.slice(sid.length);
-  if (rest === SESSION_START_SUFFIX)
-    return { sid, kind: 'SessionStart', filePath };
-  if (rest === SESSION_END_SUFFIX)
-    return { sid, kind: 'SessionEnd', filePath };
-  if (rest.startsWith(STOP_PREFIX)) return { sid, kind: 'Stop', filePath };
-  if (rest.startsWith(PERMISSION_REQUEST_PREFIX)) {
-    // Filename: <sid>.PermissionRequest.<requestId>.json
-    const tail = rest.slice(PERMISSION_REQUEST_PREFIX.length);
-    if (!tail.endsWith('.json')) return null;
-    const requestId = tail.slice(0, -'.json'.length);
-    if (!requestId) return null;
-    return { sid, kind: 'PreToolUse', filePath, requestId };
+interface ClassifiedPreToolUseFile {
+  kind: 'PreToolUse';
+  paneId: number;
+  sessionId: string;
+  requestId: string;
+  filePath: string;
+}
+
+type ClassifiedFile = ClassifiedStopFile | ClassifiedPreToolUseFile;
+
+/**
+ * Classify a state-dir basename. Returns null for any file that's not a
+ * cc-hook-fired event we route on (i.e. ignores `<paneId>.IMOrigin` /
+ * `IMWork` / `daemon.pid` / `wechat-cursor` / `<paneId>_<sid>.PermissionResponse.*`
+ * — the daemon writes Response, hook reads it; daemon does not dispatch
+ * Response chokidar events to handlers).
+ *
+ * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+ *   - `<paneId>_<sid>.Stop.<ts>`                    → ClassifiedStopFile
+ *   - `<paneId>_<sid>.PermissionRequest.<id>.json`  → ClassifiedPreToolUseFile
+ */
+function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFile | null {
+  const stop = parseStopFilename(fileBasename);
+  if (stop) {
+    return {
+      kind: 'Stop',
+      paneId: stop.paneId,
+      sessionId: stop.sessionId,
+      filePath,
+    };
+  }
+  const perm = parsePermissionFilename(fileBasename);
+  if (perm && perm.kind === 'request') {
+    return {
+      kind: 'PreToolUse',
+      paneId: perm.paneId,
+      sessionId: perm.sessionId,
+      requestId: perm.requestId,
+      filePath,
+    };
   }
   return null;
 }
@@ -87,67 +94,67 @@ function classifyStateFile(
 /**
  * File-watching CLIAdapter for cc.
  *
- * Watches `<stateDir>/` for the 3 per-event-type files written by
+ * Watches `<stateDir>/` for the cc-hook-fired files written by
  * `runHookReceiver`:
- * - `<sid>.SessionStart` create → `Handler.onSessionStart`
- * - `<sid>.Stop.<ts>` create → `Handler.onStop` (then `unlink` after success)
- * - `<sid>.SessionEnd` create → `Handler.onSessionEnd` (file kept as
- *   tombstone; cleanup sweep deletes it later)
+ * - `<paneId>_<sid>.Stop.<ts>` create → `Handler.onStop`
+ *   (then `unlink` after success — daemon also reaper's a 10s safety
+ *   net for orphans)
+ * - `<paneId>_<sid>.PermissionRequest.<id>.json` create → `Handler.onPreToolUse`
+ *   (daemon does NOT unlink — hook subprocess polls Response and cleans both)
  *
- * Per-session dispatch chain: events for the same `sid` are processed
- * serially (preserves Stop-order across multiple `.Stop.<ts>` files dropped
- * close together; daemon down then up sees them in chronological order).
+ * Per-pane+sid dispatch chain: events for the same `(paneId, sid)` pair
+ * are processed serially (preserves Stop-order across multiple Stop files
+ * dropped close together; daemon-down then up sees them in chronological
+ * order). Different pane+sid pairs dispatch in parallel.
  *
- * `enqueueInjection(sid, content)` is the bridge router's entry into the
- * Stop-hook injection mechanism — content gets popped by the next non-active
- * Stop hook fire (see `runHookReceiver` Stop branch).
- *
- * Why file-based vs IPC: aligns with [Storage DD pattern A](../../../docs/superpowers/specs/2026-04-29-storage-strategy-dd.md)
- * file-first persistence, CLAUDE.md "local-first", and avoids the
- * bridge-lifecycle / port management problems IPC brings (cc hooks fire even
- * when bridge is down; file-based is naturally restart-safe).
+ * `enqueueInjection(sessionId, content)` is the bridge router's entry into
+ * the Stop-hook injection mechanism — content gets popped by the next
+ * non-active Stop hook fire (see `runHookReceiver` Stop branch).
  */
-export function createCcCliAdapter(
-  opts: CreateCcCliAdapterOpts,
-): CLIAdapter {
+export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
   let watcher: FSWatcher | undefined;
   let handler: CLIHandler | undefined;
   /**
-   * Per-session serial dispatch chain. Stop files are written one per turn
-   * with monotonic timestamp suffixes; daemon must process them in arrival
-   * order so wechat sees the assistant turns in the correct order.
+   * Per-(paneId, sessionId) serial dispatch chain. Stop files for the same
+   * cc are written one per turn; daemon must process them in arrival order
+   * so wechat sees the assistant turns in correct order. Different cc
+   * sessions are independent and dispatch in parallel.
+   *
+   * Key: `<paneId>_<sid>` — same as the file prefix.
    */
   const sessionChains = new Map<string, Promise<void>>();
   /**
    * Tracks files we've already scheduled for dispatch in this process, so a
    * second chokidar event (rare 'add' + 'change' for same path) doesn't
-   * double-dispatch. ENOENT on read is also a sign we already processed +
-   * unlinked.
+   * double-dispatch.
    */
   const seenFiles = new Set<string>();
+
+  function chainKey(c: ClassifiedFile): string {
+    return `${c.paneId}_${c.sessionId}`;
+  }
 
   function scheduleDispatch(classified: ClassifiedFile): void {
     if (seenFiles.has(classified.filePath)) return;
     seenFiles.add(classified.filePath);
 
-    const prev = sessionChains.get(classified.sid) ?? Promise.resolve();
+    const key = chainKey(classified);
+    const prev = sessionChains.get(key) ?? Promise.resolve();
     const next = prev.then(async () => {
       if (!handler) return;
       try {
-        await dispatchOne(handler, classified, opts.stateDir);
+        await dispatchOne(handler, classified);
       } catch (err) {
         opts.onHandlerError?.(err, {
           kind: classified.kind,
-          sessionId: classified.sid,
+          paneId: classified.paneId,
+          sessionId: classified.sessionId,
         });
       } finally {
-        // Free the seen entry so a future *new* file (different timestamp)
-        // for the same session won't get accidentally suppressed. The
-        // sessionChains entry stays — it serializes future writes.
         seenFiles.delete(classified.filePath);
       }
     });
-    sessionChains.set(classified.sid, next);
+    sessionChains.set(key, next);
   }
 
   return {
@@ -159,8 +166,6 @@ export function createCcCliAdapter(
       }
       handler = h;
 
-      // chokidar v4 dropped glob support — watch the directory + filter by
-      // basename in the event handler.
       const w = chokidar.watch(opts.stateDir, {
         ignoreInitial: false,
         persistent: true,
@@ -169,14 +174,10 @@ export function createCcCliAdapter(
       });
       watcher = w;
 
-      // chokidar's initial scan emits 'add' for each pre-existing file in
-      // OS-dependent order (fs.readdir order, not lex). For backlog Stop
-      // files this would scramble per-session timestamp ordering. Buffer
-      // all pre-'ready' add events, then drain in basename-sorted order so
-      // `<sid>.Stop.<ts1>` dispatches before `<sid>.Stop.<ts2>` regardless
-      // of how the FS reported them. Live (post-'ready') events are
-      // dispatched immediately — there's no parallel-write race because
-      // hook subprocess writes are serial per cc.
+      // Buffer initial-scan adds + drain in basename-sorted order so
+      // backlogged Stop files dispatch in chronological (= lex) order
+      // regardless of OS readdir order. Live events post-'ready' dispatch
+      // immediately.
       let initialScanComplete = false;
       const backlog: ClassifiedFile[] = [];
 
@@ -190,8 +191,6 @@ export function createCcCliAdapter(
         scheduleDispatch(classified);
       };
       w.on('add', onAdd);
-      // 'change' is rare for our writers (atomicWrite renames into place →
-      // chokidar sees that as 'add'), but subscribe defensively.
       w.on('change', onAdd);
 
       await new Promise<void>((resolve) => {
@@ -199,18 +198,10 @@ export function createCcCliAdapter(
       });
       initialScanComplete = true;
 
-      // Drain backlog in deterministic order: basename ascending. The
-      // timestamp-suffixed Stop filenames are FS-safe ISO and therefore
-      // lex-sortable = chronological. SessionStart / SessionEnd basenames
-      // sort cleanly relative to Stop files (Stop. > SessionEnd > SessionStart
-      // is irrelevant — they're independent file kinds).
       backlog.sort((a, b) =>
         basename(a.filePath).localeCompare(basename(b.filePath)),
       );
       for (const c of backlog) scheduleDispatch(c);
-
-      // Await all in-flight chains so backlog dispatch finishes before
-      // start() resolves.
       await Promise.all(sessionChains.values());
     },
 
@@ -230,8 +221,6 @@ export function createCcCliAdapter(
         await watcher.close();
         watcher = undefined;
       }
-      // Drain any in-flight chains before clearing handler so we don't drop
-      // mid-dispatch events.
       await Promise.all(sessionChains.values());
       handler = undefined;
       sessionChains.clear();
@@ -243,38 +232,16 @@ export function createCcCliAdapter(
 async function dispatchOne(
   handler: CLIHandler,
   classified: ClassifiedFile,
-  stateDir: string,
 ): Promise<void> {
   switch (classified.kind) {
-    case 'SessionStart': {
-      const file = await readSessionStartFile({
-        stateDir,
-        sessionId: classified.sid,
-      });
-      // ENOENT (file deleted between chokidar event + our read) → silently
-      // skip. Most likely cause: cc /resume already cleaned the file before
-      // we got here (race window) — the new SessionStart event will fire.
-      if (!file) return;
-      const payload: SessionStartPayload = {
-        session_id: classified.sid as unknown as SessionId,
-        transcript_path: file.transcript_path as unknown as TranscriptPath,
-        cwd: file.cwd as unknown as CwdAbs,
-        hook_event_name: 'SessionStart',
-        // The state file doesn't persist `source` / `model` — fill with
-        // defaults the bridge can tolerate; consumers that need these
-        // would need to read cc transcript directly.
-        source: 'startup',
-        model: '',
-      };
-      await handler.onSessionStart(payload);
-      return;
-    }
-
     case 'PreToolUse': {
       const file = await readPermissionRequestFile(classified.filePath);
       if (!file) return; // ENOENT — file already cleaned up
-      const payload: PreToolUsePayload & { requestId: string } = {
-        session_id: classified.sid as unknown as SessionId,
+      const payload: PreToolUsePayload & {
+        requestId: string;
+        paneId: number;
+      } = {
+        session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
         cwd: '' as unknown as CwdAbs,
         hook_event_name: 'PreToolUse',
@@ -283,52 +250,32 @@ async function dispatchOne(
         tool_input: file.toolInput,
         tool_use_id: '',
         requestId: file.requestId,
+        paneId: classified.paneId,
       };
       await handler.onPreToolUse(payload);
-      // Daemon does NOT unlink the PermissionRequest file. The hook
-      // subprocess that wrote it is polling for a matching
-      // PermissionResponse file; once it sees the response (or hits its
-      // own 30s timeout), it deletes both Request and Response itself.
-      // This keeps unlink ownership co-located with the writer (hook)
-      // and avoids a 3-way race between daemon, hook polling, and
-      // chokidar.
+      // Daemon does NOT unlink — hook subprocess polls Response then
+      // cleans both Request and Response itself.
       return;
     }
 
     case 'Stop': {
       const file = await readStopFile(classified.filePath);
       if (!file) return; // ENOENT — already processed by another tick
-      const payload: StopPayload = {
-        session_id: classified.sid as unknown as SessionId,
-        // The stop file only persists last_assistant_message; fill required
-        // fields with bridge-tolerable defaults. Bridge orchestrator only
-        // reads session_id + last_assistant_message in onStop.
+      const payload: StopPayload & { paneId: number } = {
+        session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
         cwd: '' as unknown as CwdAbs,
         hook_event_name: 'Stop',
         permission_mode: '',
         stop_hook_active: false,
         last_assistant_message: file.last_assistant_message,
+        paneId: classified.paneId,
       };
       await handler.onStop(payload);
-      // Forward succeeded (no throw) → unlink so the file doesn't replay
-      // on next daemon restart. Throws → onHandlerError caller already
-      // logged; leave the file for next-run retry / sweep cleanup.
+      // Forward succeeded → unlink so the file doesn't replay on next
+      // daemon restart. Throws → onHandlerError already logged; leave
+      // the file for next-run retry / sweep cleanup.
       await deleteStopFile(classified.filePath);
-      return;
-    }
-
-    case 'SessionEnd': {
-      const payload: SessionEndPayload = {
-        session_id: classified.sid as unknown as SessionId,
-        transcript_path: '' as unknown as TranscriptPath,
-        cwd: '' as unknown as CwdAbs,
-        hook_event_name: 'SessionEnd',
-        reason: '',
-      };
-      await handler.onSessionEnd(payload);
-      // Don't unlink — SessionEnd is a tombstone, kept as historical record
-      // until cleanup sweep removes the SessionStart+SessionEnd pair.
       return;
     }
   }

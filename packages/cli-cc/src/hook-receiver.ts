@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
@@ -7,7 +7,6 @@ import {
   deletePermissionFileByPath,
   deletePermissionRequestFile,
   deletePermissionResponseFile,
-  deleteSessionEndFile,
   deleteStopFile,
   existsIMOriginFile,
   existsIMWorkFile,
@@ -19,11 +18,8 @@ import {
   permissionResponsePath,
   readPermissionResponseFile,
   writePermissionRequestFile,
-  writeSessionEndFile,
-  writeSessionStartFile,
   writeStopFile,
 } from './state-files.js';
-import { stat } from 'node:fs/promises';
 
 /**
  * cc Stop hook injection-queue response: `{"decision":"block","reason":"..."}`.
@@ -39,7 +35,7 @@ export interface HookDecision {
 }
 
 /**
- * cc PreToolUse hook stdout shape (cc current schema as of 2026-05-07):
+ * cc PreToolUse hook stdout shape:
  *
  * ```json
  * { "hookSpecificOutput": {
@@ -48,10 +44,6 @@ export interface HookDecision {
  *     "permissionDecisionReason": "human-readable reason"
  *   } }
  * ```
- *
- * Returned by `runHookReceiver` PreToolUse branch after the user's IM
- * decision arrives or the 30s timeout fires. CLI caller writes it to
- * stdout.
  */
 export interface PreToolUseHookOutput {
   hookSpecificOutput: {
@@ -63,141 +55,93 @@ export interface PreToolUseHookOutput {
 
 /**
  * Polling cadence + max wait for the PermissionResponse file. Per
- * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
- * timeout reduced from 30s → 10s — empirically 30s blocks cc TUI too long
- * when user is at the keyboard, 10s is a balanced default-allow window.
+ * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
  */
 const PERMISSION_POLL_INTERVAL_MS = 200;
 const PERMISSION_TIMEOUT_MS = 10_000;
 
 /**
  * cc tools that are read-only by design — Read / Grep / Glob / NotebookRead.
- * cc itself does NOT show a TUI permission menu for these (docs:
- * "Read-only — File reads, Grep — Approval required: No"), so forwarding a
+ * cc itself does NOT show a TUI permission menu for these, so forwarding a
  * PreToolUse approval prompt to IM for these is pure noise. Per
  * [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
  * the hook fast-allows them and skips the IM round-trip.
  *
  * NOT included: `Bash`. cc has its own internal allow-list of read-only Bash
- * commands (`ls / cat / head / tail / grep / find / wc / diff / stat / cd / git status` ...)
- * but the list is not public and includes shell wrapper handling we cannot
- * accurately replicate. We forward all `Bash` invocations to IM — over-noisy
- * but never under-asks for approval.
+ * commands but the list is not public; we forward all `Bash` invocations
+ * (over-noisy, never under-asks).
  */
 const READ_ONLY_TOOL_NAMES = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
 
-/**
- * Capture cc parent process info at SessionStart hook fire:
- * - `pid` = `process.ppid` (cc invoked the hook script which invoked
- *   `multi-cc-im hook`, so ppid = cc)
- * - `startedAt` = `ps -o lstart= -p <pid>` output (stable start-time string;
- *   stored verbatim for exact-string-match PID-reuse defense)
- * - `paneId` = `process.env.WEZTERM_PANE` (cc inherits env from wezterm;
- *   undefined when cc runs outside wezterm — session not routable)
- *
- * `lstart` format example: `Tue May  4 16:38:00 2026`. Caller can inject a
- * stub via `RunHookReceiverOpts.capturePid` for tests.
- */
-async function defaultCapturePid(): Promise<{
-  pid: number;
-  startedAt: string;
-  paneId: number | undefined;
-}> {
-  const ppid = process.ppid;
-  const paneEnv = process.env.WEZTERM_PANE;
-  const paneId =
-    paneEnv && /^\d+$/.test(paneEnv) ? Number(paneEnv) : undefined;
-  return new Promise((resolve, reject) => {
-    execFile(
-      'ps',
-      ['-o', 'lstart=', '-p', String(ppid)],
-      { timeout: 5_000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          const stderrTrim = (stderr ?? '').trim();
-          reject(
-            new Error(
-              `ps -o lstart= failed for pid=${ppid}: ${err.message}${stderrTrim ? ` — ${stderrTrim}` : ''}`,
-            ),
-          );
-          return;
-        }
-        resolve({ pid: ppid, startedAt: stdout.trim(), paneId });
-      },
-    );
-  });
-}
-
 export interface RunHookReceiverOpts {
   /**
-   * Directory where state files live (e.g. `~/.multi-cc-im/state/`). Caller
-   * (CLI / bridge) decides; package itself stays IM-agnostic.
+   * Directory where state files live (e.g. `~/.multi-cc-im/state/`).
    */
   stateDir: string;
   /** Already-parsed + validated stdin payload (see `parseHookPayload`). */
   payload: ParsedHookPayload;
   /**
-   * Override PID + lstart + paneId capture (default: `process.ppid` +
-   * `ps -o lstart=` + `process.env.WEZTERM_PANE`). Tests pass a stub to avoid
-   * spawning `ps` and to control paneId.
-   */
-  capturePid?: () => Promise<{
-    pid: number;
-    startedAt: string;
-    paneId?: number | undefined;
-  }>;
-  /**
    * Override the timestamp used for the Stop file suffix. Tests inject a
-   * fixed timestamp for deterministic file naming. Default: `new Date()`
-   * formatted via `formatStopTimestamp`.
+   * fixed timestamp for deterministic file naming.
    */
   now?: () => Date;
   /**
-   * Override PreToolUse poll interval (ms). Tests use a small value to
-   * keep timeout tests fast. Default 200ms.
+   * Override `process.env.WEZTERM_PANE` lookup. Tests inject a numeric paneId
+   * (or undefined to simulate "not in wezterm" filter path). Default reads
+   * the env directly.
    */
+  resolvePaneId?: () => number | undefined;
+  /** Override PreToolUse poll interval (ms). Tests use a small value. */
   permissionPollIntervalMs?: number;
-  /**
-   * Override PreToolUse total wait budget (ms). Tests use a small value to
-   * exercise the timeout default-allow branch without sleeping 30s.
-   * Default 30_000ms.
-   */
+  /** Override PreToolUse total wait budget (ms). Tests use a small value. */
   permissionTimeoutMs?: number;
 }
 
 /**
- * Process a single cc hook event into the per-event-type file model:
+ * Read `process.env.WEZTERM_PANE` as a numeric paneId. Returns undefined
+ * when env is unset (cc not running in wezterm) or non-numeric (corrupt env).
  *
- * - **SessionStart**: write `<sid>.SessionStart` with pid / startedAt /
- *   paneId / cwd / transcript_path. Before writing, **clean stale state
- *   from a prior lifecycle** (resume case) — delete any existing
- *   `<sid>.SessionEnd` (cc came back to life) and any leftover
- *   `<sid>.Stop.*` files (stale unprocessed Stop signals from before the
- *   exit). This guarantees the daemon never sees a contradictory state
- *   like `SessionStart + SessionEnd` simultaneously present.
+ * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+ * this is the **filter** that gates whether the hook writes anything to
+ * disk — undefined means cc is in ssh / VS Code terminal / non-wezterm
+ * environment, and multi-cc-im has nothing to do with it.
+ */
+function defaultResolvePaneId(): number | undefined {
+  const env = process.env.WEZTERM_PANE;
+  if (env && /^\d+$/.test(env)) return Number(env);
+  return undefined;
+}
+
+/**
+ * Process a single cc hook event. Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+ * (refines [DD: IMWork+IMOrigin] + [DD: daemon liveness]):
  *
- * - **Stop**: write `<sid>.Stop.<timestamp>` with the assistant reply.
- *   Per-event new file (timestamp suffix) — daemon down can't lose msgs;
- *   they accumulate and process in order on next start. If
- *   `stop_hook_active === false` AND queue has pending injection, pop the
- *   oldest line and **return** `{ decision:'block', reason }` for the CLI
- *   caller to print as the hook's stdout response. `stop_hook_active=true`
- *   skips the queue entirely (CLAUDE.md "Key conventions" hard rule "use
- *   `stop_hook_active` for idle wakeup to prevent infinite loops"). The
- *   Stop file write happens regardless of injection-queue outcome.
+ * **WEZTERM_PANE filter (entry gate)**: if `process.env.WEZTERM_PANE` is
+ * undefined, hook silently exits without writing anything. cc is running
+ * outside wezterm (ssh / VS Code terminal / etc.) — multi-cc-im does not
+ * interact with such cc instances.
  *
- * - **SessionEnd**: write empty `<sid>.SessionEnd` tombstone. File
- *   existence IS the death signal — content is intentionally not
- *   persisted.
+ * **PreToolUse**: 4-step decision tree (cheapest check first):
+ *   1. read-only tool → emit `permissionDecision: allow` exit (no Request file written)
+ *   2. !IMWork → emit `ask` exit (cc TUI takes over with native menu)
+ *   3. !`<paneId>.IMOrigin` → emit `ask` exit (no IM thread bound for this pane)
+ *   4. !daemon alive → emit `ask` exit (forward target gone)
+ *   5. otherwise: write `<paneId>_<sid>.PermissionRequest.<id>.json`,
+ *      poll matching `<paneId>_<sid>.PermissionResponse.<id>.json` for
+ *      `PERMISSION_TIMEOUT_MS`, return cc decision (default-allow on timeout).
  *
- * **The returned `HookDecision` is the only allowed stdout payload** per
- * CLAUDE.md "Key conventions" exception "controlled JSON
- * `{decision:"block",...}` only"; CLI caller writes it to stdout (other
- * hook output goes to stderr / state files).
+ * **Stop**: 3-step short-circuit guard mirroring PreToolUse:
+ *   1. !IMWork → return void
+ *   2. !`<paneId>.IMOrigin` → return void
+ *   3. !daemon alive → return void
+ *   Otherwise: clear stale `<paneId>_<sid>.Stop.*`, write fresh
+ *   `<paneId>_<sid>.Stop.<ts>`. If `stop_hook_active=false` and injection
+ *   queue has a pending entry, return `{ decision: 'block', reason }`.
  *
- * Throws on partial failure (e.g. `ps -o lstart=` fails at SessionStart).
- * Hook caller is expected to: log error to stderr, `process.exit(1)` — cc
- * treats non-zero exit as hook failure but doesn't fail the session.
+ * **The returned `HookDecision` / `PreToolUseHookOutput` is the only
+ * allowed stdout payload** per CLAUDE.md "multi-cc-im hook must not write
+ * non-protocol stdout"; CLI caller writes it to stdout (other hook output
+ * goes to stderr / state files).
  */
 export async function runHookReceiver(
   opts: RunHookReceiverOpts,
@@ -205,40 +149,17 @@ export async function runHookReceiver(
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
 
+  // WEZTERM_PANE filter — gate everything before we touch disk
+  const resolvePaneId = opts.resolvePaneId ?? defaultResolvePaneId;
+  const paneId = resolvePaneId();
+  if (paneId === undefined) {
+    // cc is running outside wezterm. Silently exit; multi-cc-im does not
+    // bridge non-wezterm cc instances.
+    return;
+  }
+
   switch (payload.hook_event_name) {
-    case 'SessionStart': {
-      // Resume cleanup: same sid coming back to life means any prior
-      // SessionEnd + Stop.* files are stale. Delete before writing fresh
-      // SessionStart so daemon never observes "alive + ended" simultaneously.
-      await deleteSessionEndFile({ stateDir, sessionId });
-      const stalestop = await listStopFiles({ stateDir, sessionId });
-      for (const f of stalestop) await deleteStopFile(f);
-
-      const capture = opts.capturePid ?? defaultCapturePid;
-      const captured = await capture();
-      await writeSessionStartFile({
-        stateDir,
-        sessionId,
-        pid: captured.pid,
-        startedAt: captured.startedAt,
-        ...(captured.paneId !== undefined ? { paneId: captured.paneId } : {}),
-        cwd: payload.cwd,
-        transcript_path: payload.transcript_path,
-      });
-      return;
-    }
-
     case 'PreToolUse': {
-      // Permission gate per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
-      // (refines [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)):
-      //
-      //   Early-return order (each guards an independent failure mode):
-      //   E1. read-only tool (Read/Grep/Glob/NotebookRead) → allow + exit
-      //       (cc itself doesn't show TUI for these; IM forward = pure noise)
-      //   E2. !IMWork → ask + exit (cc TUI takes over with native menu)
-      //   E3. !IMOrigin for this sid → ask + exit (no IM thread to reply to)
-      //   Otherwise: write Request, poll Response (10s default-allow), emit decision.
-
       // E1: read-only tool whitelist
       if (READ_ONLY_TOOL_NAMES.has(payload.tool_name)) {
         return {
@@ -262,8 +183,8 @@ export async function runHookReceiver(
         };
       }
 
-      // E3: IMWork on but no IM thread bound for this cc → cc TUI takes over
-      if (!(await existsIMOriginFile({ stateDir, sessionId }))) {
+      // E3: IMWork on but no IM thread bound for this pane → cc TUI takes over
+      if (!(await existsIMOriginFile({ stateDir, paneId }))) {
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
@@ -274,11 +195,9 @@ export async function runHookReceiver(
         };
       }
 
-      // E4: daemon not running (Ctrl+C / crash / never started). Per
-      // [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
-      // Order is intentionally after IMWork + IMOrigin: those checks are cheap
-      // (stat ~0.1ms) and trigger far more often than the daemon-dead path,
-      // so spawn-ps cost (~10-30ms) is only paid in the rare forward case.
+      // E4: daemon not running. Order intentionally last: IMWork + IMOrigin
+      // checks are cheap (stat ~0.1ms), daemon liveness costs spawn ps
+      // (~10-30ms). Most hook calls short-circuit at E2 / E3.
       if (!(await isDaemonAlive(stateDir))) {
         return {
           hookSpecificOutput: {
@@ -289,23 +208,28 @@ export async function runHookReceiver(
         };
       }
 
-      // Sweep stale Request/Response files for this sid before writing the
-      // new Request (mirrors Stop branch's stale-cleanup; defends against
-      // a prior hook subprocess killed mid-cleanup).
+      // Sweep stale Request/Response files for this pane+sid before writing
+      // the new Request (defends against prior hook subprocess killed
+      // mid-cleanup).
       const staleReq = await listPermissionRequestFiles({
         stateDir,
+        paneId,
         sessionId,
       });
       for (const f of staleReq) await deletePermissionFileByPath(f);
       const staleResp = await listPermissionResponseFiles({
         stateDir,
+        paneId,
         sessionId,
       });
       for (const f of staleResp) await deletePermissionFileByPath(f);
 
-      const requestId = randomBytes(4).toString('hex'); // 8-char hex (sufficient — single sid has ≤1 pending)
+      // 8-char hex requestId — sufficient since single pane+sid has ≤1
+      // Request in flight (cc serializes its hooks).
+      const requestId = randomBytes(4).toString('hex');
       await writePermissionRequestFile({
         stateDir,
+        paneId,
         sessionId,
         requestId,
         toolName: payload.tool_name,
@@ -315,10 +239,12 @@ export async function runHookReceiver(
 
       const respPath = permissionResponsePath({
         stateDir,
+        paneId,
         sessionId,
         requestId,
       });
-      const pollMs = opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
+      const pollMs =
+        opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
       const timeoutMs = opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS;
       const deadline = Date.now() + timeoutMs;
       let decision: 'allow' | 'deny' = 'allow';
@@ -326,7 +252,6 @@ export async function runHookReceiver(
       while (Date.now() < deadline) {
         try {
           await stat(respPath);
-          // File exists — read it
           const resp = await readPermissionResponseFile(respPath);
           if (resp && resp.requestId === requestId) {
             decision = resp.decision;
@@ -339,9 +264,19 @@ export async function runHookReceiver(
         await sleep(pollMs);
       }
 
-      // Cleanup both Request + Response files (regardless of timeout / decision)
-      await deletePermissionRequestFile({ stateDir, sessionId, requestId });
-      await deletePermissionResponseFile({ stateDir, sessionId, requestId });
+      // Cleanup both Request + Response files regardless of timeout / decision.
+      await deletePermissionRequestFile({
+        stateDir,
+        paneId,
+        sessionId,
+        requestId,
+      });
+      await deletePermissionResponseFile({
+        stateDir,
+        paneId,
+        sessionId,
+        requestId,
+      });
 
       return {
         hookSpecificOutput: {
@@ -353,37 +288,26 @@ export async function runHookReceiver(
     }
 
     case 'Stop': {
-      // Three short-circuit guards mirror PreToolUse decision tree per
-      // [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md).
-      // Order is (cheapest → most expensive): IMWork stat → IMOrigin stat →
-      // daemon liveness (spawn ps). 99% of Stop hooks won't reach the
-      // daemon liveness check.
-      //
-      //   E1 !IMWork    → return void (local mode, cc reply stays in TUI)
-      //   E2 !IMOrigin  → return void (cc this turn isn't IM-bound)
-      //   E3 !daemon    → return void (forward impossible, don't accumulate Stop file)
-      //   else fall through to write + injection-queue check (PR-D path)
+      // 3-step short-circuit guards mirror PreToolUse. Order:
+      //   E1 !IMWork → return void (local mode)
+      //   E2 !IMOrigin → return void (no IM thread)
+      //   E3 !daemon alive → return void (no listener)
 
-      // E1
       if (!(await existsIMWorkFile(stateDir))) return;
-      // E2
-      if (!(await existsIMOriginFile({ stateDir, sessionId }))) return;
-      // E3
+      if (!(await existsIMOriginFile({ stateDir, paneId }))) return;
       if (!(await isDaemonAlive(stateDir))) return;
 
-      // Symmetric with SessionStart: clear stale Stop.* before writing the
-      // fresh one so state/ never accumulates more than one Stop file per
-      // sid. Daemon-up case: prior Stop was already unlinked by daemon
-      // after forwarding (~100ms). This loop is a no-op there. Daemon-down
-      // case is now handled by E3 above, so we only reach here if daemon
-      // is alive — Stop file will be picked up promptly.
-      const stalestop = await listStopFiles({ stateDir, sessionId });
+      // Clear stale Stop.* for this pane+sid before writing fresh.
+      // (E3 ensures daemon is alive — if it's catching up we still don't
+      // want to accumulate; daemon's chokidar will pick up the newest.)
+      const stalestop = await listStopFiles({ stateDir, paneId, sessionId });
       for (const f of stalestop) await deleteStopFile(f);
 
       const now = opts.now ?? (() => new Date());
       const timestamp = formatStopTimestamp(now());
       await writeStopFile({
         stateDir,
+        paneId,
         sessionId,
         timestamp,
         last_assistant_message: payload.last_assistant_message,
@@ -392,11 +316,6 @@ export async function runHookReceiver(
         const reason = await popInjection({ stateDir, sessionId });
         if (reason !== null) return { decision: 'block', reason };
       }
-      return;
-    }
-
-    case 'SessionEnd': {
-      await writeSessionEndFile({ stateDir, sessionId });
       return;
     }
   }

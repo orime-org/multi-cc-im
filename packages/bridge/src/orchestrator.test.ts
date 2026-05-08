@@ -1,58 +1,79 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeFile, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import {
   writeIMOriginFile,
   writeIMWorkFile,
   existsIMOriginFile,
   existsIMWorkFile,
+  readIMOriginFile,
+  readPermissionResponseFile,
+  permissionRequestPath,
+  permissionResponsePath,
+  writeDaemonPidFile,
+  captureProcessLstart,
+  readDaemonPidFile,
 } from '@multi-cc-im/cli-cc';
 import type {
   CLIAdapter,
   CLIHandler,
-  CwdAbs,
   IMAdapter,
   IMHandler,
   IMReplyContext,
   IncomingMessage,
   PaneId,
-  PaneToSessionMap,
+  PreToolUsePayload,
   SessionId,
   StopPayload,
   TermAdapter,
-  TermPaneAlive,
+  TermListPanes,
+  TermPaneInfo,
+  TranscriptPath,
+  CwdAbs,
 } from '@multi-cc-im/shared';
 import { createOrchestrator } from './orchestrator.js';
-import type { SessionInfo } from './matcher.js';
-import type { RouterState, SessionRegistry } from './router.js';
+import type { RouterState } from './router.js';
 
-// Per-test state dir (refreshed in beforeEach below). Most tests assume
-// IMWork is on (i.e. user is in remote mode) — beforeEach pre-writes the
-// IMWork tombstone so handleInbound + handleStop forward path is reachable.
-// Tests that need IMWork off explicitly delete the file in their setup.
+// ============================================================================
+// Per-test state dir + IMWork tombstone (most tests assume IM mode is on).
+// Tests that need IMWork off skip the writeIMWorkFile in beforeEach by using
+// their own state dir and beforeEach.
+// ============================================================================
+
 let testStateDir: string;
 
 const SID_A = '11111111-3606-4fe4-b01d-aaaaaaaaaaaa' as SessionId;
 const SID_B = '22222222-3606-4fe4-b01d-bbbbbbbbbbbb' as SessionId;
 
-const FRONTEND: SessionInfo = {
-  sessionId: SID_A,
-  paneId: 10 as PaneId,
-  tabTitle: 'frontend',
-  cwd: '/tmp/proj-a' as CwdAbs,
+const FRONTEND_PANE = 10 as PaneId;
+const API_PANE = 20 as PaneId;
+const FRAME_PANE = 30 as PaneId;
+
+const FRONTEND_INFO: TermPaneInfo = {
+  paneId: FRONTEND_PANE,
+  title: 'frontend',
+  cwd: '/tmp/proj-a',
 };
-const API: SessionInfo = {
-  sessionId: SID_B,
-  paneId: 20 as PaneId,
-  tabTitle: 'api',
-  cwd: '/tmp/proj-b' as CwdAbs,
+const API_INFO: TermPaneInfo = {
+  paneId: API_PANE,
+  title: 'api',
+  cwd: '/tmp/proj-b',
+};
+const FRAME_INFO: TermPaneInfo = {
+  paneId: FRAME_PANE,
+  title: 'frame',
+  cwd: '/tmp/proj-c',
 };
 
+// ============================================================================
+// Mocks
+// ============================================================================
+
 interface MockIM extends IMAdapter {
-  /** Spy on send calls. */
   sent: { content: string; replyCtx: IMReplyContext }[];
-  /** Captured handler from start(). */
   handler: IMHandler | undefined;
 }
 
@@ -77,23 +98,18 @@ function makeMockIM(): MockIM {
   };
 }
 
-interface MockTerm extends TermAdapter, TermPaneAlive {
+interface MockTerm extends TermAdapter, TermListPanes {
   sendTextCalls: { paneId: PaneId; content: string }[];
   sendKeystrokeCalls: { paneId: PaneId; key: string }[];
-  isPaneAliveStub: (paneId: PaneId) => Promise<boolean>;
 }
 
-function makeMockTerm(opts: {
-  alive?: (paneId: PaneId) => Promise<boolean>;
-} = {}): MockTerm {
+function makeMockTerm(panes: readonly TermPaneInfo[] = []): MockTerm {
   const sendTextCalls: { paneId: PaneId; content: string }[] = [];
   const sendKeystrokeCalls: { paneId: PaneId; key: string }[] = [];
-  const isPaneAliveStub = opts.alive ?? (async () => true);
   return {
     name: 'wezterm-mock',
     sendTextCalls,
     sendKeystrokeCalls,
-    isPaneAliveStub,
     async start() {},
     async sendText(paneId, content) {
       sendTextCalls.push({ paneId, content });
@@ -102,7 +118,9 @@ function makeMockTerm(opts: {
       sendKeystrokeCalls.push({ paneId, key });
     },
     async stop() {},
-    isPaneAlive: isPaneAliveStub,
+    async listPanes() {
+      return panes;
+    },
   };
 }
 
@@ -127,18 +145,8 @@ function makeMockCLI(): MockCLI {
   };
 }
 
-function fixedRegistry(sessions: SessionInfo[]): SessionRegistry & PaneToSessionMap {
-  const map = new Map<number, SessionId>(
-    sessions.map((s) => [s.paneId as unknown as number, s.sessionId]),
-  );
-  return {
-    listAlive: async () => sessions,
-    get: (paneId) => map.get(paneId as unknown as number) ?? null,
-  };
-}
-
 function memState(): RouterState {
-  let current: SessionId | null = null;
+  let current: PaneId | null = null;
   return {
     getCurrent: () => current,
     setCurrent: (id) => {
@@ -147,7 +155,14 @@ function memState(): RouterState {
   };
 }
 
-function incoming(text: string, replyCtx: IMReplyContext = { to: 'wxid_owner', contextToken: 'ctx' }): IncomingMessage {
+function incoming(
+  text: string,
+  replyCtx: IMReplyContext = {
+    imType: 'wechat',
+    to: 'wxid_owner',
+    contextToken: 'ctx',
+  },
+): IncomingMessage {
   return {
     msgId: 'm1',
     from: 'wxid_owner',
@@ -158,23 +173,67 @@ function incoming(text: string, replyCtx: IMReplyContext = { to: 'wxid_owner', c
   };
 }
 
-// Global setup: fresh state dir + IMWork on by default (most tests assume IM mode).
+function makeStop(opts: {
+  paneId: number;
+  sessionId?: SessionId;
+  message: string;
+  active?: boolean;
+}): StopPayload & { paneId: number } {
+  return {
+    session_id: opts.sessionId ?? SID_A,
+    transcript_path: '/tmp/x.jsonl' as TranscriptPath,
+    cwd: '/tmp/proj-a' as CwdAbs,
+    hook_event_name: 'Stop',
+    permission_mode: 'default',
+    stop_hook_active: opts.active ?? false,
+    last_assistant_message: opts.message,
+    paneId: opts.paneId,
+  };
+}
+
+function makePreToolUse(opts: {
+  paneId: number;
+  sessionId?: SessionId;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  requestId: string;
+}): PreToolUsePayload & { paneId: number; requestId: string } {
+  return {
+    session_id: opts.sessionId ?? SID_A,
+    transcript_path: '/tmp/x.jsonl' as TranscriptPath,
+    cwd: '/tmp/proj-a' as CwdAbs,
+    hook_event_name: 'PreToolUse',
+    permission_mode: 'default',
+    tool_name: opts.toolName ?? 'Bash',
+    tool_input: opts.toolInput ?? { command: 'ls' },
+    tool_use_id: 'tu_1',
+    paneId: opts.paneId,
+    requestId: opts.requestId,
+  };
+}
+
+// ============================================================================
+// Global setup: fresh state dir + IMWork on by default.
+// ============================================================================
+
 beforeEach(async () => {
   testStateDir = mkdtempSync(join(tmpdir(), 'orch-test-'));
   await writeIMWorkFile(testStateDir);
 });
 
+// ============================================================================
+// Lifecycle
+// ============================================================================
+
 describe('createOrchestrator — start/stop lifecycle', () => {
-  it('start() subscribes IM + CLI + Term handlers in order', async () => {
+  it('start() subscribes IM + CLI + Term handlers', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: term,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -192,7 +251,6 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       imAdapter: im,
       termAdapter: makeMockTerm(),
       cliAdapter: cli,
-      registry: fixedRegistry([]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -202,113 +260,93 @@ describe('createOrchestrator — start/stop lifecycle', () => {
     expect(cli.handler).toBeUndefined();
   });
 
-  it('stop() deletes IMWork file (Ctrl+C cleanup per DD #57)', async () => {
+  it('stop() deletes IMWork file (Ctrl+C cleanup)', async () => {
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: makeMockIM(),
       termAdapter: makeMockTerm(),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
-    // Pre-condition: IMWork exists (beforeEach writes it)
     expect(await existsIMWorkFile(testStateDir)).toBe(true);
-
     await orch.start();
     await orch.stop();
-
-    // IMWork removed by orchestrator.stop()
     expect(await existsIMWorkFile(testStateDir)).toBe(false);
   });
 
-  it('stop() deletes daemon.pid file (DD #57)', async () => {
-    const { writeDaemonPidFile, captureProcessLstart, readDaemonPidFile } =
-      await import('@multi-cc-im/cli-cc');
+  it('stop() deletes daemon.pid file', async () => {
     const lstart = await captureProcessLstart(process.pid);
     await writeDaemonPidFile({
       stateDir: testStateDir,
       pid: process.pid,
       startedAt: lstart!,
     });
-
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: makeMockIM(),
       termAdapter: makeMockTerm(),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
     expect(await readDaemonPidFile(testStateDir)).not.toBeNull();
-
     await orch.stop();
     expect(await readDaemonPidFile(testStateDir)).toBeNull();
   });
+
+  it('starting twice throws', async () => {
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm(),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    await expect(orch.start()).rejects.toThrow(/already started/);
+    await orch.stop();
+  });
 });
 
+// ============================================================================
+// Inbound: wechat → router → term sendText
+// ============================================================================
+
 describe('createOrchestrator — inbound (wechat → cc)', () => {
-  it('plain msg with single alive session → two-step sendText + sendKeystroke', async () => {
+  it('plain msg + single named pane → two-step sendText + sendKeystroke', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO]);
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
     expect(term.sendTextCalls).toEqual([
-      { paneId: FRONTEND.paneId, content: 'hello' },
+      { paneId: FRONTEND_PANE, content: 'hello' },
     ]);
     expect(term.sendKeystrokeCalls).toEqual([
-      { paneId: FRONTEND.paneId, key: '\r' },
+      { paneId: FRONTEND_PANE, key: '\r' },
     ]);
     expect(im.sent[0]?.content).toMatch(/→.*frontend/);
     await orch.stop();
   });
 
-  it('isPaneAlive returns false → no sendText, error echo to wechat', async () => {
+  it('@<ambiguous> mention → router error echo only, no dispatch', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm({ alive: async () => false });
+    const term = makeMockTerm([FRONTEND_INFO, FRAME_INFO]);
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-    });
-    await orch.start();
-    await im.handler!.onMessage(incoming('hello'));
-    expect(term.sendTextCalls).toEqual([]);
-    expect(term.sendKeystrokeCalls).toEqual([]);
-    expect(im.sent[0]?.content).toMatch(/not alive|disconnected/i);
-    await orch.stop();
-  });
-
-  it('@<ambiguous> → router error echo only, no dispatch', async () => {
-    const im = makeMockIM();
-    const term = makeMockTerm();
-    const FRAME: SessionInfo = {
-      sessionId: '99999999-3606-4fe4-b01d-fffffffffff0' as SessionId,
-      paneId: 30 as PaneId,
-      tabTitle: 'frame',
-      cwd: '/tmp/proj-c' as CwdAbs,
-    };
-    const orch = createOrchestrator({
-      stateDir: testStateDir,
-      imAdapter: im,
-      termAdapter: term,
-      cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND, FRAME]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -321,34 +359,32 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
 
   it('multi-target @a @b → both panes get two-step send', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND, API]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend @api sync implementation'));
+    await im.handler!.onMessage(incoming('@frontend @api sync now'));
     expect(term.sendTextCalls).toHaveLength(2);
     expect(term.sendKeystrokeCalls).toHaveLength(2);
     const panes = term.sendTextCalls.map((c) => c.paneId).sort();
-    expect(panes).toEqual([FRONTEND.paneId, API.paneId].sort());
+    expect(panes).toEqual([FRONTEND_PANE, API_PANE].sort());
     await orch.stop();
   });
 
-  it('text=null (image-only) → router returns empty, no echo, no dispatch', async () => {
+  it('text=null (image-only) → router empty, no echo, no dispatch', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO]);
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -362,7 +398,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
 
   it('sendText completes BEFORE sendKeystroke (two-step ordering preserved)', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO]);
     const orderLog: string[] = [];
     term.sendText = vi.fn(async (paneId, content) => {
       orderLog.push('sendText');
@@ -377,7 +413,6 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -386,87 +421,156 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     expect(orderLog).toEqual(['sendText', 'sendKeystroke']);
     await orch.stop();
   });
-});
 
-describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
-  it('cc Stop with stored replyCtx → wechat send last_assistant_message', async () => {
+  it('inbound dispatch writes <paneId>.IMOrigin (B2 — newest wins)', async () => {
     const im = makeMockIM();
-    const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
-      cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
 
-    // First, an inbound msg sets the reply ctx for FRONTEND
     await im.handler!.onMessage(
-      incoming('hello', { to: 'wxid_owner', contextToken: 'ctx-frontend' }),
+      incoming('@frontend first', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tok-A',
+      }),
+    );
+    expect(
+      await existsIMOriginFile({
+        stateDir: testStateDir,
+        paneId: FRONTEND_PANE as unknown as number,
+      }),
+    ).toBe(true);
+
+    await im.handler!.onMessage(
+      incoming('@frontend second', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tok-B',
+      }),
+    );
+    const ctx = await readIMOriginFile({
+      stateDir: testStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+    });
+    expect(ctx).toEqual({
+      imType: 'wechat',
+      to: 'wxid_owner',
+      contextToken: 'tok-B',
+    });
+
+    await orch.stop();
+  });
+});
+
+// ============================================================================
+// Outbound: cc Stop → wechat
+// ============================================================================
+
+describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
+  it('cc Stop with stored IMOrigin → forward last_assistant_message', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    // Inbound dispatch sets the IMOrigin for FRONTEND_PANE
+    await im.handler!.onMessage(
+      incoming('hello', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'ctx-frontend',
+      }),
     );
     im.sent.length = 0;
 
-    const stopPayload: StopPayload = {
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'done',
-    };
-    await cli.handler!.onStop(stopPayload);
+    await cli.handler!.onStop(
+      makeStop({ paneId: FRONTEND_PANE as unknown as number, message: 'done' }),
+    );
+
     expect(im.sent).toHaveLength(1);
-    // Outbound forward prefixes with `[<displayName>]\n<reply>` so user can
-    // tell which cc is replying when multiple are routed via the same wechat
-    // chat.
     expect(im.sent[0]?.content).toBe('[frontend]\ndone');
     expect(im.sent[0]?.replyCtx).toEqual({
+      imType: 'wechat',
       to: 'wxid_owner',
       contextToken: 'ctx-frontend',
     });
     await orch.stop();
   });
 
-  it('cc Stop with no stored replyCtx (session never received wechat msg) → no-op', async () => {
+  it('cc Stop with no stored IMOrigin → no-op', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
 
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'should not be forwarded',
-    });
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'should not forward',
+      }),
+    );
     expect(im.sent).toEqual([]);
     await orch.stop();
   });
 
-  it('cc Stop with stop_hook_active=true → still forwards (idle wakeup is also a real reply)', async () => {
+  it('cc Stop with empty last_assistant_message → no forward (still deletes IMOrigin)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hello'));
+    im.sent.length = 0;
+
+    await cli.handler!.onStop(
+      makeStop({ paneId: FRONTEND_PANE as unknown as number, message: '' }),
+    );
+    expect(im.sent).toEqual([]);
+    // IMOrigin still deleted (one-shot)
+    expect(
+      await existsIMOriginFile({
+        stateDir: testStateDir,
+        paneId: FRONTEND_PANE as unknown as number,
+      }),
+    ).toBe(false);
+    await orch.stop();
+  });
+
+  it('one-shot semantic: subsequent Stop without new dispatch is NOT forwarded', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -475,98 +579,54 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     await im.handler!.onMessage(incoming('hello'));
     im.sent.length = 0;
 
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: true,
-      last_assistant_message: 'awakened',
-    });
-    expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('[frontend]\nawakened');
-    await orch.stop();
-  });
-
-  it('one-shot pending: subsequent Stop without new wechat dispatch is NOT forwarded', async () => {
-    // Reproduces the user-reported bug: once wechat dispatched once to a
-    // sid, every later Stop on that sid was being forwarded to wechat —
-    // including replies to prompts the user typed directly into the cc TUI
-    // from a wezterm tab. After the fix, pending is cleared on first Stop.
-    const im = makeMockIM();
-    const cli = makeMockCLI();
-    const orch = createOrchestrator({
-      stateDir: testStateDir,
-      imAdapter: im,
-      termAdapter: makeMockTerm(),
-      cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-    });
-    await orch.start();
-
-    // Round 1: wechat dispatches → first Stop forwards
-    await im.handler!.onMessage(
-      incoming('hello', { to: 'wxid_alice', contextToken: 'ctx-1' }),
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'wechat-bound',
+      }),
     );
-    im.sent.length = 0;
-    const stopBase: StopPayload = {
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'wechat-bound reply',
-    };
-    await cli.handler!.onStop(stopBase);
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('[frontend]\nwechat-bound reply');
     im.sent.length = 0;
 
-    // Round 2: user types directly into the cc TUI (NO wechat dispatch).
-    // cc replies → Stop fires. Should NOT forward to wechat.
-    await cli.handler!.onStop({
-      ...stopBase,
-      last_assistant_message: 'console-bound reply, must not leak to wechat',
-    });
+    // Second Stop, no new dispatch → IMOrigin gone → no forward
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'console-bound, must not leak',
+      }),
+    );
     expect(im.sent).toEqual([]);
     await orch.stop();
   });
 
-  it('multi-turn wechat: each new dispatch resets pending → each Stop forwards once', async () => {
+  it('multi-turn: each new dispatch resets IMOrigin → each Stop forwards once', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
 
-    const stopBase: StopPayload = {
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: '',
-    };
-
-    // 3 turns wechat ↔ cc, each forward exactly once.
     for (const turn of [1, 2, 3]) {
       await im.handler!.onMessage(
-        incoming(`turn ${turn}`, { to: 'wxid_alice', contextToken: `ctx-${turn}` }),
+        incoming(`turn ${turn}`, {
+          imType: 'wechat',
+          to: 'wxid_alice',
+          contextToken: `ctx-${turn}`,
+        }),
       );
       im.sent.length = 0;
-      await cli.handler!.onStop({ ...stopBase, last_assistant_message: `reply ${turn}` });
+      await cli.handler!.onStop(
+        makeStop({
+          paneId: FRONTEND_PANE as unknown as number,
+          message: `reply ${turn}`,
+        }),
+      );
       expect(im.sent).toHaveLength(1);
       expect(im.sent[0]?.content).toBe(`[frontend]\nreply ${turn}`);
       im.sent.length = 0;
@@ -574,82 +634,141 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     await orch.stop();
   });
 
-  it('multi-target inbound stores replyCtx for ALL dispatched sessions', async () => {
+  it('cc Stop with stop_hook_active=true still forwards (idle wakeup is a real reply)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hello'));
+    im.sent.length = 0;
+
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'awakened',
+        active: true,
+      }),
+    );
+    expect(im.sent).toHaveLength(1);
+    expect(im.sent[0]?.content).toBe('[frontend]\nawakened');
+    await orch.stop();
+  });
+
+  it('multi-target inbound stores IMOrigin for ALL dispatched panes', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO, API_INFO]),
+      cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
 
     await im.handler!.onMessage(
-      incoming('@frontend @api hi', { to: 'wxid_owner', contextToken: 'ctx-multi' }),
+      incoming('@frontend @api hi', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'ctx-multi',
+      }),
     );
     im.sent.length = 0;
 
-    // Both sessions should be able to forward replies
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'frontend reply',
-    });
-    await cli.handler!.onStop({
-      session_id: SID_B,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-b' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'api reply',
-    });
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        sessionId: SID_A,
+        message: 'frontend reply',
+      }),
+    );
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: API_PANE as unknown as number,
+        sessionId: SID_B,
+        message: 'api reply',
+      }),
+    );
     expect(im.sent).toHaveLength(2);
     const replies = im.sent.map((s) => s.content).sort();
     expect(replies).toEqual(['[api]\napi reply', '[frontend]\nfrontend reply']);
     await orch.stop();
   });
+
+  it('Stop with unknown paneId (pane gone) → falls back to "(pane N)" prefix', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    // Pane 99 not in the listPanes snapshot — simulate "user closed wezterm tab".
+    await writeIMOriginFile({
+      stateDir: testStateDir,
+      paneId: 99,
+      replyCtx: {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'ctx-99',
+      },
+    });
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+    });
+    await orch.start();
+
+    await cli.handler!.onStop(makeStop({ paneId: 99, message: 'lone' }));
+    expect(im.sent).toHaveLength(1);
+    expect(im.sent[0]?.content).toBe('[(pane 99)]\nlone');
+    await orch.stop();
+  });
 });
+
+// ============================================================================
+// Error handling
+// ============================================================================
 
 describe('createOrchestrator — error handling', () => {
   it('term sendText throws → error echoed to wechat, dispatch aborted (no keystroke)', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO]);
     term.sendText = vi.fn().mockRejectedValue(new Error('pane-id 99: not found'));
+    const errors: unknown[] = [];
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      onError: (err) => errors.push(err),
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
     expect(term.sendKeystrokeCalls).toEqual([]);
-    expect(im.sent[0]?.content).toMatch(/not found|error|failed/i);
+    expect(im.sent[0]?.content).toMatch(/send failed|not found/i);
+    expect(errors.length).toBeGreaterThan(0);
     await orch.stop();
   });
 
-  it('IM send throws on echo → swallowed via onError callback, does not crash bridge', async () => {
+  it('IM send throws on echo → swallowed via onError, does not crash bridge', async () => {
     const im = makeMockIM();
     const errors: unknown[] = [];
     im.send = vi.fn().mockRejectedValue(new Error('iLink session expired'));
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       onError: (err) => errors.push(err),
@@ -661,19 +780,43 @@ describe('createOrchestrator — error handling', () => {
     expect(errors.length).toBeGreaterThan(0);
     await orch.stop();
   });
-});
 
-describe('createOrchestrator — INFO log sink', () => {
-  it('inbound dispatch emits one [wechat → name] line with truncated body', async () => {
+  it('listPanes throws → onError invoked, no crash', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
-    const lines: string[] = [];
+    const term = makeMockTerm([FRONTEND_INFO]);
+    term.listPanes = vi.fn().mockRejectedValue(new Error('wezterm cli failed'));
+    const errors: unknown[] = [];
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      onError: (err) => errors.push(err),
+    });
+    await orch.start();
+    // listPanes is called inside route() → router.listPanes
+    await expect(
+      im.handler!.onMessage(incoming('hello')),
+    ).rejects.toThrow();
+    await orch.stop();
+  });
+});
+
+// ============================================================================
+// INFO log sink
+// ============================================================================
+
+describe('createOrchestrator — log sink', () => {
+  it('inbound dispatch emits one [wechat → name] line', async () => {
+    const im = makeMockIM();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
@@ -686,242 +829,163 @@ describe('createOrchestrator — INFO log sink', () => {
     await orch.stop();
   });
 
-  it('multi-target dispatch lists all target names', async () => {
-    const im = makeMockIM();
-    const term = makeMockTerm();
-    const lines: string[] = [];
-    const orch = createOrchestrator({
-      stateDir: testStateDir,
-      imAdapter: im,
-      termAdapter: term,
-      cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND, API]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-      log: (l) => lines.push(l),
-    });
-    await orch.start();
-    await im.handler!.onMessage(incoming('@frontend @api hi'));
-    const dispatchLine = lines.find((l) => l.startsWith('[wechat →'));
-    expect(dispatchLine).toContain('frontend');
-    expect(dispatchLine).toContain('api');
-    await orch.stop();
-  });
-
-  it('cc Stop with stored replyCtx emits [cc → wechat] line with truncated reply', async () => {
+  it('cc Stop emits [cc → wechat] line with truncated reply', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const lines: string[] = [];
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
     });
     await orch.start();
-    // First inbound to set replyCtx
     await im.handler!.onMessage(incoming('hello'));
-    lines.length = 0; // clear inbound logs
-    // Then stop
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'cc replied',
-    });
+    lines.length = 0;
+
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'cc replied',
+      }),
+    );
     const stopLine = lines.find((l) => l.startsWith('[cc → wechat]'));
     expect(stopLine).toContain('cc replied');
-    // Log line uses the same displayName the IM body is prefixed with —
-    // tabTitle when set, `$<sid8>` fallback when unnamed. Here FRONTEND has
-    // tabTitle='frontend' so that's what shows up.
     expect(stopLine).toContain('frontend');
     await orch.stop();
   });
 
-  it('cc Stop with no IMOrigin emits skip-forward line', async () => {
-    // IMWork is on (beforeEach pre-writes it) but there's no IMOrigin for
-    // this sid → no IM thread bound → daemon should log skip + not send.
+  it('cc Stop with no IMOrigin emits skip-forward log', async () => {
     const cli = makeMockCLI();
     const lines: string[] = [];
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
     });
     await orch.start();
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'lone reply',
-    });
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'lone reply',
+      }),
+    );
     expect(lines.some((l) => l.includes('no IMOrigin'))).toBe(true);
     await orch.stop();
   });
 
-  it('SessionStart hook emits [SessionStart sid8] cwd + model', async () => {
-    const cli = makeMockCLI();
-    const lines: string[] = [];
-    const orch = createOrchestrator({
-      stateDir: testStateDir,
-      imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
-      cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-      log: (l) => lines.push(l),
-    });
-    await orch.start();
-    await cli.handler!.onSessionStart({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-      model: 'claude-opus-4-7',
-    });
-    const startLine = lines.find((l) => l.startsWith('[SessionStart'));
-    expect(startLine).toContain(SID_A.slice(0, 8));
-    expect(startLine).toContain('/tmp/proj-a');
-    expect(startLine).toContain('claude-opus-4-7');
-    await orch.stop();
-  });
-
-  it('long body in inbound is truncated to ~80 chars with ellipsis', async () => {
+  it('long inbound body is truncated with ellipsis in log', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
     const lines: string[] = [];
     const orch = createOrchestrator({
       stateDir: testStateDir,
       imAdapter: im,
-      termAdapter: term,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
     });
-    const longText = 'x'.repeat(200);
     await orch.start();
-    await im.handler!.onMessage(incoming(longText));
+    await im.handler!.onMessage(incoming('x'.repeat(200)));
     const line = lines.find((l) => l.startsWith('[wechat →'))!;
-    expect(line.length).toBeLessThan(150); // not full 200
+    expect(line.length).toBeLessThan(150);
     expect(line.endsWith('…')).toBe(true);
     await orch.stop();
   });
 });
 
-describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () => {
+// ============================================================================
+// Permission gate (PreToolUse + IM /1 /2)
+// ============================================================================
+
+describe('createOrchestrator — IM permission gate', () => {
   let permStateDir: string;
   beforeEach(async () => {
     permStateDir = mkdtempSync(join(tmpdir(), 'orch-perm-'));
-    // IMWork on by default for these forward-path tests.
     await writeIMWorkFile(permStateDir);
   });
 
-  it('onPreToolUse with IMOrigin set → IM prompt sent listing tabname + tool + /1 /2 + 10s window', async () => {
+  it('onPreToolUse with IMOrigin set → IM prompt with tabname + tool + /1 /2 + 10s window', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
       stateDir: permStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
 
-    // Bind IM ctx to FRONTEND by sending @frontend body — handleInbound
-    // writes <SID_A>.IMOrigin under permStateDir.
+    // Bind IMOrigin via inbound dispatch
     await im.handler!.onMessage(incoming('@frontend please run a tool'));
-    im.sent.length = 0; // reset
+    im.sent.length = 0;
 
-    await cli.handler!.onPreToolUse({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'rm -rf /important', description: 'cleanup' },
-      tool_use_id: 'tu_1',
-      permission_mode: 'default',
-      requestId: 'abc12345',
-    });
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /important', description: 'cleanup' },
+        requestId: 'abc12345',
+      }),
+    );
 
-    expect(im.sent.length).toBe(1);
+    expect(im.sent).toHaveLength(1);
     const body = im.sent[0]!.content;
     expect(body).toContain('frontend');
     expect(body).toContain('Bash');
     expect(body).toContain('rm -rf /important');
     expect(body).toContain('@frontend /1');
     expect(body).toContain('@frontend /2');
-    expect(body).toMatch(/10/); // mentions the 10s timeout window
+    expect(body).toMatch(/10/);
     await orch.stop();
   });
 
-  it('onPreToolUse without IMOrigin → log only, no IM send (defensive race-with-/stop path)', async () => {
+  it('onPreToolUse without IMOrigin → log only, no IM send (defensive race path)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const lines: string[] = [];
     const orch = createOrchestrator({
       stateDir: permStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
     });
     await orch.start();
 
-    // No IM dispatch first → no IMOrigin file. Hook E3 normally handles
-    // this, but if it raced with /stop we may still hit daemon. Defensive.
-    await cli.handler!.onPreToolUse({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      tool_use_id: 'tu_2',
-      permission_mode: 'default',
-      requestId: 'abc12345',
-    });
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId: 'abc12345',
+      }),
+    );
 
     expect(im.sent.length).toBe(0);
     expect(lines.some((l) => l.includes('no IMOrigin'))).toBe(true);
     await orch.stop();
   });
 
-  it('inbound `@frontend /1` → writes <sid>.PermissionResponse.<id>.json with allow', async () => {
-    const { writeFile } = await import('node:fs/promises');
-    const { readPermissionResponseFile } = await import('@multi-cc-im/cli-cc');
-
-    // Pre-create a pending PermissionRequest file in the state dir.
-    const requestId = 'req99999';
-    const reqPath = join(
-      permStateDir,
-      `${SID_A}.PermissionRequest.${requestId}.json`,
-    );
+  it('inbound `@frontend /1` → writes PermissionResponse with allow', async () => {
+    // requestId must be hex to match parsePermissionFilename regex.
+    const requestId = 'aabb9999';
+    const reqPath = permissionRequestPath({
+      stateDir: permStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     await writeFile(
       reqPath,
       JSON.stringify({
@@ -936,19 +1000,20 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     const orch = createOrchestrator({
       stateDir: permStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend /1'));
 
-    const respPath = join(
-      permStateDir,
-      `${SID_A}.PermissionResponse.${requestId}.json`,
-    );
+    const respPath = permissionResponsePath({
+      stateDir: permStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     const resp = await readPermissionResponseFile(respPath);
     expect(resp).toEqual({
       requestId,
@@ -959,12 +1024,15 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
   });
 
   it('inbound `@frontend /2` → writes PermissionResponse with deny', async () => {
-    const { writeFile } = await import('node:fs/promises');
-    const { readPermissionResponseFile } = await import('@multi-cc-im/cli-cc');
-
-    const requestId = 'req88888';
+    const requestId = 'ccdd8888';
+    const reqPath = permissionRequestPath({
+      stateDir: permStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     await writeFile(
-      join(permStateDir, `${SID_A}.PermissionRequest.${requestId}.json`),
+      reqPath,
       JSON.stringify({
         requestId,
         toolName: 'Bash',
@@ -977,9 +1045,8 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     const orch = createOrchestrator({
       stateDir: permStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -987,7 +1054,12 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     await im.handler!.onMessage(incoming('@frontend /2'));
 
     const resp = await readPermissionResponseFile(
-      join(permStateDir, `${SID_A}.PermissionResponse.${requestId}.json`),
+      permissionResponsePath({
+        stateDir: permStateDir,
+        paneId: FRONTEND_PANE as unknown as number,
+        sessionId: SID_A,
+        requestId,
+      }),
     );
     expect(resp?.decision).toBe('deny');
     await orch.stop();
@@ -998,37 +1070,38 @@ describe('createOrchestrator — IM permission gate (PreToolUse + /1 /2)', () =>
     const orch = createOrchestrator({
       stateDir: permStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend /1'));
 
-    // Echo includes "no pending" hint AND the router's `→ ... permission` line.
     const allSent = im.sent.map((s) => s.content).join('\n');
     expect(allSent).toMatch(/没在等审批|no pending|无效/);
     await orch.stop();
   });
 });
 
-describe('createOrchestrator — IMWork manual toggle (/start /stop)', () => {
+// ============================================================================
+// IMWork manual toggle (/start /stop)
+// ============================================================================
+
+describe('createOrchestrator — IMWork toggle', () => {
   let toggleStateDir: string;
   beforeEach(() => {
     toggleStateDir = mkdtempSync(join(tmpdir(), 'orch-toggle-'));
-    // NB: do NOT pre-write IMWork — these tests verify the toggle flow.
+    // NB: do NOT pre-write IMWork — these tests verify the toggle.
   });
 
-  it('@multi-cc-im /start when IMWork off → writes IMWork file + IM echo includes "ON" + cc list', async () => {
+  it('@multi-cc-im /start when off → writes IMWork + echo includes "ON"', async () => {
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -1041,19 +1114,18 @@ describe('createOrchestrator — IMWork manual toggle (/start /stop)', () => {
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork ON');
     expect(echo).toContain('frontend');
-    expect(echo).toContain('10 秒内回复');
+    expect(echo).toContain('10 秒内');
     await orch.stop();
   });
 
-  it('@multi-cc-im /stop when IMWork on → deletes IMWork file + IM echo includes "OFF"', async () => {
+  it('@multi-cc-im /stop when on → deletes IMWork + echo includes "OFF"', async () => {
     await writeIMWorkFile(toggleStateDir);
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -1068,15 +1140,14 @@ describe('createOrchestrator — IMWork manual toggle (/start /stop)', () => {
     await orch.stop();
   });
 
-  it('IM mention with IMWork off → daemon refuses, no dispatch, no IMOrigin written', async () => {
+  it('IM mention with IMWork off → no dispatch, no IMOrigin written', async () => {
     const im = makeMockIM();
-    const term = makeMockTerm();
+    const term = makeMockTerm([FRONTEND_INFO]);
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
       imAdapter: im,
       termAdapter: term,
       cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
     });
@@ -1084,176 +1155,84 @@ describe('createOrchestrator — IMWork manual toggle (/start /stop)', () => {
 
     await im.handler!.onMessage(incoming('@frontend hello'));
 
-    // term sendText not called
     expect(term.sendTextCalls).toEqual([]);
-    // IMOrigin not written
     expect(
       await existsIMOriginFile({
         stateDir: toggleStateDir,
-        sessionId: SID_A,
+        paneId: FRONTEND_PANE as unknown as number,
       }),
     ).toBe(false);
-    // Echo back to user with "IMWork off" hint
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork off');
     await orch.stop();
   });
 
-  it('handleInbound writes <sid>.IMOrigin (B2 overwrite) on every IM dispatch', async () => {
-    await writeIMWorkFile(toggleStateDir);
-    const im = makeMockIM();
-    const orch = createOrchestrator({
-      stateDir: toggleStateDir,
-      imAdapter: im,
-      termAdapter: makeMockTerm(),
-      cliAdapter: makeMockCLI(),
-      registry: fixedRegistry([FRONTEND]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-    });
-    await orch.start();
-
-    // First dispatch
-    await im.handler!.onMessage(
-      incoming('@frontend first', { to: 'wxid_owner', contextToken: 'tok-A' }),
-    );
-    expect(
-      await existsIMOriginFile({
-        stateDir: toggleStateDir,
-        sessionId: SID_A,
-      }),
-    ).toBe(true);
-
-    // Second dispatch — IMOrigin gets overwritten with new ctx (B2)
-    await im.handler!.onMessage(
-      incoming('@frontend second', { to: 'wxid_owner', contextToken: 'tok-B' }),
-    );
-    const { readIMOriginFile } = await import('@multi-cc-im/cli-cc');
-    const ctx = await readIMOriginFile({
-      stateDir: toggleStateDir,
-      sessionId: SID_A,
-    });
-    expect((ctx as { contextToken: string }).contextToken).toBe('tok-B');
-
-    await orch.stop();
-  });
-
-  it('handleStop with IMWork off → skip forward + no IMOrigin delete (already none)', async () => {
-    // IMWork explicitly off
+  it('handleStop with IMWork off → skip forward log, no IM send', async () => {
     const cli = makeMockCLI();
     const im = makeMockIM();
     const lines: string[] = [];
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
       imAdapter: im,
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       log: (l) => lines.push(l),
     });
     await orch.start();
 
-    await cli.handler!.onStop({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'Stop',
-      permission_mode: 'default',
-      stop_hook_active: false,
-      last_assistant_message: 'reply',
-    });
+    await cli.handler!.onStop(
+      makeStop({
+        paneId: FRONTEND_PANE as unknown as number,
+        message: 'reply',
+      }),
+    );
 
     expect(im.sent.length).toBe(0);
-    expect(lines.some((l) => l.includes('IMWork off, skip forward'))).toBe(true);
-    await orch.stop();
-  });
-
-  it('SessionEnd deletes IMOrigin (cc cleanup hygiene)', async () => {
-    await writeIMWorkFile(toggleStateDir);
-    await writeIMOriginFile({
-      stateDir: toggleStateDir,
-      sessionId: SID_A,
-      replyCtx: { contextToken: 'tk' },
-    });
-    const cli = makeMockCLI();
-    const orch = createOrchestrator({
-      stateDir: toggleStateDir,
-      imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
-      cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
-      state: memState(),
-      sendKeystrokeDelayMs: 0,
-    });
-    await orch.start();
-    expect(
-      await existsIMOriginFile({
-        stateDir: toggleStateDir,
-        sessionId: SID_A,
-      }),
-    ).toBe(true);
-
-    await cli.handler!.onSessionEnd({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'SessionEnd',
-      reason: '/exit',
-    });
-
-    expect(
-      await existsIMOriginFile({
-        stateDir: toggleStateDir,
-        sessionId: SID_A,
-      }),
-    ).toBe(false);
+    expect(lines.some((l) => l.includes('IMWork off'))).toBe(true);
     await orch.stop();
   });
 });
 
-describe('createOrchestrator — daemon reaper (PermissionRequest/Response orphan cleanup)', () => {
+// ============================================================================
+// Daemon reaper
+// ============================================================================
+
+describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup)', () => {
   let reaperStateDir: string;
   beforeEach(async () => {
     reaperStateDir = mkdtempSync(join(tmpdir(), 'orch-reaper-'));
     await writeIMWorkFile(reaperStateDir);
     await writeIMOriginFile({
       stateDir: reaperStateDir,
-      sessionId: SID_A,
-      replyCtx: { to: 'wxid_owner', contextToken: 'tk' },
+      paneId: FRONTEND_PANE as unknown as number,
+      replyCtx: {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tk',
+      },
     });
   });
 
-  /**
-   * Test reaper window — short enough to keep tests fast, long enough that
-   * any pre-fire fs assertions reliably observe the file before the timer
-   * fires. CI is slower so we err on the higher side; locally these tests
-   * run in ~0.3s.
-   *
-   * NB: vi.useFakeTimers does NOT play well with this reaper because the
-   * reaper callback awaits real fs.unlink (libuv-backed) — fake timers fire
-   * the callback but the event loop doesn't tick async I/O completion in
-   * time for the next assertion (race on macOS local, deterministic-fail
-   * on CI). Real timers + a tiny window is the simplest reliable approach.
-   */
+  // Real timers + a tiny window — vi.useFakeTimers does not interleave with
+  // real fs.unlink reliably (libuv I/O completion races the timer callback).
   const REAPER_WINDOW_MS = 50;
-  const PRE_REAPER_PROBE_MS = 10; // safe window to assert "file exists" before reaper
-  const POST_REAPER_PROBE_MS = REAPER_WINDOW_MS + 50; // safe window to assert "file unlinked"
+  const PRE_REAPER_PROBE_MS = 10;
+  const POST_REAPER_PROBE_MS = REAPER_WINDOW_MS + 50;
 
   function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  it('handlePreToolUse schedules a reaper that unlinks Request + Response after timer', async () => {
-    const { writeFile } = await import('node:fs/promises');
-    const { existsSync } = await import('node:fs');
-
+  it('handlePreToolUse schedules reaper that unlinks Request after timer', async () => {
     const requestId = 'reaper-test-1';
-    const reqPath = join(
-      reaperStateDir,
-      `${SID_A}.PermissionRequest.${requestId}.json`,
-    );
+    const reqPath = permissionRequestPath({
+      stateDir: reaperStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     await writeFile(
       reqPath,
       JSON.stringify({
@@ -1268,45 +1247,38 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     const orch = createOrchestrator({
       stateDir: reaperStateDir,
       imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       reaperDelayMs: REAPER_WINDOW_MS,
     });
     await orch.start();
 
-    await cli.handler!.onPreToolUse({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      tool_use_id: 'tu',
-      permission_mode: 'default',
-      requestId,
-    });
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId,
+      }),
+    );
 
-    // Right after schedule: Request still there (reaper not fired yet)
     await delay(PRE_REAPER_PROBE_MS);
     expect(existsSync(reqPath)).toBe(true);
 
-    // After the reaper window: file unlinked
     await delay(POST_REAPER_PROBE_MS);
     expect(existsSync(reqPath)).toBe(false);
 
     await orch.stop();
   });
 
-  it('reaper unlink is idempotent (hook subprocess cleanup wins → reaper finds ENOENT, no error)', async () => {
-    const { writeFile, unlink } = await import('node:fs/promises');
+  it('reaper unlink is idempotent (hook subprocess wins → ENOENT silently ignored)', async () => {
     const requestId = 'reaper-test-2';
-    const reqPath = join(
-      reaperStateDir,
-      `${SID_A}.PermissionRequest.${requestId}.json`,
-    );
+    const reqPath = permissionRequestPath({
+      stateDir: reaperStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     await writeFile(
       reqPath,
       JSON.stringify({
@@ -1322,9 +1294,8 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     const orch = createOrchestrator({
       stateDir: reaperStateDir,
       imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       reaperDelayMs: REAPER_WINDOW_MS,
@@ -1332,19 +1303,14 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     });
     await orch.start();
 
-    await cli.handler!.onPreToolUse({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      tool_use_id: 'tu',
-      permission_mode: 'default',
-      requestId,
-    });
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId,
+      }),
+    );
 
-    // Simulate hook subprocess winning the race: it cleans up first
+    // Hook subprocess wins
     await unlink(reqPath);
 
     // Reaper fires later — should silently no-op on ENOENT
@@ -1355,14 +1321,14 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     await orch.stop();
   });
 
-  it('orchestrator.stop() clears pending reaper timers (no leaked timeouts)', async () => {
-    const { writeFile } = await import('node:fs/promises');
-    const { existsSync } = await import('node:fs');
+  it('orchestrator.stop() clears pending reaper timers', async () => {
     const requestId = 'reaper-test-3';
-    const reqPath = join(
-      reaperStateDir,
-      `${SID_A}.PermissionRequest.${requestId}.json`,
-    );
+    const reqPath = permissionRequestPath({
+      stateDir: reaperStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
     await writeFile(
       reqPath,
       JSON.stringify({
@@ -1377,31 +1343,21 @@ describe('createOrchestrator — daemon reaper (PermissionRequest/Response orpha
     const orch = createOrchestrator({
       stateDir: reaperStateDir,
       imAdapter: makeMockIM(),
-      termAdapter: makeMockTerm(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
       cliAdapter: cli,
-      registry: fixedRegistry([FRONTEND]),
       state: memState(),
       sendKeystrokeDelayMs: 0,
       reaperDelayMs: REAPER_WINDOW_MS,
     });
     await orch.start();
-    await cli.handler!.onPreToolUse({
-      session_id: SID_A,
-      transcript_path: '/tmp/x.jsonl' as never,
-      cwd: '/tmp/proj-a' as never,
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'ls' },
-      tool_use_id: 'tu',
-      permission_mode: 'default',
-      requestId,
-    });
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId,
+      }),
+    );
 
-    // Stop **before** the reaper window expires → timer cleared
     await orch.stop();
-
-    // Wait past where the timer would have fired. File should still be
-    // there because the reaper was cancelled by stop().
     await delay(POST_REAPER_PROBE_MS);
     expect(existsSync(reqPath)).toBe(true);
   });

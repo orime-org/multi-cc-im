@@ -1,7 +1,7 @@
-// Bridge core: routes wechat IncomingMessage → cc sessions per [DD:
-// routing-syntax G'](../../docs/superpowers/specs/2026-05-04-routing-syntax-dd.md).
-// This package provides the pure routing logic; adapter wiring + main loop
-// comes in follow-up PRs.
+// Bridge core: routes IM IncomingMessage → cc sessions in wezterm panes.
+// Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+// daemon doesn't track sessionId; routing key is wezterm tab title (cc /rename),
+// state file naming uses paneId.
 
 export { parse } from './parser.js';
 export type { ParsedMessage } from './parser.js';
@@ -15,14 +15,8 @@ export type {
   RouterOpts,
   RouterResult,
   RouterState,
-  SessionRegistry,
+  PaneRegistry,
 } from './router.js';
-
-export { createSessionRegistry } from './session-registry.js';
-export type {
-  CreateSessionRegistryOpts,
-  SessionRegistryAndMap,
-} from './session-registry.js';
 
 export { createOrchestrator } from './orchestrator.js';
 export type {

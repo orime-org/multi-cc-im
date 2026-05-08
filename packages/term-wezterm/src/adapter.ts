@@ -1,31 +1,12 @@
 import type {
   PaneId,
-  PaneToSessionMap,
   TermAdapter,
   TermHandler,
-  TermPaneAlive,
+  TermListPanes,
+  TermPaneInfo,
 } from '@multi-cc-im/shared';
 import { runWezTermCli } from './cli.js';
-import { createIsPaneAlive } from './pane-alive.js';
-import type { PidProbe } from './pid-probe.js';
-
-/**
- * PaneAlive plumbing — pass to attach the `isPaneAlive` capability. Without
- * this, returned adapter is plain `TermAdapter` (no capability); bridge
- * router using such an adapter would have nothing to gate `sendText` against
- * and **must refuse** per CLAUDE.md "do not send-text without verifying cc
- * liveness".
- */
-export interface PaneAliveOpts {
-  /** Where cli-cc state files live (e.g. `~/.multi-cc-im/state/`). */
-  stateDir: string;
-  /** Bridge router's pane_id → session_id map. */
-  paneToSession: PaneToSessionMap;
-  /** Test seam (default: real `kill(0)` + `ps -o lstart=`). */
-  pidProbe?: PidProbe;
-  /** Stale-hook fallback threshold; default 30 min (DD section g). */
-  idleTimeoutMs?: number;
-}
+import { listAllTabs } from './tab-title.js';
 
 export interface CreateWezTermAdapterOpts {
   /**
@@ -35,18 +16,16 @@ export interface CreateWezTermAdapterOpts {
    * "no hardcoded secrets / external CLI paths" — never hardcode this.
    */
   wezterm: { path: string };
-  /**
-   * Optional PaneAlive capability config. When provided, returned adapter
-   * also satisfies `TermPaneAlive` (intersection type via overload signature).
-   */
-  paneAlive?: PaneAliveOpts;
 }
 
 /**
  * Create a TermAdapter for WezTerm. Implements the core 4 methods
  * (`name` / `start` / `sendText` / `sendKeystroke` / `stop`) from
- * `shared/adapter/term.ts`. **Two-step input** is enforced by exposing
- * `sendText` and `sendKeystroke` as separate primitives:
+ * `shared/adapter/term.ts`, plus the `listPanes` capability for tabname
+ * routing per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
+ *
+ * **Two-step input** is enforced by exposing `sendText` and `sendKeystroke`
+ * as separate primitives:
  *
  *   1. `sendText(paneId, content)` → `wezterm cli send-text --pane-id <p>`
  *      with content piped via stdin (default paste mode = bracketed paste,
@@ -59,34 +38,26 @@ export interface CreateWezTermAdapterOpts {
  *
  * Mixing single-step (paste + \\r together OR --no-paste with content) is
  * forbidden by CLAUDE.md "Key conventions" rule "send-text two-step
- * injection". This adapter doesn't enforce the order at the type level —
- * bridge router must do it.
+ * injection".
  *
- * When `opts.paneAlive` is supplied, the returned adapter also satisfies
- * `TermPaneAlive` (multi-signal `isPaneAlive` per [pane-alive strategy DD section g](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)).
- * Without it the adapter has no `isPaneAlive` method — bridge router using
- * `isPaneAlive(adapter)` guard from `@multi-cc-im/shared` will see it as
- * a plain TermAdapter and (per CLAUDE.md "Forbidden list" "do not send-text
- * without verifying cc liveness") must refuse to route.
+ * **PaneAlive capability removed** in DD #61 — daemon trusts user-side
+ * knowledge from `/start` IM listing for cc liveness; bridge router does
+ * not gate `sendText` on a runtime liveness probe (corner case: cc died
+ * after user `/start`'d → daemon blindly injects to zsh; user notices via
+ * IM round-trip absence + reboots cc).
  */
 export function createWezTermAdapter(
-  opts: CreateWezTermAdapterOpts & { paneAlive: PaneAliveOpts },
-): TermAdapter & TermPaneAlive;
-export function createWezTermAdapter(
   opts: CreateWezTermAdapterOpts,
-): TermAdapter;
-export function createWezTermAdapter(
-  opts: CreateWezTermAdapterOpts,
-): TermAdapter | (TermAdapter & TermPaneAlive) {
+): TermAdapter & TermListPanes {
   const wezterm = opts.wezterm.path;
 
-  const base: TermAdapter = {
+  return {
     name: 'wezterm',
 
     async start(_handler: TermHandler): Promise<void> {
       // v1 has no terminal-side lifecycle event source to subscribe to:
-      // pane closures are observed through the cli-cc / SessionEnd path,
-      // not through wezterm cli. Handler.onPaneClosed stays unfired in v1.
+      // pane closures observed via wezterm cli list re-runs (each IM event
+      // re-fetches), not via push events.
     },
 
     async sendText(paneId: PaneId, content: string): Promise<void> {
@@ -110,13 +81,21 @@ export function createWezTermAdapter(
       });
     },
 
+    async listPanes(): Promise<readonly TermPaneInfo[]> {
+      const tabs = await listAllTabs({ wezterm });
+      const result: TermPaneInfo[] = [];
+      for (const tab of tabs.values()) {
+        result.push({
+          paneId: tab.paneId as PaneId,
+          title: tab.title,
+          cwd: tab.cwd,
+        });
+      }
+      return result;
+    },
+
     async stop(): Promise<void> {
       // No socket / subprocess held — nothing to release.
     },
   };
-
-  if (!opts.paneAlive) return base;
-
-  const isPaneAlive = createIsPaneAlive(opts.paneAlive);
-  return { ...base, isPaneAlive } satisfies TermAdapter & TermPaneAlive;
 }

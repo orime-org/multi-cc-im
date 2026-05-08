@@ -1,5 +1,6 @@
 import { resolveAppPaths } from './config-paths.js';
 import { sweepStaleStateFiles } from './state-sweep.js';
+import { listAllTabs, resolveWezTermPath } from '@multi-cc-im/term-wezterm';
 
 export interface RunCleanupCommandOpts {
   /** Override `~/.multi-cc-im` root (env or for tests). */
@@ -10,10 +11,23 @@ export interface RunCleanupCommandOpts {
    */
   dryRun?: boolean;
   /**
-   * Logger for progress lines. Default writes to `process.stderr` (consistent
-   * with `setup-hooks` / `start` banner). Tests inject a spy.
+   * Logger for progress lines. Default writes to `process.stderr`.
    */
   log?: (line: string) => void;
+  /**
+   * Test seam — override the wezterm path resolver. Production resolves via
+   * `resolveWezTermPath()`. If both this and the resolution fail (and no
+   * `livePaneIds` override is provided), cleanup refuses to run because the
+   * sweep would otherwise treat all pane-keyed files as orphans and wipe
+   * live cc state.
+   */
+  resolveWezTerm?: () => Promise<string>;
+  /**
+   * Test seam — directly override the live paneId source, bypassing wezterm
+   * entirely. Used by unit tests to exercise sweep behavior without a real
+   * wezterm install.
+   */
+  livePaneIds?: () => Promise<readonly number[]>;
 }
 
 export interface CleanupCommandResult {
@@ -23,28 +37,19 @@ export interface CleanupCommandResult {
 
 /**
  * Implement `multi-cc-im cleanup` — manual trigger for the same sweep that
- * runs at daemon startup. Use cases:
+ * runs at daemon startup. Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
  *
- * - daemon has been running for weeks, lots of cc sessions came + went;
- *   `~/.multi-cc-im/state/` accumulated paired SessionStart+SessionEnd
- *   files from completed sessions (the daemon reads SessionEnd to mark a
- *   session dead but does NOT auto-cleanup the file, since a future
- *   `claude --resume` of the same sid is supposed to clean its own).
- * - want to preview what would be cleaned (`--dry-run`) before actually
- *   running.
+ * The sweep treats wezterm cli list paneId set as the ground truth — files
+ * for paneIds not in the live set are orphan (cc and tab gone). Pre-DD-#61
+ * sid-keyed legacy files are also swept.
  *
- * The sweep deletes:
- * - paired `<sid>.SessionStart` + `<sid>.SessionEnd` (cc died)
- * - orphan `<sid>.Stop.<ts>` files (daemon-down accumulation that can't
- *   be forwarded — the in-memory wechat replyCtx is gone)
- * - legacy state files from pre-redesign installs (`<sid>.cc-pid`,
- *   `<sid>.events.jsonl`, `<sid>.ended`, `<sid>.last-hook-at`,
- *   `current-session`)
+ * **Safe to run while the daemon is running**: live cc's pane files are
+ * never wiped (their paneId is in the wezterm live set). Live `daemon.pid`
+ * is also kept — only stale (PID dead / lstart mismatch) gets cleaned.
  *
- * **Safe to run while the daemon is running**: deletions are limited to
- * `<sid>.SessionStart` for sids that ALSO have a `<sid>.SessionEnd` (= cc
- * already dead, daemon already noticed). Live cc's `<sid>.SessionStart`
- * files are NEVER touched.
+ * **Refuses to run** if wezterm path can't be resolved: without the live
+ * paneId set, sweep would treat all pane-keyed files as orphans and wipe
+ * live cc state. Better to error out than do that.
  */
 export async function runCleanupCommand(
   opts: RunCleanupCommandOpts = {},
@@ -58,26 +63,49 @@ export async function runCleanupCommand(
   log(`multi-cc-im cleanup${dryRun ? ' (dry-run)' : ''}`);
   log(`  state dir: ${paths.stateDir}`);
 
-  const result = await sweepStaleStateFiles(paths.stateDir, { dryRun });
+  // Resolve the live paneId source. Tests can inject `livePaneIds` directly;
+  // production resolves via wezterm. If wezterm path can't be found AND no
+  // override is given, cleanup refuses to run — without the live set, sweep
+  // would treat all pane-keyed files as orphans and wipe live cc state.
+  let livePaneIds: () => Promise<readonly number[]>;
+  if (opts.livePaneIds) {
+    livePaneIds = opts.livePaneIds;
+  } else {
+    let wezterm: string;
+    try {
+      const resolveFn = opts.resolveWezTerm ?? defaultResolveWezTerm;
+      wezterm = await resolveFn();
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stderr:
+          `multi-cc-im cleanup: cannot resolve wezterm path — ${err instanceof Error ? err.message : String(err)}\n` +
+          `  Without wezterm cli list, the sweep cannot tell live cc panes from orphans. Refusing to run.`,
+      };
+    }
+    livePaneIds = async () => {
+      const tabs = await listAllTabs({ wezterm });
+      return [...tabs.keys()];
+    };
+  }
+
+  const result = await sweepStaleStateFiles(paths.stateDir, {
+    dryRun,
+    livePaneIds,
+  });
 
   const verb = dryRun ? 'would delete' : 'deleted';
   if (
-    result.pairedCleaned +
-      result.orphanStopsCleaned +
+    result.orphanPaneFilesCleaned +
       result.legacyCleaned +
-      result.orphanPermissionCleaned +
-      result.orphanIMOriginCleaned +
       result.staleDaemonPidCleaned ===
     0
   ) {
     log(`  ✓ already clean — nothing to do.`);
   } else {
     log(`  ✓ ${verb}:`);
-    log(`    - ${result.pairedCleaned} completed cc session(s)`);
-    log(`    - ${result.orphanStopsCleaned} orphan Stop file(s)`);
+    log(`    - ${result.orphanPaneFilesCleaned} orphan pane file(s)`);
     log(`    - ${result.legacyCleaned} legacy file(s)`);
-    log(`    - ${result.orphanPermissionCleaned} orphan Permission file(s)`);
-    log(`    - ${result.orphanIMOriginCleaned} orphan IMOrigin file(s)`);
     log(`    - ${result.staleDaemonPidCleaned} stale daemon.pid file(s)`);
   }
 
@@ -90,4 +118,8 @@ export async function runCleanupCommand(
 
 function defaultLog(line: string): void {
   process.stderr.write(`${line}\n`);
+}
+
+async function defaultResolveWezTerm(): Promise<string> {
+  return resolveWezTermPath({});
 }

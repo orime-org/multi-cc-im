@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  SessionStartPayloadSchema,
+  PreToolUsePayloadSchema,
   StopPayloadSchema,
-  SessionEndPayloadSchema,
   HookPayloadSchema,
   parseHookPayload,
 } from './payloads.js';
@@ -11,13 +10,15 @@ const SID = '91215578-3606-4fe4-b01d-c436bf804790';
 const TX = '/Users/x/.claude/projects/-private-tmp/91215578.jsonl';
 const CWD = '/private/tmp/cc-probe';
 
-const SESSION_START = {
+const PRE_TOOL_USE = {
   session_id: SID,
   transcript_path: TX,
   cwd: CWD,
-  hook_event_name: 'SessionStart',
-  source: 'startup',
-  model: 'claude-opus-4-7[1m]',
+  hook_event_name: 'PreToolUse',
+  permission_mode: 'default',
+  tool_name: 'Bash',
+  tool_input: { command: 'ls' },
+  tool_use_id: 'toolu_abc',
 };
 
 const STOP = {
@@ -30,40 +31,34 @@ const STOP = {
   last_assistant_message: 'hi',
 };
 
-const SESSION_END = {
-  session_id: SID,
-  transcript_path: TX,
-  cwd: CWD,
-  hook_event_name: 'SessionEnd',
-  reason: '/exit',
-};
-
-describe('SessionStartPayloadSchema', () => {
+describe('PreToolUsePayloadSchema', () => {
   it('accepts the H1 verified schema verbatim', () => {
-    expect(SessionStartPayloadSchema.parse(SESSION_START).source).toBe('startup');
+    const parsed = PreToolUsePayloadSchema.parse(PRE_TOOL_USE);
+    expect(parsed.tool_name).toBe('Bash');
+    expect(parsed.tool_use_id).toBe('toolu_abc');
   });
 
   it('rejects missing session_id', () => {
     expect(() =>
-      SessionStartPayloadSchema.parse({ ...SESSION_START, session_id: undefined }),
+      PreToolUsePayloadSchema.parse({ ...PRE_TOOL_USE, session_id: undefined }),
     ).toThrow();
   });
 
   it('rejects malformed UUID for session_id', () => {
     expect(() =>
-      SessionStartPayloadSchema.parse({ ...SESSION_START, session_id: 'not-a-uuid' }),
+      PreToolUsePayloadSchema.parse({ ...PRE_TOOL_USE, session_id: 'not-a-uuid' }),
     ).toThrow();
   });
 
   it('rejects non-absolute cwd (cc always gives realpath)', () => {
     expect(() =>
-      SessionStartPayloadSchema.parse({ ...SESSION_START, cwd: 'relative/path' }),
+      PreToolUsePayloadSchema.parse({ ...PRE_TOOL_USE, cwd: 'relative/path' }),
     ).toThrow();
   });
 
   it('rejects transcript_path not ending in .jsonl', () => {
     expect(() =>
-      SessionStartPayloadSchema.parse({ ...SESSION_START, transcript_path: '/tmp/x.txt' }),
+      PreToolUsePayloadSchema.parse({ ...PRE_TOOL_USE, transcript_path: '/tmp/x.txt' }),
     ).toThrow();
   });
 });
@@ -92,36 +87,44 @@ describe('StopPayloadSchema', () => {
   });
 });
 
-describe('SessionEndPayloadSchema', () => {
-  it('accepts the H1 verified schema verbatim', () => {
-    expect(SessionEndPayloadSchema.parse(SESSION_END).reason).toBe('/exit');
-  });
-
-  it('accepts open-enum reason values (logout / clear / etc.)', () => {
-    expect(
-      SessionEndPayloadSchema.parse({ ...SESSION_END, reason: 'logout' }).reason,
-    ).toBe('logout');
-  });
-});
-
 describe('HookPayloadSchema (discriminated union)', () => {
-  it('discriminates the 3 events by hook_event_name', () => {
-    expect(HookPayloadSchema.parse(SESSION_START).hook_event_name).toBe('SessionStart');
+  it('discriminates PreToolUse + Stop by hook_event_name', () => {
+    expect(HookPayloadSchema.parse(PRE_TOOL_USE).hook_event_name).toBe('PreToolUse');
     expect(HookPayloadSchema.parse(STOP).hook_event_name).toBe('Stop');
-    expect(HookPayloadSchema.parse(SESSION_END).hook_event_name).toBe('SessionEnd');
+  });
+
+  it('rejects SessionStart / SessionEnd (no longer subscribed per DD #61)', () => {
+    expect(() =>
+      HookPayloadSchema.parse({
+        session_id: SID,
+        transcript_path: TX,
+        cwd: CWD,
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+      }),
+    ).toThrow();
+    expect(() =>
+      HookPayloadSchema.parse({
+        session_id: SID,
+        transcript_path: TX,
+        cwd: CWD,
+        hook_event_name: 'SessionEnd',
+        reason: '/exit',
+      }),
+    ).toThrow();
   });
 
   it('rejects unknown hook_event_name', () => {
     expect(() =>
-      HookPayloadSchema.parse({ ...SESSION_START, hook_event_name: 'Mystery' }),
+      HookPayloadSchema.parse({ ...STOP, hook_event_name: 'Mystery' }),
     ).toThrow();
   });
 });
 
 describe('parseHookPayload (raw JSON entry point)', () => {
   it('parses + validates raw JSON string', () => {
-    const parsed = parseHookPayload(JSON.stringify(SESSION_START));
-    expect(parsed.hook_event_name).toBe('SessionStart');
+    const parsed = parseHookPayload(JSON.stringify(STOP));
+    expect(parsed.hook_event_name).toBe('Stop');
   });
 
   it('throws on invalid JSON', () => {

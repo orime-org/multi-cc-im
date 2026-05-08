@@ -106,6 +106,11 @@ describe('IncomingMessageSchema', () => {
     text: 'hello',
     attachments: [],
     timestamp: 1700000000000,
+    replyCtx: {
+      imType: 'wechat' as const,
+      to: 'user1',
+      contextToken: 'tk',
+    },
   };
 
   it('accepts text-only message', () => {

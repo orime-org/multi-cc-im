@@ -92,46 +92,61 @@ jobs:
           out="$(./bin/multi-cc-im --version)"
           test "$out" = "0.0.0"
 
-      - name: Smoke — Stop hook short-circuits in local mode (no IMWork)
-        # Per [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)
-        # + [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md):
-        # Stop hook returns void without writing anything when IMWork is
-        # absent (= user is in local mode). state/ dir won't even be
-        # created since no atomicWrite is invoked.
+      - name: Smoke — Stop hook silently exits when WEZTERM_PANE undefined
+        # Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+        # the hook receiver entry-gates on WEZTERM_PANE. Without it the hook
+        # silently exits without touching disk — multi-cc-im does not bridge
+        # cc instances running outside wezterm (ssh / VS Code terminal / etc.).
         run: |
           set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
+          unset WEZTERM_PANE
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
           PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
           echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
-          # Hook E1 short-circuit → no Stop file, no legacy files, no state/ dir at all.
           test ! -d "$MULTI_CC_IM_HOME/state" || {
-            echo "FAIL: state/ should not exist after short-circuit"
+            echo "FAIL: state/ should not exist when WEZTERM_PANE undefined"
             ls -la "$MULTI_CC_IM_HOME/state/"
             exit 1
           }
 
-      - name: Smoke — Stop hook writes Stop file in IM mode (forward path)
-        # When IMWork + IMOrigin + daemon.pid are all set, Stop hook writes
-        # <home>/state/<sid>.Stop.<ISO-ts> as before. Daemon would forward +
-        # unlink, but no daemon here so the file persists.
+      - name: Smoke — Stop hook short-circuits in local mode (WEZTERM_PANE set, no IMWork)
+        # Per DD #61 + [DD: IMWork+IMOrigin]: even with WEZTERM_PANE set, Stop
+        # hook short-circuits when IMWork is absent (= user in local mode).
+        # state/ dir won't be created since no atomicWrite runs.
         run: |
           set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
+          export WEZTERM_PANE=42
+          SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
+          PAYLOAD='{"session_id":"'"$SID"'","transcript_path":"/tmp/x.jsonl","cwd":"/tmp","hook_event_name":"Stop","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"hi"}'
+          echo "$PAYLOAD" | ./bin/multi-cc-im hook Stop
+          test ! -d "$MULTI_CC_IM_HOME/state" || {
+            echo "FAIL: state/ should not exist after IMWork-off short-circuit"
+            ls -la "$MULTI_CC_IM_HOME/state/"
+            exit 1
+          }
+
+      - name: Smoke — Stop hook writes <paneId>_<sid>.Stop file in IM mode (forward path)
+        # When WEZTERM_PANE + IMWork + <paneId>.IMOrigin + daemon.pid are all
+        # set, Stop hook writes <home>/state/<paneId>_<sid>.Stop.<ISO-ts>.
+        # Daemon would forward + unlink, but no daemon here so the file persists.
+        run: |
+          set -x
+          export MULTI_CC_IM_HOME="$(mktemp -d)"
+          export WEZTERM_PANE=42
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
 
-          # Set up forward-path prerequisites: IMWork tombstone + IMOrigin
-          # ctx + daemon.pid pointing at this shell (PID + lstart match so
-          # isDaemonAlive returns true).
+          # Set up forward-path prerequisites per DD #61:
+          #   - IMWork tombstone (top-level)
+          #   - <paneId>.IMOrigin with discriminated wechat ctx
+          #   - daemon.pid pointing at this shell (PID + lstart match)
           mkdir -p "$MULTI_CC_IM_HOME/state"
           : > "$MULTI_CC_IM_HOME/state/IMWork"
-          echo '{"contextToken":"smoke-test"}' > "$MULTI_CC_IM_HOME/state/${SID}.IMOrigin"
+          echo '{"imType":"wechat","to":"u","contextToken":"smoke-test"}' \
+            > "$MULTI_CC_IM_HOME/state/${WEZTERM_PANE}.IMOrigin"
           SHELL_PID=$$
-          # `ps -o lstart=` output is whitespace-padded; trim leading/trailing.
           LSTART="$(ps -o lstart= -p "$SHELL_PID" | sed 's/^ *//;s/ *$//')"
-          # Use jq to ensure the JSON escaping of LSTART is correct (the
-          # string contains spaces and may contain colons — both safe but
-          # jq is the canonical way).
           jq -n --argjson pid "$SHELL_PID" --arg startedAt "$LSTART" \
             '{pid:$pid, startedAt:$startedAt}' \
             > "$MULTI_CC_IM_HOME/state/daemon.pid"
@@ -141,17 +156,13 @@ jobs:
           ls -la "$MULTI_CC_IM_HOME/state/"
 
           shopt -s nullglob
-          stop_files=("$MULTI_CC_IM_HOME/state/$SID".Stop.*)
+          stop_files=("$MULTI_CC_IM_HOME/state/${WEZTERM_PANE}_${SID}".Stop.*)
           [ "${#stop_files[@]}" -eq 1 ]
-          # The Stop file content is JSON (atomicWrite uses 2-space pretty-print)
-          # so match the field name + value separately rather than rely on
-          # exact whitespace.
           grep -q 'last_assistant_message' "${stop_files[0]}"
           grep -q '"hi"' "${stop_files[0]}"
-          # No legacy files written.
-          ! test -f "$MULTI_CC_IM_HOME/state/$SID.events.jsonl"
-          ! test -f "$MULTI_CC_IM_HOME/state/$SID.last-hook-at"
-          ! test -f "$MULTI_CC_IM_HOME/state/$SID.cc-pid"
+          # SessionStart / SessionEnd no longer subscribed (DD #61).
+          ! test -f "$MULTI_CC_IM_HOME/state/$SID.SessionStart"
+          ! test -f "$MULTI_CC_IM_HOME/state/$SID.SessionEnd"
 
       - name: Smoke — bin wrapper falls back to tsx when dist absent
         run: |

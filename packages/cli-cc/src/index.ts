@@ -4,35 +4,40 @@
 export {
   HookPayloadSchema,
   PreToolUsePayloadSchema,
-  SessionEndPayloadSchema,
-  SessionStartPayloadSchema,
   StopPayloadSchema,
   parseHookPayload,
 } from './payloads.js';
 export type { ParsedHookPayload } from './payloads.js';
 
-// State-file IO for cc session lifecycle.
-// Per-event-type files: <sid>.SessionStart / <sid>.Stop.<ts> / <sid>.SessionEnd
-// Daemon's chokidar adapter watches the directory for these patterns.
-// PaneAlive (term-wezterm) reads SessionStart/SessionEnd for liveness.
+// State-file IO for cc session lifecycle. Per
+// [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+// hook subprocess writes <paneId>_<sid>.<event> (the file format itself is
+// the proof "this came from cc fired in wezterm"). daemon writes
+// <paneId>.IMOrigin (single key — daemon doesn't know sid at IM dispatch).
+//
+// SessionStart / SessionEnd hooks + files removed (DD #61):
+//   - cc lifecycle no longer needs file-based markers: wezterm cli list is
+//     the live source of truth for "which panes have cc"
+//   - daemon doesn't validate cc liveness via PID + lstart anymore;
+//     trusts user-side knowledge from /start IM listing
 export {
-  SESSION_START_SUFFIX,
-  SESSION_END_SUFFIX,
   STOP_PREFIX,
   PERMISSION_REQUEST_PREFIX,
   PERMISSION_RESPONSE_PREFIX,
+  IM_WORK_FILE_NAME,
+  IM_ORIGIN_SUFFIX,
+  DAEMON_PID_FILE_NAME,
   formatStopTimestamp,
-  sessionStartPath,
-  sessionEndPath,
+  parseStopFilename,
+  parsePermissionFilename,
+  parseIMOriginFilename,
+  extractPaneIdFromFilename,
   stopFilePath,
   permissionRequestPath,
   permissionResponsePath,
-  writeSessionStartFile,
-  readSessionStartFile,
-  deleteSessionStartFile,
-  writeSessionEndFile,
-  existsSessionEndFile,
-  deleteSessionEndFile,
+  imWorkPath,
+  imOriginPath,
+  daemonPidPath,
   writeStopFile,
   readStopFile,
   deleteStopFile,
@@ -46,10 +51,6 @@ export {
   deletePermissionFileByPath,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
-  IM_WORK_FILE_NAME,
-  IM_ORIGIN_SUFFIX,
-  imWorkPath,
-  imOriginPath,
   writeIMWorkFile,
   existsIMWorkFile,
   deleteIMWorkFile,
@@ -58,8 +59,6 @@ export {
   existsIMOriginFile,
   deleteIMOriginFile,
   listIMOriginFiles,
-  DAEMON_PID_FILE_NAME,
-  daemonPidPath,
   writeDaemonPidFile,
   readDaemonPidFile,
   deleteDaemonPidFile,
@@ -67,16 +66,21 @@ export {
   isDaemonAlive,
 } from './state-files.js';
 export type {
-  PerSessionIO,
-  SessionStartFile,
+  PerPaneIO,
+  IMOriginIO,
   StopFile,
   PermissionRequestFile,
   PermissionResponseFile,
   DaemonPidFile,
+  ParsedStopFilename,
+  ParsedPermissionFilename,
+  ParsedIMOriginFilename,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI
-// subcommand (future CLI package).
+// subcommand. Per DD #61: only PreToolUse + Stop are subscribed (cc
+// settings.json hook list is 2 events, down from 4 — SessionStart and
+// SessionEnd dropped).
 export { runHookReceiver } from './hook-receiver.js';
 export type { HookDecision, RunHookReceiverOpts } from './hook-receiver.js';
 

@@ -1,232 +1,154 @@
 import { describe, it, expect } from 'vitest';
-import type { CwdAbs, PaneId, SessionId } from '@multi-cc-im/shared';
+import type { PaneId } from '@multi-cc-im/shared';
 import { matchSession, RESERVED_BRIDGE_NAME, type SessionInfo } from './matcher.js';
 
-function s(
-  shortIdHex: string,
-  tabTitle: string | undefined,
-  paneId = 1,
-): SessionInfo {
-  // Build a UUID-shape SessionId where the first 8 hex chars match the short
-  // hash, so id-prefix matching can be tested deterministically.
-  const padded = shortIdHex.padEnd(8, '0').slice(0, 8);
-  const sessionId = `${padded}-3606-4fe4-b01d-${'0'.repeat(12)}` as SessionId;
+function s(tabTitle: string, paneId = 1): SessionInfo {
   return {
-    sessionId,
     paneId: paneId as PaneId,
     tabTitle,
-    cwd: '/tmp/proj' as CwdAbs,
+    cwd: '/tmp/proj',
   };
 }
 
-describe('matchSession — tmux 4-level fallback', () => {
+describe('matchSession — tmux-style 4-level fallback over tabTitle', () => {
   it('empty session list → none', () => {
     expect(matchSession('frontend', [])).toEqual({ type: 'none' });
   });
 
-  describe('Level 1: $<id-prefix> session_id short hash', () => {
-    it('matches by exact id prefix (4+ chars)', () => {
-      const a = s('abc12345', 'frontend');
-      const b = s('def67890', 'api');
-      expect(matchSession('$abc12345', [a, b])).toEqual({
+  describe('Level 1: =<exact> strict tabTitle', () => {
+    it('matches verbatim only', () => {
+      const a = s('frontend');
+      const b = s('frontend-prod');
+      expect(matchSession('=frontend', [a, b])).toEqual({
         type: 'unique',
         session: a,
       });
     });
 
-    it('matches partial id prefix (uses startsWith)', () => {
-      const a = s('abc12345', 'frontend');
-      const b = s('def67890', 'api');
-      expect(matchSession('$abc1', [a, b])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-
-    it('id-prefix with no match → none', () => {
-      const a = s('abc12345', 'frontend');
-      expect(matchSession('$xyz', [a])).toEqual({ type: 'none' });
-    });
-
-    it('id-prefix with multiple matches → ambiguous', () => {
-      const a = s('abc12345', 'frontend');
-      const b = s('abc67890', 'api');
-      expect(matchSession('$abc', [a, b])).toEqual({
-        type: 'ambiguous',
-        candidates: [a, b],
-      });
-    });
-
-    it('id-prefix never falls through to tabTitle (strict)', () => {
-      const a = s('99999999', 'frontend');
-      // $frontend looks like an id-prefix even though "frontend" matches a
-      // tabTitle — `$` mode is strict id-only.
-      expect(matchSession('$frontend', [a])).toEqual({ type: 'none' });
-    });
-  });
-
-  describe('Level 2: =<exact> strict tabTitle (no fallback)', () => {
-    it('matches exact tabTitle', () => {
-      const a = s('aaaa', 'frontend');
-      expect(matchSession('=frontend', [a])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-
-    it('rejects prefix when using = (strict mode)', () => {
-      const a = s('aaaa', 'frontend');
+    it('does NOT fall through to prefix when no strict match', () => {
+      const a = s('frontend');
       expect(matchSession('=front', [a])).toEqual({ type: 'none' });
     });
 
-    it('rejects glob when using =', () => {
-      const a = s('aaaa', 'frontend');
-      expect(matchSession('=front*', [a])).toEqual({ type: 'none' });
+    it('=front matching multiple → ambiguous (caller reports list)', () => {
+      const a = s('front', 1);
+      const b = s('front', 2);
+      const result = matchSession('=front', [a, b]);
+      expect(result.type).toBe('ambiguous');
     });
   });
 
-  describe('Level 3: exact tabTitle', () => {
-    it('matches exact tabTitle (case-sensitive)', () => {
-      const a = s('aaaa', 'frontend');
-      const b = s('bbbb', 'api');
+  describe('Level 2: exact tabTitle (no = prefix)', () => {
+    it('frontend matches "frontend" exactly', () => {
+      const a = s('frontend');
+      const b = s('frontend-prod');
       expect(matchSession('frontend', [a, b])).toEqual({
         type: 'unique',
         session: a,
       });
     });
 
-    it('case mismatch → falls through to prefix', () => {
-      const a = s('aaaa', 'Frontend');
-      // No exact match for "frontend" (lowercase); also no prefix of "Frontend"
-      // starts with "frontend" (case-sensitive) → none
-      expect(matchSession('frontend', [a])).toEqual({ type: 'none' });
-    });
-
-    it('exact wins over prefix when both apply', () => {
-      // Two tabTitles: "fe" exact, "front" prefix-could-match if "fe" not
-      // exact. Querying "fe" → exact match wins.
-      const exact = s('aaaa', 'fe');
-      const prefix = s('bbbb', 'front');
-      expect(matchSession('fe', [exact, prefix])).toEqual({
-        type: 'unique',
-        session: exact,
-      });
+    it('case-sensitive: Frontend ≠ frontend', () => {
+      const a = s('frontend');
+      const result = matchSession('Frontend', [a]);
+      // Falls through to prefix (no exact + no prefix on case-sensitive) → none.
+      expect(result.type).toBe('none');
     });
   });
 
-  describe('Level 4: prefix tabTitle', () => {
-    it('matches unique prefix', () => {
-      const a = s('aaaa', 'frontend');
-      const b = s('bbbb', 'api');
-      expect(matchSession('fr', [a, b])).toEqual({
+  describe('Level 3: prefix tabTitle', () => {
+    it('front matches "frontend" by prefix', () => {
+      const a = s('frontend');
+      expect(matchSession('front', [a])).toEqual({
         type: 'unique',
         session: a,
       });
     });
 
-    it('one-character prefix uniquely matches', () => {
-      const a = s('aaaa', 'frontend');
-      const b = s('bbbb', 'api');
-      expect(matchSession('a', [a, b])).toEqual({
+    it('multiple prefix candidates → ambiguous', () => {
+      const a = s('frontend', 1);
+      const b = s('frontmatter', 2);
+      const result = matchSession('front', [a, b]);
+      expect(result.type).toBe('ambiguous');
+      if (result.type === 'ambiguous') {
+        expect(result.candidates).toHaveLength(2);
+      }
+    });
+  });
+
+  describe('Level 4: glob tabTitle (* / ? wildcards)', () => {
+    it('*end matches "frontend"', () => {
+      const a = s('frontend');
+      const b = s('backend');
+      const result = matchSession('*end', [a, b]);
+      expect(result.type).toBe('ambiguous');
+    });
+
+    it('front* matches "frontend"', () => {
+      const a = s('frontend');
+      expect(matchSession('front*', [a])).toEqual({
+        type: 'unique',
+        session: a,
+      });
+    });
+
+    it('? matches single char', () => {
+      const a = s('api1');
+      const b = s('api2');
+      const result = matchSession('api?', [a, b]);
+      expect(result.type).toBe('ambiguous');
+    });
+
+    it('glob with no match → none', () => {
+      const a = s('frontend');
+      expect(matchSession('back*', [a])).toEqual({ type: 'none' });
+    });
+  });
+
+  describe('panes without /rename (empty tabTitle)', () => {
+    it('empty tabTitle is not addressable from IM', () => {
+      const a = s('', 1);
+      const b = s('frontend', 2);
+      // exact match for empty query is excluded; prefix/glob also skip empty titles.
+      expect(matchSession('frontend', [a, b])).toEqual({
         type: 'unique',
         session: b,
       });
     });
 
-    it('ambiguous prefix → ambiguous + candidates', () => {
-      const a = s('aaaa', 'frontend');
-      const b = s('bbbb', 'frame');
-      expect(matchSession('fr', [a, b])).toEqual({
-        type: 'ambiguous',
-        candidates: [a, b],
-      });
-    });
-
-    it('ambiguous candidates preserve registry order', () => {
-      const c = s('cccc', 'frame');
-      const a = s('aaaa', 'frontend');
-      const result = matchSession('fr', [c, a]);
-      expect(result).toEqual({ type: 'ambiguous', candidates: [c, a] });
-    });
-  });
-
-  describe('Level 5: glob tabTitle (fnmatch * and ?)', () => {
-    it('* glob matches multiple in middle', () => {
-      const a = s('aaaa', 'frontend');
-      const b = s('bbbb', 'api-frontend');
-      expect(matchSession('*frontend', [a, b])).toEqual({
-        type: 'ambiguous',
-        candidates: [a, b],
-      });
-    });
-
-    it('* glob matches uniquely', () => {
-      const a = s('aaaa', 'main-api');
-      const b = s('bbbb', 'auxiliary');
-      expect(matchSession('*-api', [a, b])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-
-    it('? glob matches single char', () => {
-      const a = s('aaaa', 'fe1');
-      const b = s('bbbb', 'fe22');
-      expect(matchSession('fe?', [a, b])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-
-    it('glob with no match → none', () => {
-      const a = s('aaaa', 'frontend');
-      expect(matchSession('*xyz*', [a])).toEqual({ type: 'none' });
-    });
-  });
-
-  describe('Sessions without tabTitle fall back to id-prefix only', () => {
-    it('session with no tabTitle not matched by name query', () => {
-      const a = s('abc12345', undefined);
-      expect(matchSession('frontend', [a])).toEqual({ type: 'none' });
-    });
-
-    it('session with no tabTitle still matched by $ id-prefix', () => {
-      const a = s('abc12345', undefined);
-      expect(matchSession('$abc', [a])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-  });
-
-  describe('Reserved bridge name', () => {
-    it('reserved name multi-cc-im → never resolves to a session', () => {
-      // Even if a user manages to /rename a cc to the reserved name, the
-      // matcher must NOT resolve `multi-cc-im` to that session — the router
-      // owns that string for bridge commands.
-      expect(RESERVED_BRIDGE_NAME).toBe('multi-cc-im');
-      const a = s('aaaa', 'multi-cc-im');
-      expect(matchSession('multi-cc-im', [a])).toEqual({ type: 'none' });
-    });
-  });
-
-  describe('Edge cases', () => {
-    it('Unicode tabTitle (CJK) matches exact', () => {
-      const a = s('aaaa', '前端');
-      expect(matchSession('前端', [a])).toEqual({
-        type: 'unique',
-        session: a,
-      });
-    });
-
-    it('empty query → none', () => {
-      const a = s('aaaa', 'frontend');
+    it('empty query → none even when panes exist', () => {
+      const a = s('frontend');
       expect(matchSession('', [a])).toEqual({ type: 'none' });
     });
+  });
 
-    it('single-session prefix self-match', () => {
-      const a = s('aaaa', 'main');
-      expect(matchSession('m', [a])).toEqual({
+  describe('reserved bridge name', () => {
+    it('@multi-cc-im never resolves to a session', () => {
+      const a = s(RESERVED_BRIDGE_NAME);
+      expect(matchSession(RESERVED_BRIDGE_NAME, [a])).toEqual({
+        type: 'none',
+      });
+    });
+  });
+
+  describe('precedence: each level is final (no fall-through)', () => {
+    it('exact match found → does NOT also consider prefix / glob', () => {
+      const exact = s('front', 1);
+      const longer = s('frontend', 2);
+      // "front" exact-matches `exact` only; `longer` would prefix-match but
+      // we stop at level 2.
+      expect(matchSession('front', [exact, longer])).toEqual({
+        type: 'unique',
+        session: exact,
+      });
+    });
+
+    it('prefix match found → does NOT fall through to glob (which might widen)', () => {
+      const a = s('frontend', 1);
+      const b = s('backend', 2);
+      // "front" prefix-matches `a` only; glob would widen to anything but
+      // level 3 returns unique.
+      expect(matchSession('front', [a, b])).toEqual({
         type: 'unique',
         session: a,
       });

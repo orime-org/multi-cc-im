@@ -2,33 +2,39 @@ import { execFile } from 'node:child_process';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@multi-cc-im/storage-files';
+import {
+  IMReplyContextSchema,
+  type IMReplyContext,
+} from '@multi-cc-im/shared';
 
 /**
- * State file IO for cc session lifecycle.
+ * State file IO for cc session lifecycle, post-DD #61
+ * (pane-keyed state files, see [DD](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)).
  *
- * Per-session files live under `<stateDir>/<sessionId>.<suffix>` where
- * `stateDir` defaults to `~/.multi-cc-im/state/` (caller decides exact path).
- * The directory is **monitor-only** — it never accumulates cc conversation
- * content (cc's own transcript jsonl at `~/.claude/projects/<dir>/<sid>.jsonl`
- * already records that data). multi-cc-im keeps these per-event files purely
- * to bridge the hook subprocess ↔ daemon process gap.
+ * Files live under `<stateDir>` (typically `~/.multi-cc-im/state/`). Two
+ * categories:
  *
- * - `<sid>.SessionStart` — written by SessionStart hook with pid / startedAt /
- *                          paneId / cwd / transcript_path. Truncate-rewritten
- *                          on `claude --resume` (same sid). Long-lived for
- *                          the duration of the cc session.
- * - `<sid>.Stop.<ts>`    — written by Stop hook per-turn with the assistant
- *                          reply. Daemon reads → forwards to wechat → unlinks
- *                          (typical lifetime <100ms). Multiple files can
- *                          accumulate if daemon was down; processed in
- *                          timestamp order.
- * - `<sid>.SessionEnd`   — empty 0-byte tombstone written by SessionEnd hook.
- *                          Daemon checks file existence to mark cc dead.
+ * **Top-level (per-daemon):**
+ * - `IMWork`         — 0-byte tombstone; user controls via @multi-cc-im /start /stop
+ * - `daemon.pid`     — daemon PID lock (JSON `{pid, startedAt}`)
+ * - `wechat-cursor`  — iLink long-poll cursor (handled by im-wechat package, not here)
+ *
+ * **Per-pane (cc-fired or daemon-fired, prefixed by wezterm pane id):**
+ * - `<paneId>_<sid>.Stop.<ts>`                    — cc Stop hook writes
+ * - `<paneId>_<sid>.PermissionRequest.<id>.json`  — cc PreToolUse hook writes
+ * - `<paneId>_<sid>.PermissionResponse.<id>.json` — daemon writes (mirrors Request key)
+ * - `<paneId>.IMOrigin`                           — daemon writes (single paneId — daemon
+ *                                                   doesn't know sid at IM dispatch time)
+ *
+ * **Filter-by-naming**: the `<paneId>_<sid>.<event>` format is itself the
+ * proof of authenticity. Only a hook subprocess invoked by cc inside a
+ * wezterm tab can construct it (paneId from `process.env.WEZTERM_PANE`,
+ * sid from cc hook payload). vim / ssh / VS Code-launched cc cannot
+ * produce these files. See [DD](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
  *
  * All writes go through `@multi-cc-im/storage-files`'s `atomicWrite` (mode
  * 0600 + same-dir tmp + fsync + rename). Reads are plain `readFile`; ENOENT
- * → null. Per [pane-alive strategy DD](../../../docs/superpowers/specs/2026-04-30-pane-alive-strategy-dd.md)
- * + Storage DD pattern A (state files + atomic write, no SQL DB).
+ * → null.
  */
 
 function isENOENT(err: unknown): boolean {
@@ -40,134 +46,143 @@ function isENOENT(err: unknown): boolean {
 }
 
 // ============================================================================
-// File-name suffixes (single source of truth for adapter file-watch + sweep)
+// File-name suffixes / prefixes (single source of truth for adapter file-watch
+// + sweep + filename parsers).
 // ============================================================================
 
-export const SESSION_START_SUFFIX = '.SessionStart';
-export const SESSION_END_SUFFIX = '.SessionEnd';
 export const STOP_PREFIX = '.Stop.';
-export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
-export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
-/** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
-export const IM_WORK_FILE_NAME = 'IMWork';
-/** Per the same DD — per-session IMReplyContext snapshot. */
-export const IM_ORIGIN_SUFFIX = '.IMOrigin';
-/** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
-export const DAEMON_PID_FILE_NAME = 'daemon.pid';
 
 /**
  * Convert a Date to a filesystem-safe ISO-style timestamp:
- * `2026-05-06T16:20:15.123Z` → `2026-05-06T16-20-15-123Z`.
+ * `2026-05-08T16:20:15.123Z` → `2026-05-08T16-20-15-123Z`.
  *
- * Colons are valid on POSIX filesystems but break Windows / SMB shares; periods
- * are fine but replacing both with `-` keeps the format uniform and
- * lexicographically-sortable (timestamps sort correctly as strings).
+ * Used as the suffix in `<paneId>_<sid>.Stop.<ts>` filenames. The colon-free
+ * form is portable across POSIX + Windows / SMB shares; lexicographic sort
+ * still equals chronological order (so daemon catch-up after downtime
+ * processes oldest-first naturally).
  */
 export function formatStopTimestamp(d: Date): string {
   return d.toISOString().replace(/[:.]/g, '-');
 }
 
+export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
+export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
+/** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
+export const IM_WORK_FILE_NAME = 'IMWork';
+/** Per [DD: pane-keyed state](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md) — per-pane IM reply ctx. */
+export const IM_ORIGIN_SUFFIX = '.IMOrigin';
+/** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
+export const DAEMON_PID_FILE_NAME = 'daemon.pid';
+
 // ============================================================================
-// SessionStart file: long-lived snapshot of cc session metadata
+// Per-pane IO opts (double-keyed — for Stop + Permission files)
 // ============================================================================
 
-export interface SessionStartFile {
-  /** cc parent process PID at SessionStart time. */
-  pid: number;
-  /**
-   * Output of `ps -o lstart= -p <pid>` captured at SessionStart, used to detect
-   * PID reuse on later isAlive checks. Stored verbatim (not parsed) — exact
-   * string match is the comparison.
-   */
-  startedAt: string;
-  /**
-   * `process.env.WEZTERM_PANE` captured at SessionStart hook (cc inherits the
-   * env from wezterm). Bridge session-registry uses this for the
-   * `paneId → sessionId` reverse map. Optional: cc may run outside wezterm
-   * (no env), in which case the session isn't routable from bridge.
-   */
-  paneId?: number;
-  /**
-   * `cwd` from SessionStart payload (already realpath'd by cc). Bridge
-   * SessionRegistry stores so the session can be displayed / filtered by
-   * project root without re-reading the payload.
-   */
-  cwd: string;
-  /**
-   * `transcript_path` from SessionStart payload (cc's own jsonl file path).
-   * Reserved for future analytics work that wants to read cc's transcript
-   * directly without spawning a hook.
-   */
-  transcript_path: string;
-}
-
-export interface PerSessionIO {
+/** IO options used by `<paneId>_<sid>.<event>` files (Stop + PermissionRequest/Response). */
+export interface PerPaneIO {
   stateDir: string;
+  /** Wezterm pane id (numeric, from `process.env.WEZTERM_PANE`). */
+  paneId: number;
+  /** cc session id (UUID v4, from hook payload). */
   sessionId: string;
 }
 
-export function sessionStartPath(opts: PerSessionIO): string {
-  return join(opts.stateDir, `${opts.sessionId}${SESSION_START_SUFFIX}`);
+function paneSidPrefix(paneId: number, sessionId: string): string {
+  return `${paneId}_${sessionId}`;
 }
 
-export async function writeSessionStartFile(
-  opts: PerSessionIO & SessionStartFile,
-): Promise<void> {
-  const body: SessionStartFile = {
-    pid: opts.pid,
-    startedAt: opts.startedAt,
-    ...(opts.paneId !== undefined ? { paneId: opts.paneId } : {}),
-    cwd: opts.cwd,
-    transcript_path: opts.transcript_path,
+// ============================================================================
+// Filename parsers
+//
+// Used by daemon (chokidar add events give absolute paths; daemon parses
+// filename to extract paneId + sid + extra metadata for routing).
+// ============================================================================
+
+const PANE_SID_PATTERN =
+  /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
+
+export interface ParsedStopFilename {
+  paneId: number;
+  sessionId: string;
+  /** Timestamp suffix verbatim (e.g. `2026-05-08T01-43-40-131Z`). */
+  timestamp: string;
+}
+
+/**
+ * Parse `<paneId>_<sid>.Stop.<ts>` filename. Returns null if the basename
+ * doesn't match (caller should ignore — could be IMWork / daemon.pid /
+ * unrelated file).
+ *
+ * Accepts either basename or absolute path.
+ */
+export function parseStopFilename(name: string): ParsedStopFilename | null {
+  const base = name.includes('/') ? name.split('/').pop()! : name;
+  const m = base.match(
+    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Stop\.(.+)$/,
+  );
+  if (!m) return null;
+  return {
+    paneId: Number(m[1]),
+    sessionId: m[2]!,
+    timestamp: m[3]!,
   };
-  await atomicWrite(sessionStartPath(opts), JSON.stringify(body, null, 2));
 }
 
-export async function readSessionStartFile(
-  opts: PerSessionIO,
-): Promise<SessionStartFile | null> {
-  return readJsonOrNull<SessionStartFile>(sessionStartPath(opts));
+export interface ParsedPermissionFilename {
+  paneId: number;
+  sessionId: string;
+  /** 8-char hex request id. */
+  requestId: string;
+  kind: 'request' | 'response';
 }
 
-export async function deleteSessionStartFile(
-  opts: PerSessionIO,
-): Promise<void> {
-  await unlinkOrIgnoreENOENT(sessionStartPath(opts));
+export function parsePermissionFilename(
+  name: string,
+): ParsedPermissionFilename | null {
+  const base = name.includes('/') ? name.split('/').pop()! : name;
+  const m = base.match(
+    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Permission(Request|Response)\.([0-9a-f]+)\.json$/,
+  );
+  if (!m) return null;
+  return {
+    paneId: Number(m[1]),
+    sessionId: m[2]!,
+    kind: m[3] === 'Request' ? 'request' : 'response',
+    requestId: m[4]!,
+  };
+}
+
+export interface ParsedIMOriginFilename {
+  paneId: number;
+}
+
+export function parseIMOriginFilename(
+  name: string,
+): ParsedIMOriginFilename | null {
+  const base = name.includes('/') ? name.split('/').pop()! : name;
+  const m = base.match(/^(\d+)\.IMOrigin$/);
+  if (!m) return null;
+  return { paneId: Number(m[1]) };
+}
+
+/**
+ * Generic "is this filename a pane-prefixed cc-hook file?" check.
+ * Used by state-sweep to decide whether a file falls under "per-pane" cleanup
+ * (vs top-level files like IMWork / daemon.pid / wechat-cursor).
+ */
+export function extractPaneIdFromFilename(name: string): number | null {
+  const base = name.includes('/') ? name.split('/').pop()! : name;
+  // <paneId>_<sid>.<event> (Stop / Permission*)
+  const m1 = base.match(PANE_SID_PATTERN);
+  if (m1) return Number(m1[1]);
+  // <paneId>.IMOrigin
+  const m2 = base.match(/^(\d+)\.IMOrigin$/);
+  if (m2) return Number(m2[1]);
+  return null;
 }
 
 // ============================================================================
-// SessionEnd file: empty tombstone — file existence IS the signal
-// ============================================================================
-
-export function sessionEndPath(opts: PerSessionIO): string {
-  return join(opts.stateDir, `${opts.sessionId}${SESSION_END_SUFFIX}`);
-}
-
-export async function writeSessionEndFile(opts: PerSessionIO): Promise<void> {
-  // 0-byte tombstone — daemon only checks file existence; reason / endedAt
-  // are intentionally NOT persisted (cc's transcript records the reason if
-  // anyone really needs it; mtime gives endedAt for cleanup retention).
-  await atomicWrite(sessionEndPath(opts), '');
-}
-
-export async function existsSessionEndFile(
-  opts: PerSessionIO,
-): Promise<boolean> {
-  try {
-    await readFile(sessionEndPath(opts));
-    return true;
-  } catch (err) {
-    if (isENOENT(err)) return false;
-    throw err;
-  }
-}
-
-export async function deleteSessionEndFile(opts: PerSessionIO): Promise<void> {
-  await unlinkOrIgnoreENOENT(sessionEndPath(opts));
-}
-
-// ============================================================================
-// Stop files: per-turn transient queue (write → forward → unlink)
+// Stop file: per-turn transient queue (write → daemon forward → unlink)
 // ============================================================================
 
 export interface StopFile {
@@ -175,24 +190,23 @@ export interface StopFile {
   last_assistant_message: string;
 }
 
-export function stopFilePath(opts: PerSessionIO & { timestamp: string }): string {
+export function stopFilePath(opts: PerPaneIO & { timestamp: string }): string {
   return join(
     opts.stateDir,
-    `${opts.sessionId}${STOP_PREFIX}${opts.timestamp}`,
+    `${paneSidPrefix(opts.paneId, opts.sessionId)}${STOP_PREFIX}${opts.timestamp}`,
   );
 }
 
 export async function writeStopFile(
-  opts: PerSessionIO & { timestamp: string; last_assistant_message: string },
+  opts: PerPaneIO & { timestamp: string; last_assistant_message: string },
 ): Promise<void> {
   const body: StopFile = { last_assistant_message: opts.last_assistant_message };
   await atomicWrite(stopFilePath(opts), JSON.stringify(body, null, 2));
 }
 
 /**
- * Read a Stop file by absolute path (chokidar 'add' gives us full paths).
- * Returns null on ENOENT — handles the daemon-double-event race where
- * chokidar fires twice for the same file.
+ * Read a Stop file by absolute path (chokidar 'add' event provides it).
+ * Returns null on ENOENT — handles the daemon-double-event race.
  */
 export async function readStopFile(filePath: string): Promise<StopFile | null> {
   return readJsonOrNull<StopFile>(filePath);
@@ -203,12 +217,12 @@ export async function deleteStopFile(filePath: string): Promise<void> {
 }
 
 /**
- * List all `<sid>.Stop.*` files for a given session, sorted ascending by
- * timestamp suffix (= chronological order — daemon should process oldest
- * first when catching up after downtime).
+ * List all `<paneId>_<sid>.Stop.*` files for a given pane+sid pair, sorted
+ * by timestamp suffix (= chronological). Caller (hook subprocess) uses this
+ * to clear stale Stop files before writing a new one.
  */
-export async function listStopFiles(opts: PerSessionIO): Promise<string[]> {
-  const prefix = `${opts.sessionId}${STOP_PREFIX}`;
+export async function listStopFiles(opts: PerPaneIO): Promise<string[]> {
+  const prefix = `${paneSidPrefix(opts.paneId, opts.sessionId)}${STOP_PREFIX}`;
   let entries: string[];
   try {
     entries = await readdir(opts.stateDir);
@@ -218,21 +232,21 @@ export async function listStopFiles(opts: PerSessionIO): Promise<string[]> {
   }
   return entries
     .filter((name) => name.startsWith(prefix))
-    .sort() // lexicographic = chronological for our timestamp format
+    .sort()
     .map((name) => join(opts.stateDir, name));
 }
 
 // ============================================================================
-// Permission request / response files: hook-subprocess ↔ daemon IPC for
-// `@<tabname> /1` (allow) / `/2` (deny) IM審批 per [DD permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+// Permission Request / Response: hook-subprocess ↔ daemon IPC for
+// `@<tab> /1` (allow) / `/2` (deny) IM 审批.
 //
-// Lifecycle:
-//   1. cc PreToolUse hook → hook subprocess writes <sid>.PermissionRequest.<id>.json
-//   2. daemon (chokidar) picks up the file, forwards prompt to IM
-//   3. IM user replies → daemon writes <sid>.PermissionResponse.<id>.json
-//   4. hook subprocess (polling) reads response, then unlinks both files
-//      and exits with stdout `{permissionDecision: ...}`.
-//   5. On daemon-down: cleanup sweep deletes orphan request/response files.
+// Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)
+// + DD #61 (pane-keyed). Lifecycle:
+//   1. cc PreToolUse → hook subprocess writes <paneId>_<sid>.PermissionRequest.<id>.json
+//   2. daemon (chokidar add) parses paneId, looks up <paneId>.IMOrigin → forwards prompt to IM
+//   3. IM user replies → daemon writes <paneId>_<sid>.PermissionResponse.<id>.json (copies pane+sid)
+//   4. hook subprocess (polling) reads response → unlinks both files → exits with cc decision
+//   5. On hook crash: daemon-side reaper backstop unlinks ~10s after Request appears
 // ============================================================================
 
 export interface PermissionRequestFile {
@@ -257,25 +271,25 @@ export interface PermissionResponseFile {
 }
 
 export function permissionRequestPath(
-  opts: PerSessionIO & { requestId: string },
+  opts: PerPaneIO & { requestId: string },
 ): string {
   return join(
     opts.stateDir,
-    `${opts.sessionId}${PERMISSION_REQUEST_PREFIX}${opts.requestId}.json`,
+    `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_REQUEST_PREFIX}${opts.requestId}.json`,
   );
 }
 
 export function permissionResponsePath(
-  opts: PerSessionIO & { requestId: string },
+  opts: PerPaneIO & { requestId: string },
 ): string {
   return join(
     opts.stateDir,
-    `${opts.sessionId}${PERMISSION_RESPONSE_PREFIX}${opts.requestId}.json`,
+    `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_RESPONSE_PREFIX}${opts.requestId}.json`,
   );
 }
 
 export async function writePermissionRequestFile(
-  opts: PerSessionIO & PermissionRequestFile,
+  opts: PerPaneIO & PermissionRequestFile,
 ): Promise<void> {
   const body: PermissionRequestFile = {
     requestId: opts.requestId,
@@ -283,10 +297,7 @@ export async function writePermissionRequestFile(
     toolInput: opts.toolInput,
     createdAt: opts.createdAt,
   };
-  await atomicWrite(
-    permissionRequestPath(opts),
-    JSON.stringify(body, null, 2),
-  );
+  await atomicWrite(permissionRequestPath(opts), JSON.stringify(body, null, 2));
 }
 
 export async function readPermissionRequestFile(
@@ -296,17 +307,14 @@ export async function readPermissionRequestFile(
 }
 
 export async function writePermissionResponseFile(
-  opts: PerSessionIO & PermissionResponseFile,
+  opts: PerPaneIO & PermissionResponseFile,
 ): Promise<void> {
   const body: PermissionResponseFile = {
     requestId: opts.requestId,
     decision: opts.decision,
     reason: opts.reason,
   };
-  await atomicWrite(
-    permissionResponsePath(opts),
-    JSON.stringify(body, null, 2),
-  );
+  await atomicWrite(permissionResponsePath(opts), JSON.stringify(body, null, 2));
 }
 
 export async function readPermissionResponseFile(
@@ -316,22 +324,21 @@ export async function readPermissionResponseFile(
 }
 
 export async function deletePermissionRequestFile(
-  opts: PerSessionIO & { requestId: string },
+  opts: PerPaneIO & { requestId: string },
 ): Promise<void> {
   await unlinkOrIgnoreENOENT(permissionRequestPath(opts));
 }
 
 export async function deletePermissionResponseFile(
-  opts: PerSessionIO & { requestId: string },
+  opts: PerPaneIO & { requestId: string },
 ): Promise<void> {
   await unlinkOrIgnoreENOENT(permissionResponsePath(opts));
 }
 
 /**
- * Delete a permission Request/Response file by absolute path. Mirrors
- * `deleteStopFile`'s API — useful when sweeping per-sid orphans returned
- * by `listPermission*Files` without re-parsing the request id from the
- * filename.
+ * Delete a permission Request/Response file by absolute path.
+ * Used by daemon-side reaper + state-sweep — both have file paths from
+ * chokidar / readdir, no need to re-derive paneId/sid/requestId.
  */
 export async function deletePermissionFileByPath(
   filePath: string,
@@ -340,14 +347,14 @@ export async function deletePermissionFileByPath(
 }
 
 /**
- * List all `<sid>.PermissionRequest.*` files for a given session. Used by
- * the PreToolUse hook subprocess to sweep orphans before writing its own
- * Request (mirrors Stop's "clear stale before write" pattern).
+ * List `<paneId>_<sid>.PermissionRequest.*` files for a given pane+sid pair.
+ * Used by hook subprocess to sweep stale Requests before writing a new one
+ * (mirrors Stop's "clear stale before write").
  */
 export async function listPermissionRequestFiles(
-  opts: PerSessionIO,
+  opts: PerPaneIO,
 ): Promise<string[]> {
-  const prefix = `${opts.sessionId}${PERMISSION_REQUEST_PREFIX}`;
+  const prefix = `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_REQUEST_PREFIX}`;
   let entries: string[];
   try {
     entries = await readdir(opts.stateDir);
@@ -361,9 +368,9 @@ export async function listPermissionRequestFiles(
 }
 
 export async function listPermissionResponseFiles(
-  opts: PerSessionIO,
+  opts: PerPaneIO,
 ): Promise<string[]> {
-  const prefix = `${opts.sessionId}${PERMISSION_RESPONSE_PREFIX}`;
+  const prefix = `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_RESPONSE_PREFIX}`;
   let entries: string[];
   try {
     entries = await readdir(opts.stateDir);
@@ -377,13 +384,9 @@ export async function listPermissionResponseFiles(
 }
 
 // ============================================================================
-// IMWork: global tombstone — file exists ⇔ user is in IM mode (manual switch
-// via @multi-cc-im /start /stop). Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
-//
-// Contents: 0-byte tombstone (file existence IS the signal). Lifecycle:
-//   - daemon writes on `@multi-cc-im /start`
-//   - daemon deletes on `@multi-cc-im /stop`
-//   - daemon deletes on every daemon start (auto-reset to local mode)
+// IMWork: global tombstone — file exists ⇔ user is in IM mode (manual
+// switch via @multi-cc-im /start /stop).
+// Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
 // ============================================================================
 
 export function imWorkPath(stateDir: string): string {
@@ -410,33 +413,51 @@ export async function deleteIMWorkFile(stateDir: string): Promise<void> {
 }
 
 // ============================================================================
-// IMOrigin: per-session IMReplyContext snapshot. Tracks "the most recent IM
-// dispatch ctx for this cc". Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+// IMOrigin: per-pane IMReplyContext snapshot. Filename is `<paneId>.IMOrigin`
+// (single key — daemon writes it on inbound IM dispatch and at that point
+// daemon doesn't know the cc sessionId).
 //
-// Contents: opaque IMReplyContext JSON — bridge stores adapter-defined value
-// without inspecting it (mirrors `ReplyContext = unknown` design in shared).
-// Lifecycle:
-//   - daemon writes/overwrites on every IM dispatch to this cc (B2 — newest ctx wins)
+// Contents: `IMReplyContext` JSON (discriminated union with `imType`
+// discriminator, validated by `IMReplyContextSchema` from `@multi-cc-im/shared`).
+//
+// Lifecycle (per DD #58 / DD #61):
+//   - daemon writes/overwrites on every IM dispatch to this pane (B2 — newest ctx wins)
 //   - daemon deletes after cc Stop forward (one-shot)
-//   - daemon start sweep (orphan cleanup)
+//   - daemon start sweep (orphan cleanup — pane no longer alive)
 // ============================================================================
 
-export function imOriginPath(opts: PerSessionIO): string {
-  return join(opts.stateDir, `${opts.sessionId}${IM_ORIGIN_SUFFIX}`);
+export interface IMOriginIO {
+  stateDir: string;
+  paneId: number;
+}
+
+export function imOriginPath(opts: IMOriginIO): string {
+  return join(opts.stateDir, `${opts.paneId}${IM_ORIGIN_SUFFIX}`);
 }
 
 export async function writeIMOriginFile(
-  opts: PerSessionIO & { replyCtx: unknown },
+  opts: IMOriginIO & { replyCtx: IMReplyContext },
 ): Promise<void> {
-  // Overwrite semantic — newest ctx wins (B2 per DD).
+  // Defense-in-depth: validate the ctx shape before persisting so disk never
+  // ends up with a malformed IMReplyContext that breaks future readers.
+  IMReplyContextSchema.parse(opts.replyCtx);
   await atomicWrite(imOriginPath(opts), JSON.stringify(opts.replyCtx, null, 2));
 }
 
-export async function readIMOriginFile(opts: PerSessionIO): Promise<unknown> {
-  return readJsonOrNull<unknown>(imOriginPath(opts));
+/**
+ * Read + zod-validate `<paneId>.IMOrigin`. Returns null on ENOENT.
+ * Throws on JSON parse failure or schema mismatch (corruption, or a future
+ * daemon wrote an `imType` an older client doesn't know).
+ */
+export async function readIMOriginFile(
+  opts: IMOriginIO,
+): Promise<IMReplyContext | null> {
+  const raw = await readJsonOrNull<unknown>(imOriginPath(opts));
+  if (raw === null) return null;
+  return IMReplyContextSchema.parse(raw);
 }
 
-export async function existsIMOriginFile(opts: PerSessionIO): Promise<boolean> {
+export async function existsIMOriginFile(opts: IMOriginIO): Promise<boolean> {
   try {
     await readFile(imOriginPath(opts));
     return true;
@@ -446,11 +467,11 @@ export async function existsIMOriginFile(opts: PerSessionIO): Promise<boolean> {
   }
 }
 
-export async function deleteIMOriginFile(opts: PerSessionIO): Promise<void> {
+export async function deleteIMOriginFile(opts: IMOriginIO): Promise<void> {
   await unlinkOrIgnoreENOENT(imOriginPath(opts));
 }
 
-/** List all `<sid>.IMOrigin` files in the state dir (used by daemon start sweep). */
+/** List all `<paneId>.IMOrigin` files in the state dir (daemon start sweep). */
 export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
   let entries: string[];
   try {
@@ -460,7 +481,7 @@ export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
     throw err;
   }
   return entries
-    .filter((name) => name.endsWith(IM_ORIGIN_SUFFIX))
+    .filter((name) => parseIMOriginFilename(name) !== null)
     .map((name) => join(stateDir, name));
 }
 
@@ -475,19 +496,12 @@ export async function listIMOriginFiles(stateDir: string): Promise<string[]> {
 //   - daemon SIGKILL'd → file leaks; next daemon start sees it as "stale
 //     lock" (PID dead OR lstart mismatch) and overwrites
 //
-// `startedAt` is the verbatim output of `ps -o lstart= -p <pid>` (e.g.
-// "Mon May  9 10:00:00 2026"). Stored alongside PID specifically to defend
-// against PID reuse — when the OS recycles a dead daemon's PID to some
-// unrelated process, lstart of that PID won't match what we recorded so
-// `isDaemonAlive` returns false correctly.
+// `startedAt` is the verbatim output of `ps -o lstart= -p <pid>`. Stored
+// alongside PID specifically to defend against PID reuse.
 // ============================================================================
 
 export interface DaemonPidFile {
   pid: number;
-  /**
-   * Output of `ps -o lstart= -p <pid>` captured at daemon start, used to
-   * detect PID reuse on later isDaemonAlive checks. Stored verbatim.
-   */
   startedAt: string;
 }
 
@@ -498,10 +512,7 @@ export function daemonPidPath(stateDir: string): string {
 export async function writeDaemonPidFile(
   opts: { stateDir: string } & DaemonPidFile,
 ): Promise<void> {
-  const body: DaemonPidFile = {
-    pid: opts.pid,
-    startedAt: opts.startedAt,
-  };
+  const body: DaemonPidFile = { pid: opts.pid, startedAt: opts.startedAt };
   await atomicWrite(daemonPidPath(opts.stateDir), JSON.stringify(body, null, 2));
 }
 
@@ -518,10 +529,7 @@ export async function deleteDaemonPidFile(stateDir: string): Promise<void> {
 /**
  * Capture the OS process start-time string for a given PID via
  * `ps -o lstart= -p <pid>`. Returns null on ENOENT (PID does not exist) or
- * any non-zero exit code (PID may be in another user / kernel process).
- *
- * Used by `isDaemonAlive` for PID-reuse defense and by daemon start's
- * double-start check.
+ * any non-zero exit code.
  */
 export async function captureProcessLstart(pid: number): Promise<string | null> {
   return new Promise((resolve) => {
@@ -531,9 +539,6 @@ export async function captureProcessLstart(pid: number): Promise<string | null> 
       { timeout: 5_000 },
       (err, stdout) => {
         if (err) {
-          // err.code = ESRCH (PID not found) or non-zero exit. Either way,
-          // we treat as "no lstart available" rather than throwing — caller
-          // (isDaemonAlive) interprets null as "PID dead/inaccessible".
           resolve(null);
           return;
         }
@@ -546,25 +551,16 @@ export async function captureProcessLstart(pid: number): Promise<string | null> 
 
 /**
  * Check whether the daemon recorded in `<stateDir>/daemon.pid` is still
- * alive. Two-step verification per [DD: daemon liveness] candidate d:
+ * alive. Two-step verification:
+ *   1. `process.kill(pid, 0)` — fast existence test
+ *   2. `ps -o lstart= -p <pid>` — verify PID-reuse hasn't happened
  *
- *   1. `process.kill(pid, 0)` — fast existence test (no fork)
- *   2. `ps -o lstart= -p <pid>` — verify the PID still belongs to the
- *      same process we recorded (defends against OS PID reuse)
- *
- * Returns:
- *   - false if no daemon.pid file
- *   - false if PID does not exist (ESRCH / EPERM)
- *   - false if PID exists but lstart string differs from recorded
- *   - true otherwise
- *
- * Throws only on unexpected fs errors (file unreadable, permission, etc.).
+ * Returns false if no daemon.pid OR PID dead OR lstart mismatch.
  */
 export async function isDaemonAlive(stateDir: string): Promise<boolean> {
   const file = await readDaemonPidFile(stateDir);
   if (file === null) return false;
 
-  // Step 1: PID existence (signal 0 doesn't actually kill anything)
   try {
     process.kill(file.pid, 0);
   } catch (err) {
@@ -573,7 +569,6 @@ export async function isDaemonAlive(stateDir: string): Promise<boolean> {
     throw err;
   }
 
-  // Step 2: PID-reuse defense — actual lstart must match recorded
   const actualLstart = await captureProcessLstart(file.pid);
   return actualLstart !== null && actualLstart === file.startedAt;
 }

@@ -84,10 +84,13 @@ describe('runSetupHooksCommand', () => {
       expect(r.settings.hooks).not.toBeNull();
     });
 
-    it('all 4 event keys present, each with exactly one matcher group containing one command handler', async () => {
+    it('all 2 event keys present, each with exactly one matcher group containing one command handler', async () => {
+      // Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+      // (DD #61), SessionStart + SessionEnd were dropped — daemon no longer
+      // needs WEZTERM_PANE snapshot or cc-death signal from cc hooks.
       const r = await run();
       const hooks = r.settings.hooks!;
-      const expectedEvents = ['SessionStart', 'PreToolUse', 'Stop', 'SessionEnd'];
+      const expectedEvents = ['PreToolUse', 'Stop'];
       expect(Object.keys(hooks).sort()).toEqual([...expectedEvents].sort());
       for (const event of expectedEvents) {
         const groups = hooks[event] as Array<{
@@ -103,63 +106,60 @@ describe('runSetupHooksCommand', () => {
       }
     });
 
-    it('matcher per event: PreToolUse uses "*", others use empty matcher', async () => {
-      // PreToolUse re-added per DD #51/#52 (IM permission gate) carries a tool
-      // concept, so it uses `matcher: "*"` (match all tools). The other 3
-      // events have no tool concept and use `matcher: ""` (matches every
-      // invocation).
+    it('matcher per event: PreToolUse uses "*", Stop uses empty matcher', async () => {
+      // PreToolUse (IM permission gate per DD #51/#52) carries a tool concept,
+      // so it uses `matcher: "*"` (match all tools). Stop has no tool concept
+      // and uses `matcher: ""` (matches every invocation).
       const r = await run();
       const hooks = r.settings.hooks as Record<
         string,
         Array<{ matcher: string }>
       >;
       const expectedMatcher: Record<string, string> = {
-        SessionStart: '',
         PreToolUse: '*',
         Stop: '',
-        SessionEnd: '',
       };
       for (const [event, matcher] of Object.entries(expectedMatcher)) {
         expect(hooks[event]![0]!.matcher).toBe(matcher);
       }
     });
 
-    it('PreToolUse hook entry includes timeout: 30 (IM permission gate RTT budget)', async () => {
-      // Per DD #51/#52: 30s gives enough headroom for IM round-trip + user
-      // reply; longer would block cc TUI for too long when the user is
-      // unreachable; shorter would defeat IM RTT.
+    it('PreToolUse hook entry includes timeout: 10 (IM permission gate RTT budget)', async () => {
+      // Per DD #51/#52 (revised in DD #61): 10s gives enough headroom for IM
+      // round-trip + user reply; longer would block cc TUI for too long when
+      // the user is unreachable; shorter would defeat IM RTT.
       const r = await run();
       const hooks = r.settings.hooks as Record<
         string,
         Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
       >;
-      expect(hooks.PreToolUse![0]!.hooks[0]!.timeout).toBe(30);
+      expect(hooks.PreToolUse![0]!.hooks[0]!.timeout).toBe(10);
     });
 
-    it('SessionStart / Stop / SessionEnd hook entries do NOT include timeout field', async () => {
-      // Only PreToolUse needs a custom timeout (IM RTT). The other 3 events
-      // are local-only and rely on cc's default timeout — emitting an explicit
-      // timeout there would be noise and could mask a future cc default change.
+    it('Stop hook entry does NOT include timeout field', async () => {
+      // Only PreToolUse needs a custom timeout (IM RTT). Stop is local-only
+      // and relies on cc's default timeout — emitting an explicit timeout
+      // there would be noise and could mask a future cc default change.
       const r = await run();
       const hooks = r.settings.hooks as Record<
         string,
         Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
       >;
-      for (const event of ['SessionStart', 'Stop', 'SessionEnd']) {
-        expect(hooks[event]![0]!.hooks[0]).not.toHaveProperty('timeout');
-      }
+      expect(hooks.Stop![0]!.hooks[0]).not.toHaveProperty('timeout');
     });
 
-    it('UserPromptSubmit / PostToolUse are NOT subscribed (intentionally absent)', async () => {
-      // Locks in the refactor: UserPromptSubmit / PostToolUse were dropped
-      // because cc's own transcript jsonl already records the same data, so
-      // multi-cc-im was duplicating storage with no consumer. PreToolUse was
-      // re-added (per DD #51/#52, IM permission gate) — see the dedicated
-      // PreToolUse-subscription test for that. If a future change accidentally
-      // reintroduces UserPromptSubmit / PostToolUse, this assertion fails
-      // loudly.
+    it('SessionStart / SessionEnd / UserPromptSubmit / PostToolUse are NOT subscribed (intentionally absent)', async () => {
+      // Locks in the DD #61 refactor: SessionStart + SessionEnd were dropped
+      // because the pane-keyed state file scheme no longer needs them
+      // (hook subprocess reads WEZTERM_PANE env directly + writes to
+      // `<paneId>_<sid>.<event>`; wezterm cli list is the source of truth for
+      // "which panes have cc"). UserPromptSubmit / PostToolUse were already
+      // dropped earlier — cc's own transcript jsonl records that data so
+      // multi-cc-im was duplicating storage with no consumer.
       const r = await run();
       const eventKeys = Object.keys(r.settings.hooks!);
+      expect(eventKeys).not.toContain('SessionStart');
+      expect(eventKeys).not.toContain('SessionEnd');
       expect(eventKeys).not.toContain('UserPromptSubmit');
       expect(eventKeys).not.toContain('PostToolUse');
     });
@@ -184,37 +184,37 @@ describe('runSetupHooksCommand', () => {
   });
 
   describe('basic flows', () => {
-    it('settings.json missing → creates with 4 multi-cc-im hooks', async () => {
+    it('settings.json missing → creates with 2 multi-cc-im hooks', async () => {
       const r = await run();
       expect(r.exitCode).toBe(0);
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks)).toHaveLength(4);
+      expect(Object.keys(hooks)).toHaveLength(2);
     });
 
-    it('settings.json exists but empty `{}` → adds 4 hooks', async () => {
+    it('settings.json exists but empty `{}` → adds 2 hooks', async () => {
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '{}\n', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(4);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
     });
 
-    it('settings.json exists but is 0-byte empty file → treats as {}, adds 4 hooks', async () => {
+    it('settings.json exists but is 0-byte empty file → treats as {}, adds 2 hooks', async () => {
       // Common when a previous tool truncated the file (e.g. `> ~/.claude/settings.json`).
       // Pre-fix this would JSON.parse('') and exit 1 with "Unexpected end of JSON input".
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(4);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
     });
 
-    it('settings.json with only whitespace → treats as {}, adds 4 hooks', async () => {
+    it('settings.json with only whitespace → treats as {}, adds 2 hooks', async () => {
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '  \n\t\n  ', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(4);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
     });
 
     it('empty file logs "is empty, treating as {}" hint', async () => {
@@ -257,7 +257,7 @@ describe('runSetupHooksCommand', () => {
       });
       expect(result.exitCode).toBe(0);
       const written = JSON.parse(await readFile(ccSettings, 'utf-8'));
-      expect(Object.keys(written.hooks)).toHaveLength(4);
+      expect(Object.keys(written.hooks)).toHaveLength(2);
     });
 
     it('logs progress lines (cc settings path / repo path / handler count) on first write', async () => {
@@ -334,7 +334,7 @@ describe('runSetupHooksCommand', () => {
         }),
         'utf-8',
       );
-      await run(); // merges multi-cc-im 4 in alongside Notification entry
+      await run(); // merges multi-cc-im 2 in alongside Notification entry
       const afterFirst = await readFile(ccSettings, 'utf-8');
       const backupsAfterFirst = await listBackups();
 
@@ -369,16 +369,16 @@ describe('runSetupHooksCommand', () => {
 
   describe('preservation', () => {
     it('settings.json with non-multi-cc-im hooks under same event → preserves them, appends our matcher group', async () => {
-      // Use SessionStart (a multi-cc-im-managed event) so the merge actually
-      // appends our group — exercises the "preserve + append" path. A
-      // non-managed event like UserPromptSubmit would be untouched and
+      // Use Stop (a multi-cc-im-managed event after DD #61) so the merge
+      // actually appends our group — exercises the "preserve + append" path.
+      // A non-managed event like UserPromptSubmit would be untouched and
       // wouldn't exercise the append side of this code path.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
         JSON.stringify({
           hooks: {
-            SessionStart: [
+            Stop: [
               {
                 matcher: 'startup',
                 hooks: [
@@ -392,7 +392,7 @@ describe('runSetupHooksCommand', () => {
       );
       const r = await run();
       expect(r.exitCode).toBe(0);
-      const groups = r.settings.hooks!.SessionStart as Array<{
+      const groups = r.settings.hooks!.Stop as Array<{
         matcher: string;
         hooks: Array<{ command: string }>;
       }>;
@@ -400,7 +400,7 @@ describe('runSetupHooksCommand', () => {
       expect(groups[0]!.matcher).toBe('startup');
       expect(groups[0]!.hooks[0]!.command).toContain('some-other-tool');
       expect(groups[1]!.matcher).toBe('');
-      expect(groups[1]!.hooks[0]!.command).toContain('multi-cc-im hook SessionStart');
+      expect(groups[1]!.hooks[0]!.command).toContain('multi-cc-im hook Stop');
     });
 
     it('settings.json with non-multi-cc-im event → preserves event verbatim', async () => {
@@ -422,7 +422,7 @@ describe('runSetupHooksCommand', () => {
       const r = await run();
       const hooks = r.settings.hooks!;
       expect(Object.keys(hooks).sort()).toEqual(
-        ['Notification', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop'].sort(),
+        ['Notification', 'PreToolUse', 'Stop'].sort(),
       );
       const notification = hooks.Notification as Array<{
         matcher: string;
@@ -432,7 +432,7 @@ describe('runSetupHooksCommand', () => {
     });
 
     it('non-multi-cc-im hooks under a non-managed event (UserPromptSubmit) → preserved verbatim, multi-cc-im NOT appended there', async () => {
-      // UserPromptSubmit is not one of the 4 events multi-cc-im subscribes to,
+      // UserPromptSubmit is not one of the 2 events multi-cc-im subscribes to,
       // so a user's existing UserPromptSubmit entry should be left completely
       // alone (no fresh multi-cc-im group appended). This test guards against
       // a regression where the loop accidentally treats every event as managed.
@@ -488,18 +488,22 @@ describe('runSetupHooksCommand', () => {
 
   describe('stale multi-cc-im replacement', () => {
     it('settings.json with old multi-cc-im hooks (different ABS_PATH) → replaces them', async () => {
+      // After DD #61, only PreToolUse + Stop are managed. Old SessionStart
+      // entries from previous multi-cc-im versions get pruned entirely
+      // (event key not re-added) — see the dedicated migration test below
+      // for the full multi-event-version migration scenario.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
         JSON.stringify({
           hooks: {
-            SessionStart: [
+            PreToolUse: [
               {
-                matcher: '',
+                matcher: '*',
                 hooks: [
                   {
                     type: 'command',
-                    command: '/old/path/multi-cc-im/bin/multi-cc-im hook SessionStart',
+                    command: '/old/path/multi-cc-im/bin/multi-cc-im hook PreToolUse',
                   },
                 ],
               },
@@ -525,9 +529,9 @@ describe('runSetupHooksCommand', () => {
         string,
         Array<{ matcher: string; hooks: Array<{ command: string }> }>
       >;
-      expect(hooks.SessionStart).toHaveLength(1);
-      expect(hooks.SessionStart![0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook SessionStart`,
+      expect(hooks.PreToolUse).toHaveLength(1);
+      expect(hooks.PreToolUse![0]!.hooks[0]!.command).toBe(
+        `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
       );
       expect(hooks.Stop).toHaveLength(1);
       expect(hooks.Stop![0]!.hooks[0]!.command).toBe(
@@ -536,7 +540,7 @@ describe('runSetupHooksCommand', () => {
     });
 
     it('mixed (other tool + stale multi-cc-im in same event) → preserves other, replaces multi-cc-im', async () => {
-      // Use SessionStart (a multi-cc-im-managed event) so the stale path
+      // Use Stop (a multi-cc-im-managed event after DD #61) so the stale path
       // gets pruned AND a fresh multi-cc-im group gets re-appended in the
       // same event — exercises the full prune+append cycle. A non-managed
       // event like UserPromptSubmit would only exercise pruning.
@@ -545,7 +549,7 @@ describe('runSetupHooksCommand', () => {
         ccSettings,
         JSON.stringify({
           hooks: {
-            SessionStart: [
+            Stop: [
               {
                 matcher: 'startup',
                 hooks: [{ type: 'command', command: '/usr/bin/foo' }],
@@ -555,7 +559,7 @@ describe('runSetupHooksCommand', () => {
                 hooks: [
                   {
                     type: 'command',
-                    command: '/old/path/bin/multi-cc-im hook SessionStart',
+                    command: '/old/path/bin/multi-cc-im hook Stop',
                   },
                 ],
               },
@@ -569,7 +573,7 @@ describe('runSetupHooksCommand', () => {
         'utf-8',
       );
       const r = await run();
-      const groups = r.settings.hooks!.SessionStart as Array<{
+      const groups = r.settings.hooks!.Stop as Array<{
         matcher: string;
         hooks: Array<{ command: string }>;
       }>;
@@ -579,7 +583,7 @@ describe('runSetupHooksCommand', () => {
       expect(allCommands).toContain('/usr/bin/foo');
       expect(allCommands).toContain('/usr/bin/bar');
       expect(
-        allCommands.filter((c) => c.includes('multi-cc-im hook SessionStart')),
+        allCommands.filter((c) => c.includes('multi-cc-im hook Stop')),
       ).toHaveLength(1);
       expect(
         allCommands.filter((c) => c.includes('/old/path')),
@@ -587,20 +591,20 @@ describe('runSetupHooksCommand', () => {
     });
 
     it('stale multi-cc-im handler in a matcher group with no others (under managed event) → entire group is dropped, fresh one takes its place', async () => {
-      // Set the stale group under SessionStart (still managed) so we exercise
-      // the "drop empty group, then add fresh" path end-to-end.
+      // Set the stale group under Stop (still managed) so we exercise the
+      // "drop empty group, then add fresh" path end-to-end.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
         JSON.stringify({
           hooks: {
-            SessionStart: [
+            Stop: [
               {
                 matcher: '',
                 hooks: [
                   {
                     type: 'command',
-                    command: '/old/path/bin/multi-cc-im hook SessionStart',
+                    command: '/old/path/bin/multi-cc-im hook Stop',
                   },
                 ],
               },
@@ -610,7 +614,7 @@ describe('runSetupHooksCommand', () => {
         'utf-8',
       );
       const r = await run();
-      const groups = r.settings.hooks!.SessionStart as Array<{
+      const groups = r.settings.hooks!.Stop as Array<{
         matcher: string;
         hooks: Array<{ type: string; command: string }>;
       }>;
@@ -619,21 +623,17 @@ describe('runSetupHooksCommand', () => {
       expect(groups[0]!.matcher).toBe('');
       expect(groups[0]!.hooks).toHaveLength(1);
       expect(groups[0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook SessionStart`,
+        `${repoRoot}/bin/multi-cc-im hook Stop`,
       );
     });
 
     it('stale multi-cc-im handler under a non-managed event (UserPromptSubmit) → group fully removed, event key pruned (NOT re-added)', async () => {
-      // Migration path: a user upgrading from the 6-event version of
-      // multi-cc-im has stale `UserPromptSubmit`/`PostToolUse` entries in
-      // their settings.json. The prune logic should detect them via the
-      // `bin/multi-cc-im hook ` substring and drop them. Since
-      // UserPromptSubmit is not managed by the current 4-event version, no
-      // fresh group is added, and the empty event key gets pruned out —
-      // leaving only the 4 current events.
-      // (PreToolUse was the canonical "dropped event" for this test before
-      // it was re-added per DD #51/#52 — UserPromptSubmit is the current
-      // example of a non-managed event with stale entries.)
+      // Migration path: a user upgrading from a previous multi-cc-im version
+      // has stale `UserPromptSubmit` entries in their settings.json. The
+      // prune logic detects them via the `bin/multi-cc-im hook ` substring
+      // and drops them. Since UserPromptSubmit is not managed by the current
+      // 2-event version, no fresh group is added, and the empty event key
+      // gets pruned out — leaving only the 2 current events.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
@@ -656,24 +656,21 @@ describe('runSetupHooksCommand', () => {
       );
       const r = await run();
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks).sort()).toEqual([
-        'PreToolUse',
-        'SessionEnd',
-        'SessionStart',
-        'Stop',
-      ]);
+      expect(Object.keys(hooks).sort()).toEqual(['PreToolUse', 'Stop']);
       expect(hooks.UserPromptSubmit).toBeUndefined();
     });
 
-    it('migration: full 6-event multi-cc-im settings (old version) → all 6 stale lines pruned, 4 fresh lines written', async () => {
+    it('migration: full 6-event multi-cc-im settings (old version) → all 6 stale lines pruned, 2 fresh lines written', async () => {
       // End-to-end migration scenario: user previously ran setup-hooks under
-      // the 6-event version. Running the new 4-event version should detect
-      // every old multi-cc-im hook line via the `bin/multi-cc-im hook `
-      // substring, prune them all, and write only the 4 current events
-      // (SessionStart / PreToolUse / Stop / SessionEnd — PreToolUse re-added
-      // per DD #51/#52 for the IM permission gate). The 2 truly dropped
-      // events (UserPromptSubmit / PostToolUse) should NOT appear in the
-      // output at all.
+      // an older multi-cc-im version that subscribed to 6 events
+      // (SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop /
+      // SessionEnd) or the more recent 4-event version (SessionStart /
+      // PreToolUse / Stop / SessionEnd). Running the new 2-event version
+      // (DD #61: PreToolUse + Stop only) should detect every old
+      // multi-cc-im hook line via the `bin/multi-cc-im hook ` substring,
+      // prune them all, and write only the 2 current events. The 4 dropped
+      // events (SessionStart / SessionEnd / UserPromptSubmit / PostToolUse)
+      // should NOT appear in the output at all.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
@@ -755,35 +752,25 @@ describe('runSetupHooksCommand', () => {
         string,
         Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
       >;
-      // Only the 4 current events remain — the 2 truly dropped events
-      // (UserPromptSubmit / PostToolUse) were pruned entirely (their groups
-      // had only the multi-cc-im command, which got dropped, leaving the
-      // groups empty, which got pruned, leaving the event keys empty, which
-      // got pruned). PreToolUse stale line was also dropped, then a fresh
-      // PreToolUse group was re-added under the new repoRoot.
-      expect(Object.keys(hooks).sort()).toEqual([
-        'PreToolUse',
-        'SessionEnd',
-        'SessionStart',
-        'Stop',
-      ]);
+      // Only the 2 current events remain — the 4 dropped events
+      // (SessionStart / SessionEnd / UserPromptSubmit / PostToolUse) were
+      // pruned entirely (their groups had only the multi-cc-im command,
+      // which got dropped, leaving the groups empty, which got pruned,
+      // leaving the event keys empty, which got pruned). PreToolUse + Stop
+      // stale lines were dropped, then fresh PreToolUse + Stop groups were
+      // re-added under the new repoRoot.
+      expect(Object.keys(hooks).sort()).toEqual(['PreToolUse', 'Stop']);
       // No `/old/path` substring anywhere — every stale line cleanly removed.
       const allCommands = Object.values(hooks).flatMap((groups) =>
         groups.flatMap((g) => g.hooks.map((h) => h.command)),
       );
       expect(allCommands.filter((c) => c.includes('/old/path'))).toHaveLength(0);
-      // All 4 current events point at the new repoRoot.
-      expect(hooks.SessionStart![0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook SessionStart`,
-      );
+      // Both 2 current events point at the new repoRoot.
       expect(hooks.PreToolUse![0]!.hooks[0]!.command).toBe(
         `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
       );
       expect(hooks.Stop![0]!.hooks[0]!.command).toBe(
         `${repoRoot}/bin/multi-cc-im hook Stop`,
-      );
-      expect(hooks.SessionEnd![0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook SessionEnd`,
       );
     });
   });
@@ -798,7 +785,7 @@ describe('runSetupHooksCommand', () => {
             {
               matcher: '*',
               type: 'command',
-              command: '/some/path/bin/multi-cc-im hook SessionStart',
+              command: '/some/path/bin/multi-cc-im hook PreToolUse',
             },
             {
               matcher: '*',
@@ -814,7 +801,7 @@ describe('runSetupHooksCommand', () => {
       // schema validates: nested-object form, not array
       expect(() => ccHooksSchema.parse(r.settings.hooks)).not.toThrow();
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks)).toHaveLength(4);
+      expect(Object.keys(hooks)).toHaveLength(2);
     });
 
     it('legacy migration logs the cleanup count so user knows it happened', async () => {
@@ -823,7 +810,7 @@ describe('runSetupHooksCommand', () => {
         ccSettings,
         JSON.stringify({
           hooks: [
-            { matcher: '*', type: 'command', command: '/x/bin/multi-cc-im hook SessionStart' },
+            { matcher: '*', type: 'command', command: '/x/bin/multi-cc-im hook PreToolUse' },
             { matcher: '*', type: 'command', command: '/x/bin/multi-cc-im hook Stop' },
           ],
         }),

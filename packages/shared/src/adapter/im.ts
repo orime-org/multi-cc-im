@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { IncomingMessage } from '../types.js';
 
 /**
@@ -15,17 +16,80 @@ export interface Handler {
 }
 
 /**
- * Opaque, adapter-specific reply context.
+ * Adapter-specific reply context — used by the bridge to route cc replies
+ * back to the originating IM thread.
  *
- * Each IMAdapter passes a value of its own choosing back to the bridge as
- * part of `IncomingMessage` routing. The bridge stores it but never inspects
- * it; it's handed back unchanged on `send()` so the adapter can match it to
- * the original conversation thread / message id.
+ * **Discriminated union** on `imType`. Each variant carries the per-IM
+ * fields needed by that adapter's `send()`:
  *
- * Modeled as `unknown` (rather than generic) to keep core/router type-erased
- * — same approach as cc-connect's `replyCtx any` (Go).
+ *   - `wechat`  : `{ imType: 'wechat',  to, contextToken? }` — iLink
+ *                  cc-bot reply protocol; `contextToken` is required by
+ *                  the upstream server, may be undefined for system msgs.
+ *   - `telegram`: `{ imType: 'telegram', chatId, messageId }` — reserved
+ *                  for tg adapter (not implemented yet).
+ *   - `lark`    : `{ imType: 'lark', openId, chatId }` — reserved for
+ *                  飞书 adapter (not implemented yet).
+ *
+ * The bridge **switches on `imType`** to dispatch to the correct adapter.
+ * Persisted form (`<paneId>.IMOrigin` file) is the JSON of one variant.
+ *
+ * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
  */
-export type ReplyContext = unknown;
+export type ReplyContext =
+  | WechatReplyContext
+  | TelegramReplyContext
+  | LarkReplyContext;
+
+export interface WechatReplyContext {
+  imType: 'wechat';
+  /** WeixinMessage.from_user_id — the target we're replying to. */
+  to: string;
+  /**
+   * WeixinMessage.context_token; iLink rejects cc-bot reply without it for
+   * regular text messages, but system events (group join, etc.) carry no
+   * token. Optional reflects the JSON shape: `JSON.stringify({...,
+   * contextToken: undefined})` omits the key, so absent and present-but-
+   * undefined are equivalent on disk.
+   */
+  contextToken?: string;
+}
+
+export interface TelegramReplyContext {
+  imType: 'telegram';
+  chatId: number;
+  messageId: number;
+}
+
+export interface LarkReplyContext {
+  imType: 'lark';
+  openId: string;
+  chatId: string;
+}
+
+/**
+ * Zod schema for `ReplyContext` runtime validation. Used by storage layer
+ * (`<paneId>.IMOrigin` file reader) to defend against disk corruption and
+ * unknown future imType values written by a newer daemon then read by an
+ * older client (rejected with a parse error rather than silently routed
+ * to the wrong adapter).
+ */
+export const ReplyContextSchema = z.discriminatedUnion('imType', [
+  z.object({
+    imType: z.literal('wechat'),
+    to: z.string(),
+    contextToken: z.string().optional(),
+  }),
+  z.object({
+    imType: z.literal('telegram'),
+    chatId: z.number(),
+    messageId: z.number(),
+  }),
+  z.object({
+    imType: z.literal('lark'),
+    openId: z.string(),
+    chatId: z.string(),
+  }),
+]);
 
 /**
  * Core IMAdapter interface — every IM channel implementation (wechat / telegram /

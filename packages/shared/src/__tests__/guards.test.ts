@@ -4,7 +4,7 @@ import {
   isFileSender,
   isVoiceSender,
   isTypingIndicator,
-  isPaneAlive,
+  isListPanes,
 } from '../guards.js';
 import type {
   Adapter as IMAdapter,
@@ -13,7 +13,7 @@ import type {
   VoiceSender,
   TypingIndicator,
 } from '../adapter/im.js';
-import type { Adapter as TermAdapter, PaneAlive } from '../adapter/term.js';
+import type { Adapter as TermAdapter, ListPanes } from '../adapter/term.js';
 
 const baseIM: IMAdapter = {
   name: 'mock-im',
@@ -94,29 +94,29 @@ describe('isTypingIndicator', () => {
   });
 });
 
-describe('isPaneAlive', () => {
-  it('returns true when isPaneAlive method exists', () => {
-    const adapter: PaneAlive = {
+describe('isListPanes', () => {
+  it('returns true when listPanes method exists', () => {
+    const adapter: ListPanes = {
       ...baseTerm,
-      isPaneAlive: async () => true,
+      listPanes: async () => [],
     };
-    expect(isPaneAlive(adapter)).toBe(true);
+    expect(isListPanes(adapter)).toBe(true);
   });
 
   it('returns false otherwise', () => {
-    expect(isPaneAlive(baseTerm)).toBe(false);
+    expect(isListPanes(baseTerm)).toBe(false);
   });
 
   it('narrows type for caller', () => {
     const adapter: TermAdapter = {
       ...baseTerm,
-      isPaneAlive: async () => true,
-    } as PaneAlive;
+      listPanes: async () => [],
+    } as ListPanes;
 
-    if (isPaneAlive(adapter)) {
-      expect(typeof adapter.isPaneAlive).toBe('function');
+    if (isListPanes(adapter)) {
+      expect(typeof adapter.listPanes).toBe('function');
     } else {
-      throw new Error('expected narrowed PaneAlive');
+      throw new Error('expected narrowed ListPanes');
     }
   });
 });

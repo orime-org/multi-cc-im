@@ -1,13 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type {
-  PaneId,
-  PaneToSessionMap,
-  SessionId,
-} from '@multi-cc-im/shared';
-import { isPaneAlive } from '@multi-cc-im/shared';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { PaneId } from '@multi-cc-im/shared';
+import { isListPanes } from '@multi-cc-im/shared';
 
 const mockRunWezTermCli = vi.hoisted(() => vi.fn());
 vi.mock('./cli.js', () => ({ runWezTermCli: mockRunWezTermCli }));
@@ -134,64 +127,47 @@ describe('createWezTermAdapter — error propagation', () => {
   });
 });
 
-describe('createWezTermAdapter — PaneAlive capability attachment', () => {
-  let stateDir: string;
-
-  beforeEach(async () => {
-    stateDir = await mkdtemp(join(tmpdir(), 'pa-attach-'));
-  });
-
-  afterEach(async () => {
-    await rm(stateDir, { recursive: true, force: true });
-  });
-
-  function emptyMap(): PaneToSessionMap {
-    return { get: () => null };
-  }
-
-  it('without paneAlive opts → adapter is plain TermAdapter (isPaneAlive guard returns false)', () => {
+describe('createWezTermAdapter — ListPanes capability', () => {
+  it('isListPanes() guard returns true for the wezterm adapter', () => {
     const adapter = createWezTermAdapter({
       wezterm: { path: '/wt' },
     });
-    expect(isPaneAlive(adapter)).toBe(false);
+    expect(isListPanes(adapter)).toBe(true);
+    expect(typeof adapter.listPanes).toBe('function');
   });
 
-  it('with paneAlive opts → adapter satisfies TermPaneAlive (isPaneAlive guard returns true)', () => {
+  it('listPanes() runs `wezterm cli list --format json` and returns PaneInfo[]', async () => {
+    mockRunWezTermCli.mockResolvedValueOnce(
+      JSON.stringify([
+        {
+          window_id: 0,
+          tab_id: 0,
+          pane_id: 20,
+          title: 'frontend',
+          cwd: 'file:///tmp/proj',
+        },
+        {
+          window_id: 0,
+          tab_id: 1,
+          pane_id: 21,
+          title: 'backend',
+          cwd: 'file:///tmp/srv',
+        },
+      ]),
+    );
     const adapter = createWezTermAdapter({
-      wezterm: { path: '/wt' },
-      paneAlive: {
-        stateDir,
-        paneToSession: emptyMap(),
-      },
+      wezterm: { path: '/opt/homebrew/bin/wezterm' },
     });
-    expect(isPaneAlive(adapter)).toBe(true);
-    expect(typeof adapter.isPaneAlive).toBe('function');
-  });
-
-  it('attached isPaneAlive defers to createIsPaneAlive (returns false for unknown pane)', async () => {
-    const adapter = createWezTermAdapter({
-      wezterm: { path: '/wt' },
-      paneAlive: {
-        stateDir,
-        paneToSession: emptyMap(),
-        pidProbe: { isAlive: () => true, getLstart: async () => 'x' },
-      },
-    });
-    expect(await adapter.isPaneAlive(PANE)).toBe(false);
-  });
-
-  it('attached isPaneAlive forwards stub session resolution + pidProbe', async () => {
-    const SID = '91215578-3606-4fe4-b01d-c436bf804790' as SessionId;
-    // Stub map says PANE → SID; PaneAlive then reads cli-cc state files which
-    // for this fresh stateDir don't exist (no SessionStart fired) → dead.
-    const adapter = createWezTermAdapter({
-      wezterm: { path: '/wt' },
-      paneAlive: {
-        stateDir,
-        paneToSession: { get: (p) => (p === PANE ? SID : null) },
-        pidProbe: { isAlive: () => true, getLstart: async () => 'x' },
-      },
-    });
-    expect(await adapter.isPaneAlive(PANE)).toBe(false);
+    const panes = await adapter.listPanes();
+    expect(panes).toHaveLength(2);
+    expect(panes[0]?.paneId).toBe(20);
+    expect(panes[0]?.title).toBe('frontend');
+    expect(panes[1]?.paneId).toBe(21);
+    expect(mockRunWezTermCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wezterm: '/opt/homebrew/bin/wezterm',
+        args: ['cli', 'list', '--format', 'json'],
+      }),
+    );
   });
 });

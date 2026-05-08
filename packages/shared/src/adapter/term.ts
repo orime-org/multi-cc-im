@@ -33,15 +33,35 @@ export interface Adapter {
 }
 
 /**
- * Capability: probe whether a pane currently hosts a live cc TUI process
- * (vs. having returned to the user shell after `/exit`).
- *
- * Required by CLAUDE.md "Key conventions": "must verify cc is alive in
- * the pane before routing".
- * Concrete strategy (heartbeat / pid probe / SessionEnd hook) is per-impl
- * and tracked by a separate v1 implementation DD (CLAUDE.md "Key design
- * assumptions" table, "pane liveness verification strategy").
+ * Snapshot of a single pane returned by `ListPanes.listPanes()`.
+ * Subset of fields needed by the bridge router for tab-title routing —
+ * adapter is free to expose more on its own concrete return type but
+ * must include at least these.
  */
-export interface PaneAlive extends Adapter {
-  isPaneAlive(paneId: PaneId): Promise<boolean>;
+export interface PaneInfo {
+  paneId: PaneId;
+  /**
+   * Tab/pane title as the user sees it. Cleaned by adapter (for wezterm:
+   * cc status emoji prefix stripped, default cc title `"Claude Code [...]"`
+   * collapsed to empty so it doesn't shadow user-renamed sessions).
+   * Empty string = pane has no user-set title — un-routable from IM via
+   * tabname.
+   */
+  title: string;
+  /** Working dir of the foreground process in the pane (as URI or path). */
+  cwd: string;
+}
+
+/**
+ * Capability: list current panes from the underlying terminal multiplexer.
+ *
+ * Per [DD: pane-keyed state files](../../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
+ * bridge router uses `listPanes()` directly as the source of truth for
+ * tabname → paneId routing (no longer joins SessionStart files with
+ * wezterm cli list). Daemon trusts user-side knowledge from `/start` IM
+ * listing for cc liveness; no separate `isPaneAlive` capability needed.
+ */
+export interface ListPanes extends Adapter {
+  /** Snapshot of all currently visible panes in the multiplexer. */
+  listPanes(): Promise<readonly PaneInfo[]>;
 }

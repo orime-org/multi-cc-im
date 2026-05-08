@@ -95,7 +95,13 @@ describe('runStartCommand — pre-flight failures', () => {
     expect(joined).toContain(`multi-cc-im start (root: ${root})`);
     expect(joined).toContain(`✓ wechat credentials at`);
     expect(joined).toContain(`✓ wezterm at /usr/local/bin/wezterm`);
-    expect(joined).toContain(`session registry: 0 alive cc session(s)`);
+    // Per DD #61, runStartCommand no longer creates a SessionRegistry — bridge
+    // queries `termAdapter.listPanes()` on each IM event. Pre-flight logs the
+    // live wezterm pane snapshot directly. Note: when wezterm is unreachable
+    // (stub path on test machines without wezterm installed), the snapshot
+    // log line is silently skipped via `.catch(() => null)`, so it's not
+    // asserted here.
+    expect(joined).toContain(`✓ IMWork: OFF`);
     expect(joined).toContain(`✓ daemon.pid: PID ${process.pid}`);
     expect(joined).toMatch(/✓ orchestrator started.*Ctrl\+C/);
     await result.shutdown!();
