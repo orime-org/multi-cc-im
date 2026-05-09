@@ -13,6 +13,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.63.1",
     "@multi-cc-im/bridge": "workspace:*",
     "@multi-cc-im/cli-cc": "workspace:*",
     "@multi-cc-im/im-lark": "workspace:*",

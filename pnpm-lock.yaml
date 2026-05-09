@@ -26,6 +26,9 @@ importers:
 
   apps/multi-cc-im:
     dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.63.1
+        version: 1.63.1
       '@multi-cc-im/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
