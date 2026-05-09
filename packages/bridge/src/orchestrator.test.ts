@@ -1159,7 +1159,9 @@ describe('createOrchestrator — IMWork toggle', () => {
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork ON');
     expect(echo).toContain('frontend');
-    expect(echo).toContain('10 秒内');
+    // Default is now auto-approve (DD #64 inverted) — bullet line tells
+    // user how to switch back to ask mode.
+    expect(echo).toContain('/start off');
     await orch.stop();
   });
 

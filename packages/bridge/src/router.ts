@@ -408,17 +408,20 @@ function handleBridgeCommand(
     }
 
     case 'start': {
-      // /start [auto]: enable IM mode + (optionally) auto-approve.
-      // Per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
+      // /start [off]: enable IM mode. Per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md):
+      // **default is auto-approve ON** (cc tools auto-pass, no IM round-trip).
+      // `/start off` explicitly opts into ask mode (every PreToolUse forwards
+      // to IM, user replies /1 /2). Inverts the v1 default after user
+      // feedback that ask mode was wrist-pain-heavy in tool-dense workflows.
       // Always emits imWorkAction (no idempotent skip) so users can switch
-      // modes (`/start` ↔ `/start auto`) by re-issuing.
-      const wantAuto = args.trim() === 'auto';
+      // modes (`/start` ↔ `/start off`) by re-issuing.
+      const wantAuto = args.trim() !== 'off';
       const headerLine = wantAuto
         ? '✓ IMWork ON (auto-approve) — cc 工具调用直接放行'
-        : '✓ IMWork ON';
+        : '✓ IMWork ON (ask) — cc 工具调用通过 IM 审批';
       const autoTipLine = wantAuto
-        ? '  - auto-approve ON：cc 调工具时**不**问 IM，直接放行（用 /start 切回 ask）'
-        : '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行';
+        ? '  - auto-approve ON：cc 调工具时**不**问 IM，直接放行（用 /start off 切回 ask）'
+        : '  - cc 调工具时 IM 收到提示，10 秒内 /1 (允许) /2 (拒绝)，超时默认放行（用 /start 切回 auto）';
       return {
         echo: [
           headerLine,
