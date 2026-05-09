@@ -42,8 +42,24 @@ export type ReplyContext = LarkReplyContext | TelegramReplyContext;
 
 export interface LarkReplyContext {
   imType: 'lark';
+  /**
+   * Sender's `open_id` from `event.sender.sender_id.open_id`. Identifies the
+   * person we're replying to. Used by interactive card callbacks (M5) to
+   * scope `/1` `/2` decisions to the original prompter.
+   */
   openId: string;
+  /**
+   * `event.message.chat_id` — the chat the message arrived in. Used as
+   * `receive_id` with `receive_id_type='chat_id'` when `client.im.v1.message.create`
+   * sends a reply. Works for both 1-1 (`chat_type='p2p'`) and group chats.
+   */
   chatId: string;
+  /**
+   * `event.message.message_id` — the original inbound message. Optional;
+   * passed as `reply_in_thread` / referenced by M5 card actions to thread
+   * tool-permission flow back to the prompt that triggered it.
+   */
+  messageId?: string;
 }
 
 export interface TelegramReplyContext {
@@ -64,6 +80,7 @@ export const ReplyContextSchema = z.discriminatedUnion('imType', [
     imType: z.literal('lark'),
     openId: z.string(),
     chatId: z.string(),
+    messageId: z.string().optional(),
   }),
   z.object({
     imType: z.literal('telegram'),
