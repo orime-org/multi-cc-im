@@ -1,19 +1,38 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CredentialStore } from '@multi-cc-im/shared';
+import type { Dispatcher } from 'undici';
+import type { HealthProbedDispatcher } from '../lib/ilink/api/dispatcher.js';
 import type { WeixinCredentials } from './credentials.js';
 
 const mockStartWeixinLoginWithQr = vi.hoisted(() => vi.fn());
 const mockWaitForWeixinLogin = vi.hoisted(() => vi.fn());
 const mockQrTerminalGenerate = vi.hoisted(() => vi.fn());
+const mockCreateHealthProbedDispatcher = vi.hoisted(() => vi.fn());
 
 vi.mock('../lib/ilink/auth/login-qr.js', () => ({
   startWeixinLoginWithQr: mockStartWeixinLoginWithQr,
   waitForWeixinLogin: mockWaitForWeixinLogin,
 }));
 
+vi.mock('../lib/ilink/api/dispatcher.js', () => ({
+  createHealthProbedDispatcher: mockCreateHealthProbedDispatcher,
+}));
+
 vi.mock('qrcode-terminal', () => ({
   default: { generate: mockQrTerminalGenerate },
 }));
+
+function makeStubDispatcher(): HealthProbedDispatcher & {
+  stop: ReturnType<typeof vi.fn>;
+} {
+  const stop = vi.fn(async () => {});
+  return {
+    agent: { dispatch: vi.fn(), close: vi.fn() } as unknown as Dispatcher,
+    stop,
+    reprobeNow: async () => {},
+    snapshot: () => ({ healthy: [], dead: [], degraded: false }),
+  };
+}
 
 const { loginWechat } = await import('./login.js');
 
@@ -39,6 +58,13 @@ beforeEach(() => {
   mockStartWeixinLoginWithQr.mockReset();
   mockWaitForWeixinLogin.mockReset();
   mockQrTerminalGenerate.mockReset();
+  mockCreateHealthProbedDispatcher.mockReset();
+  // Default: every test gets a fresh stub dispatcher so we never hit real DNS
+  // / TCP probes. Tests that need to assert on dispatcher lifecycle override
+  // this in-place.
+  mockCreateHealthProbedDispatcher.mockImplementation(async () =>
+    makeStubDispatcher(),
+  );
 });
 
 describe('loginWechat', () => {
@@ -191,5 +217,90 @@ describe('loginWechat', () => {
     } finally {
       writeSpy.mockRestore();
     }
+  });
+
+  // ==========================================================================
+  // dispatcher lifecycle: per CLAUDE.md "禁止直接用 global fetch 绕开
+  // dispatcher" — login flow must build a health-probed dispatcher and
+  // forward it to both vendor calls so requests route only to healthy iLink
+  // LB IPs. Without this the bare global fetch hits a dead IP and login
+  // fails with TLS ECONNRESET.
+  // ==========================================================================
+
+  it('creates a dispatcher, forwards it to start + wait, then closes it on success', async () => {
+    const stub = makeStubDispatcher();
+    mockCreateHealthProbedDispatcher.mockResolvedValueOnce(stub);
+    mockStartWeixinLoginWithQr.mockResolvedValueOnce({
+      qrcodeUrl: 'https://example.com/qr/d',
+      message: 'go',
+      sessionKey: 'sess-d',
+    });
+    mockWaitForWeixinLogin.mockResolvedValueOnce({
+      connected: true,
+      botToken: 'tok',
+      message: 'ok',
+    });
+
+    await loginWechat({
+      credentialStore: makeStore(),
+      output: { renderQR: () => {}, println: () => {} },
+    });
+
+    expect(mockCreateHealthProbedDispatcher).toHaveBeenCalledOnce();
+    // Hostname must match the iLink login host pinned in vendor.
+    expect(mockCreateHealthProbedDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: 'ilinkai.weixin.qq.com' }),
+    );
+    expect(mockStartWeixinLoginWithQr).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatcher: stub.agent }),
+    );
+    expect(mockWaitForWeixinLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatcher: stub.agent }),
+    );
+    expect(stub.stop).toHaveBeenCalledOnce();
+  });
+
+  it('closes the dispatcher even when login fails partway (finally semantics)', async () => {
+    const stub = makeStubDispatcher();
+    mockCreateHealthProbedDispatcher.mockResolvedValueOnce(stub);
+    mockStartWeixinLoginWithQr.mockResolvedValueOnce({
+      qrcodeUrl: undefined,
+      message: 'Failed to start login: boom',
+      sessionKey: 'sess-fail',
+    });
+
+    await expect(
+      loginWechat({
+        credentialStore: makeStore(),
+        output: { renderQR: () => {}, println: () => {} },
+      }),
+    ).rejects.toThrow();
+    expect(stub.stop).toHaveBeenCalledOnce();
+  });
+
+  it('respects createDispatcher DI — uses caller-supplied factory and closes it', async () => {
+    const stub = makeStubDispatcher();
+    const factory = vi.fn(async () => stub);
+    mockStartWeixinLoginWithQr.mockResolvedValueOnce({
+      qrcodeUrl: 'https://example.com/qr/di',
+      message: 'go',
+      sessionKey: 'sess-di',
+    });
+    mockWaitForWeixinLogin.mockResolvedValueOnce({
+      connected: true,
+      botToken: 'tok',
+      message: 'ok',
+    });
+
+    await loginWechat({
+      credentialStore: makeStore(),
+      output: { renderQR: () => {}, println: () => {} },
+      createDispatcher: factory,
+    });
+
+    expect(factory).toHaveBeenCalledOnce();
+    // The default real factory should NOT be touched when DI is provided
+    expect(mockCreateHealthProbedDispatcher).not.toHaveBeenCalled();
+    expect(stub.stop).toHaveBeenCalledOnce();
   });
 });
