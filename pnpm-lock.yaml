@@ -53,6 +53,9 @@ importers:
       silk-wasm:
         specifier: ^3.7.1
         version: 3.7.1
+      undici:
+        specifier: ^8.2.0
+        version: 8.2.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -108,6 +111,9 @@ importers:
       silk-wasm:
         specifier: ^3.7.1
         version: 3.7.1
+      undici:
+        specifier: ^8.2.0
+        version: 8.2.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1159,6 +1165,10 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  undici@8.2.0:
+    resolution: {integrity: sha512-Z+4Hx9GE26Lh9Upwfnc8C7SsrpBPGaM/Gm6kMFtiG7c+5IvQKlXi/t+9x9DrrCh29cww5TSP9YdVaBcnLDs5fQ==}
+    engines: {node: '>=22.19.0'}
+
   vite-node@2.1.9:
     resolution: {integrity: sha512-AM9aQ/IPrW/6ENLQg3AGY4K1N2TGZdR5e4gu/MmmR2xR3Ll1+dib+nook92g4TV3PXVyeyxdWwtaCAiUL0hMxA==}
     engines: {node: ^18.0.0 || >=20.0.0}
@@ -2070,6 +2080,8 @@ snapshots:
   ufo@1.6.4: {}
 
   undici-types@6.21.0: {}
+
+  undici@8.2.0: {}
 
   vite-node@2.1.9(@types/node@22.19.17):
     dependencies:

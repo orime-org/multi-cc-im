@@ -140,6 +140,9 @@ function makeAdapter() {
     cursorStore: makeCursorStore(),
     credentialStore: makeCredentialStore(),
     inboundMediaDir,
+    // Skip real DNS + TCP probe in tests (per DD: iLink dispatcher health
+    // probe). Tests should not depend on Tencent server reachability.
+    buildDispatcher: async () => null,
   });
 }
 
@@ -242,6 +245,7 @@ describe('createWeixinAdapter — core IMAdapter', () => {
       cursorStore: makeCursorStore(),
       credentialStore: makeCredentialStore('tok-xyz'),
       inboundMediaDir,
+      buildDispatcher: async () => null,
     });
     await adapter.start(makeHandler());
 

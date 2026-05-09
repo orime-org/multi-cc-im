@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Dispatcher } from "undici";
 
 import { loadConfigRouteTag } from "../auth/accounts.js";
 import { logger } from "../util/logger.js";
@@ -24,6 +25,15 @@ export type WeixinApiOptions = {
   timeoutMs?: number;
   /** Long-poll timeout for getUpdates (server may hold the request up to this). */
   longPollTimeoutMs?: number;
+  /**
+   * Optional undici Dispatcher for IP health-probed routing.
+   * Per [DD: iLink dispatcher health probe](../../../../docs/superpowers/specs/2026-05-08-ilink-dispatcher-health-probe-dd.md):
+   * use `createHealthProbedDispatcher()` from `./dispatcher.js` to bind only
+   * to healthy LB backend IPs (avoids 5s TLS hang on Tencent's known-dead
+   * `43.171.*` IPs). When omitted, falls back to global fetch (relies on
+   * `apiPostFetch` transient retry as backstop).
+   */
+  dispatcher?: Dispatcher;
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +141,7 @@ export async function apiGetFetch(params: {
   endpoint: string;
   timeoutMs?: number;
   label: string;
+  dispatcher?: Dispatcher;
 }): Promise<string> {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
@@ -149,7 +160,8 @@ export async function apiGetFetch(params: {
       method: "GET",
       headers: hdrs,
       ...(controller ? { signal: controller.signal } : {}),
-    });
+      ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
+    } as RequestInit & { dispatcher?: Dispatcher });
     if (t !== undefined) clearTimeout(t);
     const rawText = await res.text();
     logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
@@ -234,6 +246,7 @@ async function apiPostFetch(params: {
   token?: string;
   timeoutMs: number;
   label: string;
+  dispatcher?: Dispatcher;
 }): Promise<string> {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
@@ -251,7 +264,8 @@ async function apiPostFetch(params: {
         headers: hdrs,
         body: params.body,
         signal: controller.signal,
-      });
+        ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
+      } as RequestInit & { dispatcher?: Dispatcher });
       clearTimeout(t);
       const rawText = await res.text();
       logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
@@ -297,6 +311,7 @@ export async function getUpdates(
     baseUrl: string;
     token?: string;
     timeoutMs?: number;
+    dispatcher?: Dispatcher;
   },
 ): Promise<GetUpdatesResp> {
   const timeout = params.timeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS;
@@ -311,6 +326,7 @@ export async function getUpdates(
       token: params.token,
       timeoutMs: timeout,
       label: "getUpdates",
+      dispatcher: params.dispatcher,
     });
     const resp: GetUpdatesResp = JSON.parse(rawText);
     return resp;
@@ -348,6 +364,7 @@ export async function getUploadUrl(
     token: params.token,
     timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     label: "getUploadUrl",
+    dispatcher: params.dispatcher,
   });
   const resp: GetUploadUrlResp = JSON.parse(rawText);
   return resp;
@@ -364,6 +381,7 @@ export async function sendMessage(
     token: params.token,
     timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     label: "sendMessage",
+    dispatcher: params.dispatcher,
   });
 }
 
@@ -382,6 +400,7 @@ export async function getConfig(
     token: params.token,
     timeoutMs: params.timeoutMs ?? DEFAULT_CONFIG_TIMEOUT_MS,
     label: "getConfig",
+    dispatcher: params.dispatcher,
   });
   const resp: GetConfigResp = JSON.parse(rawText);
   return resp;
@@ -398,5 +417,6 @@ export async function sendTyping(
     token: params.token,
     timeoutMs: params.timeoutMs ?? DEFAULT_CONFIG_TIMEOUT_MS,
     label: "sendTyping",
+    dispatcher: params.dispatcher,
   });
 }
