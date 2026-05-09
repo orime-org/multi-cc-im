@@ -2,44 +2,42 @@ import { describe, it, expect } from 'vitest';
 import { IMReplyContextSchema } from '../index.js';
 import type {
   IMReplyContext,
-  IMWechatReplyContext,
   IMTelegramReplyContext,
   IMLarkReplyContext,
 } from '../index.js';
 
 describe('IMReplyContextSchema (discriminated union)', () => {
-  describe('wechat variant', () => {
-    it('accepts canonical wechat ctx with contextToken', () => {
-      const valid: IMWechatReplyContext = {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tk-abc123',
+  describe('lark variant', () => {
+    it('accepts canonical lark ctx', () => {
+      const valid: IMLarkReplyContext = {
+        imType: 'lark',
+        openId: 'ou_xxx',
+        chatId: 'oc_yyy',
       };
       const parsed = IMReplyContextSchema.parse(valid);
       expect(parsed).toEqual(valid);
       // Type narrowing via discriminator
-      if (parsed.imType === 'wechat') {
-        expect(parsed.to).toBe('wxid_owner');
+      if (parsed.imType === 'lark') {
+        expect(parsed.openId).toBe('ou_xxx');
+        expect(parsed.chatId).toBe('oc_yyy');
       }
     });
 
-    it('accepts wechat ctx without contextToken (optional field)', () => {
-      const valid: IMWechatReplyContext = {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: undefined,
-      };
-      expect(IMReplyContextSchema.parse(valid)).toEqual({
-        imType: 'wechat',
-        to: 'wxid_owner',
-      });
-    });
-
-    it('rejects wechat ctx missing required `to`', () => {
+    it('rejects lark ctx missing required openId', () => {
       expect(
         IMReplyContextSchema.safeParse({
-          imType: 'wechat',
-          contextToken: 'tk',
+          imType: 'lark',
+          chatId: 'oc_yyy',
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects lark ctx with wrong type for chatId', () => {
+      expect(
+        IMReplyContextSchema.safeParse({
+          imType: 'lark',
+          openId: 'ou_xxx',
+          chatId: 12345,
         }).success,
       ).toBe(false);
     });
@@ -66,17 +64,6 @@ describe('IMReplyContextSchema (discriminated union)', () => {
     });
   });
 
-  describe('lark variant', () => {
-    it('accepts canonical lark ctx', () => {
-      const valid: IMLarkReplyContext = {
-        imType: 'lark',
-        openId: 'ou_xxx',
-        chatId: 'oc_yyy',
-      };
-      expect(IMReplyContextSchema.parse(valid)).toEqual(valid);
-    });
-  });
-
   describe('discriminator enforcement', () => {
     it('rejects unknown imType (defends against newer-daemon-then-older-client read)', () => {
       const future: unknown = {
@@ -88,28 +75,33 @@ describe('IMReplyContextSchema (discriminated union)', () => {
     });
 
     it('rejects missing imType discriminator', () => {
-      // wechat-shape but no discriminator — pre-DD #61 schema
-      const v1: unknown = { to: 'wxid_owner', contextToken: 'tk' };
+      const v1: unknown = { openId: 'ou_x', chatId: 'oc_y' };
       expect(IMReplyContextSchema.safeParse(v1).success).toBe(false);
+    });
+
+    it('rejects retired imType=wechat (purged in DD #86 §11.2)', () => {
+      const legacyWechat: unknown = {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'tk-x',
+      };
+      const result = IMReplyContextSchema.safeParse(legacyWechat);
+      expect(result.success).toBe(false);
     });
 
     it('switch on imType after parse narrows correctly (compile-time + runtime)', () => {
       const ctxs: IMReplyContext[] = [
-        { imType: 'wechat', to: 'a', contextToken: 'b' },
-        { imType: 'telegram', chatId: 1, messageId: 2 },
         { imType: 'lark', openId: 'x', chatId: 'y' },
+        { imType: 'telegram', chatId: 1, messageId: 2 },
       ];
       for (const ctx of ctxs) {
         const parsed = IMReplyContextSchema.parse(ctx);
         switch (parsed.imType) {
-          case 'wechat':
-            expect(parsed.to).toBeTypeOf('string');
+          case 'lark':
+            expect(parsed.openId).toBeTypeOf('string');
             break;
           case 'telegram':
             expect(parsed.chatId).toBeTypeOf('number');
-            break;
-          case 'lark':
-            expect(parsed.openId).toBeTypeOf('string');
             break;
         }
       }

@@ -15,29 +15,19 @@ describe('runStartCommand — pre-flight failures', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('credentials/wechat.json missing → exit 1 with "login wechat first" hint', async () => {
-    const lines: string[] = [];
-    const result = await runStartCommand({
-      skipSetupHooks: true,
-      root,
-      // No wezterm setup — but credential check fires first per start.ts order.
-      resolveWezTerm: async () => '/nonexistent/wezterm',
-      log: (l) => lines.push(l),
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/login wechat/i);
-    // Banner header logged before credential check failed
-    expect(lines.some((l) => l.includes('multi-cc-im start'))).toBe(true);
-  });
+  // The "credentials/wechat.json missing → exit 1" test was retired in
+  // M1 (DD #86 §11.2): start.ts no longer checks IM credentials in this
+  // transitional phase. M2 lark adapter will reintroduce a parallel test
+  // for `credentials/lark.json` missing.
 
   it('wezterm not findable → exit 1 with install hint', async () => {
     // Write valid credentials so the credential check passes
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
     const result = await runStartCommand({
       skipSetupHooks: true,
@@ -54,10 +44,10 @@ describe('runStartCommand — pre-flight failures', () => {
   it('happy path: returns shutdown handle and starts orchestrator', async () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
     // Stub the runtime adapters so we don't actually long-poll iLink / spawn
     // wezterm. Verifies start() wires through without throwing.
@@ -80,10 +70,10 @@ describe('runStartCommand — pre-flight failures', () => {
   it('happy path: emits pre-flight banner + ready line via log sink', async () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
     const lines: string[] = [];
     const result = await runStartCommand({
@@ -97,7 +87,8 @@ describe('runStartCommand — pre-flight failures', () => {
 
     const joined = lines.join('\n');
     expect(joined).toContain(`multi-cc-im start (root: ${root})`);
-    expect(joined).toContain(`✓ wechat credentials at`);
+    // M1 transitional: no IM credentials check yet (DD #86 §11.2). M2 lark
+    // adapter will reintroduce a `✓ lark credentials at` line.
     expect(joined).toContain(`✓ wezterm at /usr/local/bin/wezterm`);
     // Per DD #61, runStartCommand no longer creates a SessionRegistry — bridge
     // queries `termAdapter.listPanes()` on each IM event. Pre-flight logs the
@@ -114,10 +105,10 @@ describe('runStartCommand — pre-flight failures', () => {
   it('happy path: writes <stateDir>/daemon.pid with current PID + lstart', async () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
     const result = await runStartCommand({
       skipSetupHooks: true,
@@ -144,10 +135,10 @@ describe('runStartCommand — pre-flight failures', () => {
     // running". The double-start check sees isDaemonAlive=true → reject.
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
     const { writeDaemonPidFile, captureProcessLstart } = await import(
       '@multi-cc-im/cli-cc'
@@ -175,10 +166,10 @@ describe('runStartCommand — pre-flight failures', () => {
   it('stale lock: daemon.pid PID dead → ignored, daemon starts normally', async () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
     const { writeDaemonPidFile } = await import('@multi-cc-im/cli-cc');
     await writeDaemonPidFile({
@@ -206,10 +197,10 @@ describe('runStartCommand — pre-flight failures', () => {
   it('stale lock: daemon.pid PID alive but lstart mismatch (PID-reuse) → ignored, daemon starts normally', async () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
     const { writeDaemonPidFile } = await import('@multi-cc-im/cli-cc');
     await writeDaemonPidFile({
@@ -234,19 +225,19 @@ describe('runStartCommand — pre-flight failures', () => {
     // → state/IMOrigin remains on disk with a stale `context_token`.
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     const stateDir = join(root, 'state');
     await mkdir(stateDir, { recursive: true });
     const { writeIMOriginFile, existsIMOriginFile } = await import(
       '@multi-cc-im/cli-cc'
     );
     await writeIMOriginFile(stateDir, {
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'stale-from-crashed-daemon',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_stale-from-crashed-daemon',
     });
     expect(await existsIMOriginFile(stateDir)).toBe(true);
 
@@ -280,10 +271,10 @@ describe('runStartCommand — auto setup-hooks', () => {
     root = await mkdtemp(join(tmpdir(), 'start-setup-hooks-'));
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
-      join(root, 'credentials', 'wechat.json'),
+      join(root, 'credentials', 'lark.json'),
       JSON.stringify({ token: 'tok-abc' }),
     );
-    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
   });
 
   afterEach(async () => {

@@ -40,7 +40,7 @@ describe('sweepStaleStateFiles', () => {
         [`${PANE_DEAD}_${SID_A}.Stop.2026-05-08T01-43-40-131Z`]: '{}',
         [`${PANE_DEAD}_${SID_A}.PermissionRequest.deadbeef.json`]: '{}',
         [`${PANE_DEAD}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       });
       const r = await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
@@ -53,7 +53,7 @@ describe('sweepStaleStateFiles', () => {
       await writeFiles({
         [`${PANE_LIVE}_${SID_A}.Stop.2026-05-08T01-43-40-131Z`]: '{}',
         [`${PANE_LIVE}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       });
       const r = await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
@@ -67,9 +67,9 @@ describe('sweepStaleStateFiles', () => {
         [`${PANE_LIVE}_${SID_A}.Stop.T1`]: '{}',
         [`${PANE_DEAD}_${SID_B}.Stop.T1`]: '{}',
         [`${PANE_LIVE}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
         [`${PANE_DEAD}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       });
       const r = await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
@@ -98,7 +98,7 @@ describe('sweepStaleStateFiles', () => {
       await writeFiles({
         [`${PANE_LIVE}_${SID_A}.Stop.T1`]: '{}',
         [`${PANE_LIVE}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       });
       const r = await sweepStaleStateFiles(stateDir);
       expect(r.orphanPaneFilesCleaned).toBe(2);
@@ -151,7 +151,7 @@ describe('sweepStaleStateFiles', () => {
         [`${SID_A}.Stop.2026-05-06T16-20-00-000Z`]: '{}',
         [`${SID_A}.PermissionRequest.req1.json`]: '{}',
         [`${SID_A}.IMOrigin`]:
-          '{"imType":"wechat","to":"u","contextToken":"x"}',
+          '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       });
       const r = await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
@@ -174,8 +174,19 @@ describe('sweepStaleStateFiles', () => {
       expect(await listStateDir()).toContain('IMWork');
     });
 
-    it('wechat-cursor preserved (long-poll cursor)', async () => {
-      await writeFiles({ 'wechat-cursor': 'cursor-state' });
+    it('IM-adapter cursor files preserved (e.g. lark-cursor for long-poll state)', async () => {
+      await writeFiles({ 'lark-cursor': 'cursor-state' });
+      await sweepStaleStateFiles(stateDir, {
+        livePaneIds: async () => [PANE_LIVE],
+      });
+      expect(await listStateDir()).toContain('lark-cursor');
+    });
+
+    it('legacy wechat-cursor file (residual on user disk after wechat purge) also preserved', async () => {
+      // DD #86 §11.2: codebase no longer creates `wechat-cursor`, but users
+      // who upgraded from a wechat-era install may have a stale one; sweep
+      // must leave it alone (user can `rm` it manually).
+      await writeFiles({ 'wechat-cursor': 'legacy-cursor-state' });
       await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
       });
@@ -183,14 +194,14 @@ describe('sweepStaleStateFiles', () => {
     });
 
     it('unknown random files left alone (not legacy patterns, not pane-keyed)', async () => {
-      await mkdir(join(stateDir, 'wechat-cursor-dir'), { recursive: true });
+      await mkdir(join(stateDir, 'lark-cursor-dir'), { recursive: true });
       await writeFiles({ 'random-file.txt': 'untouched' });
       await sweepStaleStateFiles(stateDir, {
         livePaneIds: async () => [PANE_LIVE],
       });
       const remaining = await listStateDir();
       expect(remaining).toContain('random-file.txt');
-      expect(remaining).toContain('wechat-cursor-dir');
+      expect(remaining).toContain('lark-cursor-dir');
     });
   });
 
@@ -279,7 +290,7 @@ describe('sweepStaleStateFiles', () => {
     await writeFiles({
       [`${PANE_DEAD}_${SID_A}.Stop.T1`]: '{}',
       [`${PANE_DEAD}.IMOrigin`]:
-        '{"imType":"wechat","to":"u","contextToken":"x"}',
+        '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       [`${SID_A}.SessionStart`]: '{}',
       [`${SID_B}.cc-pid`]: '{}',
       'daemon.pid': JSON.stringify({ pid: 999_999, startedAt: 'fake' }),

@@ -28,10 +28,10 @@ const TX = '/Users/x/.claude/projects/-private-tmp/91215578.jsonl';
 const CWD = '/private/tmp/cc-probe';
 const PANE_ID = 42;
 
-const WECHAT_CTX: IMReplyContext = {
-  imType: 'wechat',
-  to: 'wxid_user',
-  contextToken: 'ctx-1',
+const LARK_CTX: IMReplyContext = {
+  imType: 'lark',
+  openId: 'ou_user',
+  chatId: 'oc_chat',
 };
 
 const PRE_TOOL_USE_BASH: ParsedHookPayload = {
@@ -70,7 +70,7 @@ const STOP_HOOK_ACTIVE_TRUE: ParsedHookPayload = {
  * (= "fully bound, daemon alive" — the path that exercises the heavy code). */
 async function setupBoundState(stateDir: string): Promise<void> {
   await writeIMWorkFile(stateDir);
-  await writeIMOriginFile(stateDir, WECHAT_CTX);
+  await writeIMOriginFile(stateDir, LARK_CTX);
   const lstart = (await captureProcessLstart(process.pid)) ?? 'unknown';
   await writeDaemonPidFile({
     stateDir,
@@ -249,7 +249,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
 
   it('E4: !daemon alive → silent exit, no Request file (defers to cc native flow)', async () => {
     await writeIMWorkFile(stateDir);
-    await writeIMOriginFile(stateDir, WECHAT_CTX);
+    await writeIMOriginFile(stateDir, LARK_CTX);
     // No daemon.pid → isDaemonAlive false.
     const result = await runHookReceiver({
       stateDir,
@@ -409,7 +409,7 @@ describe('runHookReceiver — Stop event', () => {
 
   it('!daemon alive → silent exit, no Stop file', async () => {
     await writeIMWorkFile(stateDir);
-    await writeIMOriginFile(stateDir, WECHAT_CTX);
+    await writeIMOriginFile(stateDir, LARK_CTX);
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,

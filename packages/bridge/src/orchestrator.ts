@@ -45,7 +45,7 @@ const DEFAULT_SEND_KEYSTROKE_DELAY_MS = 300;
 const DEFAULT_REAPER_DELAY_MS = 10_000;
 
 export interface CreateOrchestratorOpts {
-  /** Wechat (or future tg / Lark) IM adapter. */
+  /** Lark (or future tg / etc.) IM adapter. */
   imAdapter: IMAdapter;
   /**
    * WezTerm (or future tmux) Term adapter — must satisfy `TermListPanes` so
@@ -99,7 +99,7 @@ export interface BridgeOrchestrator {
 }
 
 /**
- * Wire `IMAdapter` (wechat) ↔ `TermAdapter` (wezterm) ↔ `CLIAdapter` (cc) into
+ * Wire `IMAdapter` (lark) ↔ `TermAdapter` (wezterm) ↔ `CLIAdapter` (cc) into
  * a working bridge. Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
  *
  * **Inbound (IM → cc)**:
@@ -151,7 +151,7 @@ export function createOrchestrator(
   };
 
   // ============================================================================
-  // Inbound: wechat → router → term sendText (two-step send)
+  // Inbound: IM → router → term sendText (two-step send)
   // ============================================================================
 
   async function dispatchOne(
@@ -244,9 +244,9 @@ export function createOrchestrator(
 
     if (result.dispatches.length > 0) {
       const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
-      log(`[wechat → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);
+      log(`[IM → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);
     } else if (result.echo.length > 0) {
-      log(`[wechat] router returned echo only: ${truncate(result.echo, 80)}`);
+      log(`[IM] router returned echo only: ${truncate(result.echo, 80)}`);
     }
 
     // Run dispatches in parallel (each pane independent).
@@ -323,7 +323,7 @@ export function createOrchestrator(
     }
 
     log(
-      `[cc → wechat] ${prefix} reply='${truncate(p.last_assistant_message, 80)}'`,
+      `[cc → IM] ${prefix} reply='${truncate(p.last_assistant_message, 80)}'`,
     );
     const body = `[${prefix}]\n${p.last_assistant_message}`;
     try {

@@ -107,9 +107,9 @@ describe('IncomingMessageSchema', () => {
     attachments: [],
     timestamp: 1700000000000,
     replyCtx: {
-      imType: 'wechat' as const,
-      to: 'user1',
-      contextToken: 'tk',
+      imType: 'lark' as const,
+      openId: 'ou_xxx',
+      chatId: 'oc_yyy',
     },
   };
 

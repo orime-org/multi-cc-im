@@ -43,8 +43,9 @@ export const PaneIdSchema = z
  * daemon no longer maintains a paneId↔sessionId reverse map. Bridge router
  * uses `TermListPanes.listPanes()` directly as the source of truth.
  *
- * Kept here only because `@multi-cc-im/im-wechat` re-exports the type
- * historically; new code should not implement or consume this.
+ * No active consumers remain after the wechat purge (DD #86 §11.2). Kept
+ * exported for now only as a defensive marker — new code should not
+ * implement or consume this.
  */
 export interface PaneToSessionMap {
   get(paneId: PaneId): SessionId | null;

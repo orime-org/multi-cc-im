@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { createCredentialStore } from '../credential-store.js';
 
-// Test schema mimics the wechat case (token + savedAt) but lives here so
-// storage-files stays IM-agnostic.
+// Test schema is a generic IM credential shape (token + savedAt). Lives here
+// so storage-files stays IM-agnostic; concrete IM adapters (lark / etc.)
+// declare their own schema and pass it to createCredentialStore.
 const TestCredsSchema = z.object({
   token: z.string().min(1),
   savedAt: z.string().optional(),
@@ -19,7 +20,7 @@ describe('CredentialStore', () => {
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'mcim-cred-'));
-    filePath = join(tmpDir, 'wechat.json');
+    filePath = join(tmpDir, 'lark.json');
   });
 
   afterEach(async () => {
@@ -62,7 +63,7 @@ describe('CredentialStore', () => {
   });
 
   it('creates parent directories when missing', async () => {
-    const nested = join(tmpDir, 'credentials', 'wechat.json');
+    const nested = join(tmpDir, 'credentials', 'lark.json');
     const store = createCredentialStore<TestCreds>({
       filePath: nested,
       schema: TestCredsSchema,

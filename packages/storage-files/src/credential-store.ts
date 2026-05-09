@@ -7,7 +7,7 @@ import { isENOENT } from './utils.js';
 export interface CredentialStoreOpts<T> {
   /**
    * Absolute path to the credentials JSON file
-   * (e.g. `~/.multi-cc-im/credentials/wechat.json`).
+   * (e.g. `~/.multi-cc-im/credentials/lark.json`).
    */
   filePath: string;
   /**
