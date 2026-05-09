@@ -146,8 +146,17 @@ export async function createHealthProbedDispatcher(
   }
 
   // Custom DNS lookup callback used by undici Agent's `connect` builder.
-  // Signature matches Node `net.LookupFunction` so undici passes it
-  // transparently to `net.connect`.
+  // undici 8 (matched by our `undici@^8.2.0` dep) passes a callback that
+  // expects the **array form** `(err, [{ address, family }])` — the older
+  // `(err, address, family)` triple-form silently fails with
+  // `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined` because undici
+  // 8 indexes `[0].address` on what it thinks is an array. Verified with
+  // live `Agent` smoke against ilinkai.weixin.qq.com.
+  //
+  // The Node `LookupFunction` type only declares the triple-form; the cast
+  // sidesteps that. Fallback path (other hosts) keeps the triple-form via
+  // `dnsLookupCallback` because Node's own `dns.lookup` handles both shapes
+  // depending on `options.all`.
   const lookup: LookupFunction = (hostname, options, callback) => {
     if (hostname !== opts.hostname) {
       // Not our host — fall back to OS DNS so we don't accidentally break
@@ -155,7 +164,11 @@ export async function createHealthProbedDispatcher(
       dnsLookupCallback(hostname, options, callback);
       return;
     }
-    callback(null, pickHealthyIP(), 4);
+    const ip = pickHealthyIP();
+    (callback as (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void)(
+      null,
+      [{ address: ip, family: 4 }],
+    );
   };
 
   const agent = new Agent({
