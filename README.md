@@ -44,13 +44,7 @@ ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 
 A QR code prints to the terminal. Scan it with your phone WeChat. Token saved to `~/.multi-cc-im/credentials/wechat.json` (mode 0600).
 
-### 2. Register cc hooks
-
-```bash
-./bin/multi-cc-im setup-hooks
-```
-
-Idempotent merge into `~/.claude/settings.json`. Adds `PreToolUse` and `Stop` hook entries that point at `./bin/multi-cc-im hook <event>`. Existing hooks from other tools are preserved. A `.bak.<timestamp>` backup is written before any change.
+cc hooks are auto-registered by `start` (next section) — no separate setup step. The first `start` writes a timestamped `.bak.<iso>` backup of `~/.claude/settings.json` before merging the `PreToolUse` and `Stop` hook entries. Existing hooks from other tools are preserved.
 
 ## Run
 
@@ -136,9 +130,8 @@ Override the root with `MULTI_CC_IM_HOME` env.
 
 | Command | Description |
 |---|---|
-| `multi-cc-im start` | Start the bridge daemon (long-running, foreground) |
+| `multi-cc-im start` | Start the bridge daemon (long-running, foreground); auto-registers cc hooks in `~/.claude/settings.json` on first run (idempotent merge) |
 | `multi-cc-im login wechat` | Scan QR + save `bot_token` |
-| `multi-cc-im setup-hooks` | Register cc hooks in `~/.claude/settings.json` (idempotent) |
 | `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running |
 | `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`) |
 | `multi-cc-im --help` / `-h` | Print help |
@@ -193,9 +186,9 @@ ls -la ~/.multi-cc-im/state/*.Stop.*
 2. Did you address that cc from WeChat first? (no `IMOrigin` → no thread to forward into).
 3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`).
 
-### `setup-hooks` complains about existing hooks
+### Hook registration (auto-run by `start`) complains about existing hooks
 
-Restore from the backup it wrote:
+Restore from the backup `start` wrote before the merge:
 
 ```bash
 ls -la ~/.claude/settings.json.bak.*

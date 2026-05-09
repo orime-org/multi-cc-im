@@ -44,13 +44,7 @@ ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 
 终端打印二维码，手机微信扫码。Token 存到 `~/.multi-cc-im/credentials/wechat.json`（mode 0600）。
 
-### 2. 注册 cc hook
-
-```bash
-./bin/multi-cc-im setup-hooks
-```
-
-幂等地合并到 `~/.claude/settings.json`，加 `PreToolUse` + `Stop` 两条 hook 指向 `./bin/multi-cc-im hook <event>`。其他工具的 hook 保留不动。改动前会写 `.bak.<timestamp>` 备份。
+cc hook 由 `start`（下一节）自动注册，不需要单独跑命令。首次 `start` 会先写时间戳 `.bak.<iso>` 备份 `~/.claude/settings.json`，再幂等合并 `PreToolUse` + `Stop` 两条 hook entries。其他工具的 hook 保留不动。
 
 ## 启动
 
@@ -136,9 +130,8 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 
 | 命令 | 说明 |
 |---|---|
-| `multi-cc-im start` | 启动 bridge daemon（前台长跑）|
+| `multi-cc-im start` | 启动 bridge daemon（前台长跑）；首次自动注册 cc hook 到 `~/.claude/settings.json`（幂等合并）|
 | `multi-cc-im login wechat` | 扫码登录 + 保存 `bot_token` |
-| `multi-cc-im setup-hooks` | 注册 cc hook 到 `~/.claude/settings.json`（幂等）|
 | `multi-cc-im cleanup [--dry-run]` | 清理过期 state 文件；daemon 跑着也安全 |
 | `multi-cc-im hook <event>` | cc 内部 hook 入口（由 `~/.claude/settings.json` 调用）|
 | `multi-cc-im --help` / `-h` | 打印 help |
@@ -192,9 +185,9 @@ ls -la ~/.multi-cc-im/state/*.Stop.*
 2. 你之前从微信寻址过这个 cc 吗？（没 `IMOrigin` → 没 thread 可转发）
 3. daemon 还活着吗？（`cat ~/.multi-cc-im/state/daemon.pid`）
 
-### `setup-hooks` 报现有 hook 冲突
+### Hook 注册（`start` 时自动跑）报现有 hook 冲突
 
-从备份恢复：
+从 `start` merge 前自动写的 backup 恢复：
 
 ```bash
 ls -la ~/.claude/settings.json.bak.*
