@@ -175,4 +175,38 @@ describe("createHealthProbedDispatcher", () => {
     expect(typeof d.agent.dispatch).toBe("function");
     await d.stop();
   });
+
+  // ==========================================================================
+  // undici 8 dispatch-time contract: `connect.lookup` callback must use the
+  // array form `(err, [{address, family}])`. The triple form `(err, ip, fam)`
+  // silently fails with `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined`
+  // because undici 8 indexes `[0].address` on what it expects to be an array.
+  // This codifies the contract via a real fetch through the Agent (mocking
+  // `connect` would skip the failure mode entirely).
+  // ==========================================================================
+  it("undici 8 contract: fetch through Agent reaches connect (no ERR_INVALID_IP_ADDRESS)", async () => {
+    // Pick a routable IP we expect TLS handshake to fail on (any public IP
+    // unrelated to our test host); we only care that we get past `lookup` →
+    // `connect`. ERR_INVALID_IP_ADDRESS would mean lookup-stage failure.
+    const d = await createHealthProbedDispatcher({
+      hostname: "ilinkai.test.invalid",
+      probe: async () => true,
+      resolve: async () => ["127.0.0.1"], // localhost — connect refused, but past lookup
+      reprobeIntervalMs: 99_999_999,
+    });
+    const { fetch } = await import("undici");
+    let caughtCode: string | undefined;
+    try {
+      await fetch("https://ilinkai.test.invalid/", {
+        dispatcher: d.agent,
+        signal: AbortSignal.timeout(2_000),
+      });
+    } catch (err) {
+      caughtCode = (err as Error & { cause?: { code?: string } }).cause?.code;
+    }
+    // Accept any post-lookup failure (ECONNREFUSED, ETIMEDOUT, EPROTO, etc.)
+    // but specifically NOT ERR_INVALID_IP_ADDRESS — that's the lookup-shape bug.
+    expect(caughtCode).not.toBe("ERR_INVALID_IP_ADDRESS");
+    await d.stop();
+  });
 });
