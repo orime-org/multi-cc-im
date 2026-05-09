@@ -2,200 +2,101 @@
 
 **English** | [中文](README.zh-CN.md)
 
-A personal local bridge that exposes **multiple Claude Code (cc) sessions running in WezTerm tabs** to WeChat via Tencent's iLink Bot API. Use the terminal in the office, WeChat outside, both at once. Includes `@session` routing, IM-side tool permission gate (PreToolUse → WeChat reply with `/1` allow / `/2` deny), and a pluggable architecture for additional IMs / terminals / CLIs.
-
-> **Status**: v1.6 implementation complete — 7 packages + 1 app shipped (`apps/multi-cc-im/` is the executable CLI). v1.2 added IMWork (manual remote-mode toggle) + IMOrigin (IM reply ctx) + read-only tool allowlist + daemon reaper; v1.3 added daemon-liveness PID lock (`state/daemon.pid`) + double-start guard + Ctrl+C cleanup; v1.4 collapsed cc hook subscriptions to `PreToolUse` + `Stop` only and switched to **pane-keyed state files** (`<paneId>_<sid>.*`) with `wezterm cli list` as the live-pane ground truth — no more PaneAlive multi-signal state machine ([DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)); v1.5 promoted IMOrigin from per-pane to **global** (`state/IMOrigin` — every inbound IM message overwrites it) to fix stale `context_token` in multi-cc / bridge-command / permission-response scenarios ([DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)); v1.6 added **IP health-probed dispatcher** ([DD: iLink dispatcher health probe](docs/superpowers/specs/2026-05-08-ilink-dispatcher-health-probe-dd.md)) + apiPostFetch transient retry — fixes user-reported intermittent ECONNRESET caused by 2 of 4 Tencent iLink LB backend IPs being dead (Node fetch had no IP-rotation fallback). Daemon now probes 4 LB IPs at startup (~2s), routes only to healthy ones, re-probes every 5min. Remaining follow-ups: real-environment WezTerm + cc + WeChat end-to-end smoke test, Telegram / Lark IM adapters, analytics package.
+Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to WeChat via Tencent's iLink Bot API. Address sessions by `@<tab-name>`. Plain (no-mention) messages are AI-routed to the most relevant cc tab. Includes WeChat-side tool permission gate (`/1` allow / `/2` deny) and a pluggable architecture for additional IMs / terminals / CLIs.
 
 ---
 
-## Who this is for
+# Part 1 — Direct use
 
-You'll get value from multi-cc-im if **all** of these are true:
+## Prerequisites
 
-1. You run cc inside WezTerm (one or more tabs).
-2. You sometimes step away from your desk and want to keep nudging cc from your phone.
-3. You're OK using your own WeChat as the bot endpoint (it's a personal bridge — single owner, one machine).
+- macOS / Linux (Windows via WSL untested)
+- Node.js ≥ 22
+- pnpm ≥ 9
+- WezTerm ≥ 20240203
+- Claude Code CLI logged in (`claude` resolvable via `PATH`; cc Pro/Max account required for AI routing)
+- A WeChat account dedicated as bot
 
-You will **not** get value if:
-
-- You don't use cc, or you use it inside VS Code / Cursor / iTerm (term adapter is wezterm-only in v1).
-- You want a multi-tenant SaaS — multi-cc-im is local-only by design.
-- You don't have a WeChat account (Telegram / Lark adapters are on the roadmap, not yet shipped).
-
----
-
-## How it feels
-
-```
-You at the office:      [cc TUI in WezTerm tab "frontend"]
-You on the bus:         WeChat → "@frontend run the tests"
-                        WeChat ← "→ frontend received"
-                        ... cc runs, replies ...
-                        WeChat ← "[frontend] all 47 tests pass."
-                  
-cc wants to run Bash:   WeChat ← "[frontend] 准备跑工具:
-                                    Bash(rm -rf node_modules)
-                                  ⏳ 10 秒内回复，否则默认放行:
-                                    @frontend /1   = 允许
-                                    @frontend /2   = 拒绝"
-You:                    WeChat → "@frontend /2"
-                        WeChat ← "→ frontend permission 拒绝"
-                        ... cc cancels and asks you something else ...
-```
-
-The cc TUI in your WezTerm tab is **untouched** the whole time — multi-cc-im never spawns cc, never wraps stdin/stdout. You can sit down at your laptop and keep typing into the same cc session as if WeChat never happened.
-
----
-
-## Quick Start
-
-### 1. Install WezTerm (one-time)
-
-```bash
-brew install --cask wezterm
-```
-
-multi-cc-im probes the WezTerm path at startup and caches it to `~/.multi-cc-im/config.toml [external_paths].wezterm`. Hardcoded paths are forbidden — see [docs/architecture.md "External CLI tool path policy"](docs/architecture.md#外部-cli-工具路径策略).
-
-### 2. Install multi-cc-im
+## Install
 
 ```bash
 git clone https://github.com/orime-org/multi-cc-im.git
 cd multi-cc-im
 pnpm install
-pnpm typecheck && pnpm test            # optional verification (~5s, 903 unit tests)
-pnpm --filter multi-cc-im build        # recommended — see "production vs dev" below
+pnpm --filter multi-cc-im build
 ```
 
-The CLI entry point is the `bin/multi-cc-im` bash wrapper. **Production mode** (recommended): after `pnpm build` the wrapper auto-uses `apps/multi-cc-im/dist/cli.js` (~50 ms startup). **Dev mode**: when the bundle is absent, falls back to `tsx src/cli.ts` (~300–1500 ms startup). cc hooks fire several times per assistant turn — **production mode is required** in practice; otherwise typing latency from your phone is visible to the eye.
+The bridge entry point is `./bin/multi-cc-im`. It auto-resolves to either `apps/multi-cc-im/dist/cli.js` (after `build`) or `tsx src/cli.ts` (dev fallback).
 
-### 3. First-time WeChat login (QR scan)
+Optional: symlink to `PATH`:
+
+```bash
+ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
+```
+
+## Setup (one-time)
+
+### 1. Login to WeChat
 
 ```bash
 ./bin/multi-cc-im login wechat
-# equivalent to: pnpm --filter multi-cc-im dev login wechat
 ```
 
-The terminal prints a QR code; scan + confirm in WeChat → the bridge persists `bot_token` to `~/.multi-cc-im/credentials/wechat.json` (mode 0600, matching the Tencent OpenClaw vendor upstream; [DD: credentials persistence strategy](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)). The token never lands in git, log files, console output, or any non-0600 location.
+A QR code prints to the terminal. Scan it with your phone WeChat. Token saved to `~/.multi-cc-im/credentials/wechat.json` (mode 0600).
 
-### 4. Configure cc hooks (one-time per cc setup)
+### 2. Register cc hooks
 
 ```bash
 ./bin/multi-cc-im setup-hooks
 ```
 
-Idempotent merge — auto-detects the current state of `~/.claude/settings.json` and writes multi-cc-im's **2 hook commands** (using the current repo's absolute path):
+Idempotent merge into `~/.claude/settings.json`. Adds `PreToolUse` and `Stop` hook entries that point at `./bin/multi-cc-im hook <event>`. Existing hooks from other tools are preserved. A `.bak.<timestamp>` backup is written before any change.
 
-- File missing → create
-- Exists but empty `{}` or no `hooks` field → add hooks
-- Already has other tools' hooks → preserve them, append multi-cc-im's 2
-- Already has stale multi-cc-im hooks (e.g. you moved the repo) → replace with the current path's 2
-
-The 2 events:
-
-| Event | Purpose |
-|---|---|
-| `PreToolUse` | Forwards tool permission prompts to WeChat (`/1` allow / `/2` deny, **10s** timeout default-allow) — `matcher: "*"`, `timeout: 20` (cc-side; **=10s IM reply window + 10s margin** for hook stdout write + daemon retry) |
-| `Stop` | Carries the assistant reply into the bridge router for forwarding to WeChat |
-
-`SessionStart` / `SessionEnd` / `UserPromptSubmit` / `PostToolUse` are **not** subscribed. The hook entry checks `process.env.WEZTERM_PANE` first — if it's undefined, the hook silently exits (cc isn't running inside wezterm — e.g. ssh, VS Code terminal — so multi-cc-im has nothing to bridge). When defined, the paneId becomes part of every state-file name (see [State files reference](#state-files-reference)). cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) is the source of truth for conversation content; analytics work reads it directly.
-
-**Safety**: before writing, the previous `settings.json` is automatically backed up to `settings.json.bak.<ISO-timestamp>` (if you regret the change, `cp <backup> ~/.claude/settings.json` restores it).
-
-If you'd rather edit by hand: copy the `hooks` block from [`examples/claude-settings.json`](examples/claude-settings.json) into `~/.claude/settings.json` and `sed`-replace `ABS_PATH`:
-
-```bash
-sed "s|ABS_PATH|$(pwd)|g" examples/claude-settings.json
-```
-
-### 5. Start the bridge daemon
+## Run
 
 ```bash
 ./bin/multi-cc-im start
 ```
 
-Long-running background process: iLink long-polling + watching `~/.multi-cc-im/state/` for cc hook events + routing WeChat `IncomingMessage` to the cc TUI. `Ctrl+C` triggers a graceful shutdown (releases all adapters; the in-memory `current_session` sticky pointer is lost — re-`@<name>` from WeChat after restart).
+Daemon runs in the foreground. Stderr carries log output. Ctrl+C stops the daemon and clears `state/IMWork`, `state/IMOrigin`, `state/daemon.pid`.
 
-The `state/` directory is **monitor-only** — it never accumulates cc conversation content (cc's own transcript jsonl is already source of truth). It holds a small set of short-lived hook-↔-daemon IPC files keyed by `<paneId>` (the live wezterm pane id) plus four top-level lock / state files (`IMWork`, `IMOrigin`, `daemon.pid`, `wechat-cursor`). Full schema reference is at the bottom of this README ([State files reference](#state-files-reference)).
+Only one daemon per machine. Re-running `start` while one is alive exits with code 1 and prints the existing PID.
 
-Daemon startup runs a sweep that uses `wezterm cli list --format json` as the live-pane ground truth: any `<paneId>_<sid>.*` file whose paneId is **not** in the current live set is cleaned, plus stale `daemon.pid` (PID dead or lstart mismatch) and any legacy state files from pre-redesign installs (including legacy per-pane `<paneId>.IMOrigin`). The global `IMOrigin` lock is also wiped at every daemon start (crash safety net + always-fresh on next IM message). To trigger the same sweep manually:
+## Daemon commands (sent from WeChat)
 
-```bash
-./bin/multi-cc-im cleanup --dry-run    # preview what would be deleted
-./bin/multi-cc-im cleanup              # actually delete
-```
+Every command is a single message sent to the bot's WeChat thread.
 
-Safe to run while daemon is running — files for live paneIds are kept. The command refuses to run when the wezterm path can't be resolved (without a live-pane snapshot the sweep has no ground truth and won't blindly delete).
-
-### 6. Name your cc sessions (recommended)
-
-Once cc is running, use its built-in `/rename` command to give the session a friendly name:
-
-```
-/rename frontend
-```
-
-cc persists the name to its session state (so `claude --resume` restores it) and pushes it to the wezterm tab title via OSC. multi-cc-im polls `wezterm cli list --format json` on every IM event and uses that title as the routing key:
-
-- WeChat `@frontend hello` → routes to the cc whose tab title is `frontend`
-- WeChat echo `→ frontend received` confirms the routing
-- cc reply forwarded back to WeChat is prefixed with `[frontend]` so you can tell sessions apart
-
-**Without `/rename`**, the cc has no addressable name — the router echoes `未 /rename` and refuses to dispatch. Tab title polling is real-time — rename and the new name shows up on the next IM round-trip with no daemon restart. (Numeric tab titles trigger a warning in the `/start` echo because they look like wezterm pane ids and would confuse the matcher.)
-
-`@multi-cc-im` is a reserved name. The router refuses to match it against any cc; instead it's the namespace for bridge commands (see below).
-
----
-
-## Routing syntax (user perspective)
-
-Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with three updates from the original DD: (a) the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map, (b) bridge commands are addressed via bare `/<cmd>` (v1.4+; replaced the v1.3 `@multi-cc-im /<cmd>` form per [DD #73](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)), (c) plain (no-mention) messages are routed by an AI triage call (per [DD #73](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)) rather than dropping to last-explicit-mention sticky.
-
-| What you send in WeChat | What it does |
+| Command | Effect |
 |---|---|
-| `给前端那个写个登录页` | **AI-routed plain message** (DD #73 — v1.4+): daemon spawns `claude --print` to triage which cc tab fits + extract the clean intent; routes to `frontend` with content `"写个登录页"` (cue words stripped). Echo: `→ frontend｜AI: 「写个登录页」`. Falls back to `❌ 无法识别目标` if AI can't decide |
-| `hello` (single cc) | With one named cc, AI typically just routes there; otherwise legacy sticky-current applies when AI routing is disabled |
-| `@frontend hello` | Routes to the session whose tab title is `frontend`, and sets `current`. **Bypasses AI routing** — explicit mention always wins |
-| `@fr hello` | Short prefix (4-level fallback: `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
-| `@frontend @api sync` | Multi-target dispatch; **does not change `current`** |
-| `@frontend /clear` | Forwards `/clear` into the cc TUI — cc handles it as its own slash command |
-| `@all stop everything` | Broadcast to every live session |
-| `@frontend /1` | **Permission allow** (only when there's a pending PreToolUse — see below) |
-| `@frontend /2` | **Permission deny** |
-| `/list` | List alive cc sessions (tab title + pane id). The bot echoes; nothing dispatched to any cc |
-| `/help` | Built-in help text |
-| `/current` | Show `current_session` + IMWork status |
-| `/start` | **Enable IM mode** (cc replies forward to WeChat) **+ auto-approve** (default — cc tool calls auto-pass without IM round-trip). Use `/start off` to opt into ask mode |
-| `/start off` | **Enable IM mode + ask** — cc tool calls forward to WeChat, you reply `/1` allow / `/2` deny within 10s |
-| `/stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
+| `/list` | List wezterm tabs and which are addressable (have a `/rename`'d title) |
+| `/help` | Routing examples |
+| `/current` | Show current sticky target + IMWork status |
+| `/start` | Enable IM mode with **auto-approve** (cc tool calls auto-pass) |
+| `/start off` | Enable IM mode with **ask** mode (every tool call forwards to WeChat for `/1` / `/2`) |
+| `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts handled in cc native menu) |
 
-> **v1.4 syntax change**: bare `/<cmd>` replaced the old `@multi-cc-im /<cmd>` form. The reserved-name path was dropped — there's no longer any way to mistakenly route an IM message to a cc tab named `multi-cc-im`. Old `@multi-cc-im /list` falls through to the regular `@<name>` matcher (which echoes "not found" since `multi-cc-im` is no cc's tab title). To forward `/clear` etc. into a cc TUI, still use `@<tab> /clear`.
+`IMWork` resets to OFF on every daemon start. You must `/start` from WeChat each session.
 
-Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
+## Routing (sent from WeChat)
 
----
+| Message | Effect |
+|---|---|
+| `@frontend hello` | Send to the cc whose tab title is `frontend`; sets it as sticky `current` |
+| `@front hello` | Fuzzy match (4-level fallback: `=exact` → exact → prefix → glob); ambiguity lists candidates and rejects |
+| `@frontend @api sync` | Multi-target dispatch; does **not** change `current` |
+| `@all stop everything` | Broadcast to every named cc |
+| `@frontend /clear` | Forward `/clear` into the cc TUI as cc's own slash command |
+| `@frontend /1` | Permission allow (only if there's a pending PreToolUse) |
+| `@frontend /2` | Permission deny |
+| `给前端写个登录页` | **Plain message — AI-routed**: daemon spawns a `claude --print` subprocess to triage which tab fits + extract the clean intent. Routes to the picked tab; echoes `→ frontend｜AI: 「写个登录页」` |
 
-## IM mode toggle: `/start` and `/stop` (manual switch)
+**Naming a cc:** in a cc TUI, run `/rename <name>`. The wezterm tab title becomes `<name>` and IM can address it as `@<name>`. Tabs with no `/rename` are listed by `/list` but are **not addressable** from IM.
 
-Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
+**Tab title constraints:** avoid pure-numeric titles (they collide with wezterm pane IDs). `/start` echo warns when any are present.
 
-```
-/start         →  IM mode ON, auto-approve (DEFAULT — cc tool calls auto-pass, no IM round-trip)
-/start off     →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
-/stop          →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
-/current       →  show current target + IMWork status (incl. auto-approve flag)
-```
+## Tool permission flow (ask mode only)
 
-- **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote. Auto-approve mode also resets — restart = safe default.
-- When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 /start 开启 IM 模式"`. Bridge commands and permission responses still work.
-- When **ON**, the `/start` echo lists currently alive cc sessions and the rules.
-- **Auto-approve is the default**: bare `/start` turns it ON because tool-dense workflows (e.g. "analyze this repo" → cc fires 30+ Bash/Edit) make manual `/1` confirmation unworkable in practice. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). To opt into ask mode (every PreToolUse waits for your `/1`/`/2`): `/start off`. To switch back to auto: `/start`.
-
-This is the master switch. The per-session forwarding behavior (next section) only kicks in when IMWork is on.
-
-## Tool permission gate (PreToolUse → IM forward)
-
-Per [DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forward-dd.md) + [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). When IMWork is on **and** you've recently chatted with a cc from WeChat, that cc's tool approval prompts forward to WeChat:
+When `/start off` is active and you address a cc from WeChat, cc tool calls trigger this round-trip:
 
 ```
 [frontend] 准备跑工具:
@@ -206,298 +107,210 @@ Per [DD: permission forward](docs/superpowers/specs/2026-05-07-permission-forwar
   @frontend /2   = 拒绝
 ```
 
-You reply with two characters:
-
-| Reply in WeChat | Effect |
+| Reply | Effect |
 |---|---|
-| `@frontend /1` | Allow — cc proceeds with the tool call |
-| `@frontend /2` | Deny — cc cancels and asks you for an alternative |
-| (no reply within 10s) | Default allow — cc proceeds |
+| `@frontend /1` | Allow — cc proceeds |
+| `@frontend /2` | Deny — cc cancels and asks for an alternative |
+| (no reply within 10s) | Default allow |
 
-The hook decision tree (in order, cheapest check first):
+Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) are auto-allowed without IM forward.
 
-1. **Read-only tool** (`Read` / `Grep` / `Glob` / `NotebookRead`) → auto-allow, no IM forward (cc itself doesn't show TUI menu for these — forwarding would just spam IM).
-2. **IMWork off** → hook silently exits (no JSON output). cc runs its **native permission flow** — your saved `Yes don't ask again` allow rules apply first; only commands without a matching rule trigger the TUI prompt. (Returning `permissionDecision: "ask"` would force a prompt every time and override your allow rules — so we don't.)
-3. **IMWork on + auto-approve enabled** (default `/start`, or explicitly opted into via re-issuing `/start`) → auto-allow, no IM forward, no `/1` ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)).
-4. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → silent exit (same as step 2 — defer to cc's native flow + your allow rules).
-5. **Daemon not running** (Ctrl+C'd / crashed / never started) → silent exit (same as step 2) — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
-6. **Otherwise** → forward to WeChat with 10s window.
+## Files
 
-So one cc can flip between "cc TUI menu" and "IM round-trip" turn-by-turn:
-
-- You're at the office, type directly in cc TUI → IMWork off → menu in TUI ✓
-- You step out, send `/start` then `@frontend run tests` → IMWork on + global `IMOrigin` overwritten with the latest reply ctx → next tool prompt comes to your phone ✓
-- Every subsequent inbound IM message (bridge command / dispatch / `/1` / `/2`) refreshes `IMOrigin` again, so async cc Stop / PreToolUse forwards always thread back to your most recent IM with a fresh `context_token` — no stale-token ECONNRESET in multi-cc scenarios ([DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md))
-
-**No allowlist / blocklist by design.** If you want to make cc stop asking about a particular command, do it in the cc TUI (option 2 — "Yes, and don't ask again for similar commands in `<cwd>`"). cc TUI writes the rule to project-local `.claude/settings.local.json`. multi-cc-im won't replicate this remotely (would mean the daemon writing user dotfiles based on remote IM input — too risky).
-
----
-
-## How it works under the hood
-
-(For developers / contributors. See [docs/architecture.md](docs/architecture.md) for full schemas.)
-
-```
-                                 4 adapter dimensions
-       ┌────────┐    iLink long-poll     ┌────────┐
-WeChat │  IM    │ ──────────────────► ┌──┤ bridge │
-client │adapter │ ◄────────────────── │  │  core  │
-       └────────┘  iLink send (reply) │  │        │
-                                      │  │ router │
-       ┌────────┐  wezterm cli send-text │ matcher │
-WezTerm│ Term   │ ◄─────────────────── │  │ (tab    │
-tabs   │adapter │     (Step 1 paste +  │  │  title) │
-       │listPan │      Step 2 \r submit)│  │ parser │
-       └────────┘  wezterm cli list ─►  │  │        │
-                                       │  └────────┘
-       ┌────────┐  hook stdin / stdout │
-cc     │  CLI   │ ◄─────────────────── ┘
-hooks  │adapter │       chokidar watch state files
-       │+ state │ ◄─────────────────── 
-       └────────┘
-                                       
-       ┌────────────┐
-       │ Storage    │  toml + 0600 JSON + state files (no SQL DB)
-       │ adapter    │  
-       └────────────┘
-```
-
-3 main data flows wired by the **bridge orchestrator**:
-
-1. **Inbound** (WeChat → cc): `IM long-poll → handleInbound entry overwrites global state/IMOrigin (every inbound — dispatch / bridge cmd / /1 /2 — same source as the synchronous echo's replyCtx) → wezterm cli list (live panes) → router.parse → matcher (4-level fallback against tab titles) → orchestrator.dispatch → term.sendText (Step 1) + sleep + sendKeystroke '\r' (Step 2)`. The two-step send is mandatory — single-step `--no-paste $'\r'` injection lets cc TUI interpret keystrokes ([DD: hook+wezterm probe](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)).
-
-2. **Outbound** (cc Stop hook → WeChat): hook entry first checks `process.env.WEZTERM_PANE` — undefined → silent exit. With `<paneId>` in hand, the subprocess checks 3 short-circuit guards (no `IMWork` / no global `IMOrigin` / daemon dead → return void without writing). If all pass, writes `<paneId>_<sid>.Stop.<ts>` → daemon's chokidar picks it up → reads global `state/IMOrigin` (the always-fresh reply ctx, overwritten by every inbound IM message) → IM send. **IMOrigin is NOT deleted** after forward — the same context is reused for the next cc reply or PreToolUse forward until the next inbound IM message overwrites it (or daemon stop / start clears it). The anti-misforward protection (don't accidentally bridge cc TUI typing to WeChat) is now gated entirely by IMWork: send `/stop` to disarm.
-
-3. **Permission gate** (PreToolUse → IM `/1` `/2` → hook subprocess unblock): hook subprocess walks the decision tree above. If it reaches the forward step, it writes `<paneId>_<sid>.PermissionRequest.<id>.json`, polls `<paneId>_<sid>.PermissionResponse.<id>.json` every 200ms (max 10s). Daemon forwards the prompt to IM. User reply → daemon writes the response file. Hook subprocess reads → emits `permissionDecision: allow|deny` to cc → unlinks both files → exits. Daemon-side reaper schedules a backstop unlink at 10s for orphan files (in case the hook subprocess died abnormally).
-
-All cc sessions are **owned by the same WeChat account** (your own — owner-only ACL is enforced by the iLink protocol layer). multi-cc-im runs on **one machine** only ([CLAUDE.md "Multi-machine: only one"](CLAUDE.md) — iLink `getupdates` cursor is global, multi-instance polling would steal each other's messages).
-
----
-
-## Project Structure
-
-```
-multi-cc-im/
-├── apps/
-│   └── multi-cc-im/         CLI binary: start / login / setup-hooks / cleanup / hook
-└── packages/
-    ├── shared/              4-dimensional adapter interfaces (IM/Term/CLI/Storage) + types + zod
-    ├── storage-files/       atomic-write / cursor / config / pending-queue / credential
-    ├── im-wechat/           IMAdapter(wechat) + iLink protocol vendor (Tencent/openclaw-weixin v2.1.7)
-    ├── term-wezterm/        TermAdapter(wezterm) + listPanes capability (wezterm cli list as ground truth)
-    ├── cli-cc/              CLIAdapter(cc) + hook payload zod + pane-keyed state files + injection queue
-    ├── bridge/              router with 4-level fallback / orchestrator (paneId-keyed)
-    └── openclaw/            minimal shim for the Tencent/openclaw-weixin plugin SDK
-```
-
-Every package has a `src/` directory plus tests; `pnpm test` runs the full suite with coverage ≥ 80% on every dimension.
-
----
-
-## Documentation
-
-| File | Contents |
+| Path | Purpose |
 |---|---|
-| [CLAUDE.md](CLAUDE.md) | **Mandatory hard constraints**: core rules / DD process / key conventions / coding behavior / forbidden list |
-| [docs/architecture.md](docs/architecture.md) | Architecture diagram / package dependencies / data storage / 3 key data flows / external CLI path policy |
-| [docs/dev.md](docs/dev.md) | Development commands + TDD rhythm + debugging tips |
-| [docs/competitors.md](docs/competitors.md) | End-to-end projects considered but not adopted (decision record) |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | DD reports (protocol / hook / adapter / storage / pricing / pane-alive / keychain / routing / permission forward) |
+| `~/.multi-cc-im/config.toml` | Daemon config (created on first login) |
+| `~/.multi-cc-im/credentials/wechat.json` | `bot_token` + login state (mode 0600) |
+| `~/.multi-cc-im/state/wechat-cursor` | iLink getupdates cursor (resume across restarts) |
+| `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM mode toggle (file existence = ON) |
+| `~/.multi-cc-im/state/IMOrigin` | Latest IM reply context (overwritten on every inbound) |
+| `~/.multi-cc-im/state/daemon.pid` | Daemon liveness lock |
+| `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc reply event (consumed by daemon) |
+| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | In-flight tool approval |
+| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | Approval result |
+| `~/.multi-cc-im/inbox/wechat/<sid>/` | Decrypted inbound images / files for cc to `Read` |
 
----
+Override the root with `MULTI_CC_IM_HOME` env.
 
-## Development
+## CLI reference
 
-```bash
-pnpm install
-pnpm typecheck                        # 8 workspaces tsc --noEmit
-pnpm test                             # vitest unit suite
-pnpm test:coverage                    # same + v8 coverage (80% threshold)
-pnpm --filter multi-cc-im build       # tsup → apps/multi-cc-im/dist/cli.js
-pnpm --filter multi-cc-im dev <cmd>   # tsx src/cli.ts (dev-time alias, no build)
+| Command | Description |
+|---|---|
+| `multi-cc-im start` | Start the bridge daemon (long-running, foreground) |
+| `multi-cc-im login wechat` | Scan QR + save `bot_token` |
+| `multi-cc-im setup-hooks` | Register cc hooks in `~/.claude/settings.json` (idempotent) |
+| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running |
+| `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`) |
+| `multi-cc-im --help` / `-h` | Print help |
+| `multi-cc-im --version` / `-v` | Print version |
 
-# single-file test (TDD red→green loop)
-pnpm exec vitest run packages/bridge/src/router.test.ts
-pnpm exec vitest packages/bridge/src/router.test.ts        # watch mode
-```
-
-TDD rhythm (red → green → refactor), 5-step DD process for major decisions, no AI-author attribution in any commit / PR — see [CLAUDE.md](CLAUDE.md) "Key conventions" and [docs/dev.md](docs/dev.md).
-
----
+Exit codes: `0` success, `1` runtime failure, `2` usage error.
 
 ## Troubleshooting
 
 ### `multi-cc-im start` fails with "wezterm CLI not found"
 
-Either install wezterm (`brew install --cask wezterm`), or if you have it installed in an unusual location:
-
 ```bash
-# write the path manually into ~/.multi-cc-im/config.toml
-[external_paths]
-wezterm = "/path/to/your/wezterm"
-```
-
-### daemon runs but WeChat doesn't receive my messages
-
-```bash
-# 1. tail the log
-tail -f ~/.multi-cc-im/logs/multi-cc-im-$(date +%F).log
-
-# 2. is the iLink cursor advancing?
-ls -la ~/.multi-cc-im/state/wechat-cursor
-
-# 3. is the bot_token still valid?
-ls -la ~/.multi-cc-im/credentials/wechat.json   # should be -rw-------
-
-# 4. did the cc hook actually fire?
-ls ~/.multi-cc-im/state/   # expect <paneId>_<sid>.Stop.* files after a turn (plus the global IMOrigin lock)
-```
-
-If nothing matching `<paneId>_*` shows up after cc completes a turn → cc hooks aren't wired (or you're running cc outside wezterm — `WEZTERM_PANE` is unset and the hook silently exits). Re-run `./bin/multi-cc-im setup-hooks`.
-
-### `@frontend` says "not found" but cc is clearly running
-
-multi-cc-im routes by **wezterm tab title**, not by directory or session id. If your tab is still showing the default `cc` or just the cwd:
-
-1. In the cc TUI, run `/rename frontend` (the name shows up in the wezterm tab title via OSC).
-2. Send `@frontend hello` again — tab titles are re-polled on every IM event via `wezterm cli list --format json`.
-
-Without `/rename` there is **no** addressable name (no sid-prefix fallback — the routing key is purely the tab title). Send `/list` to see what's currently addressable.
-
-### IM doesn't receive tool permission prompts (`@frontend /1` never gets asked for)
-
-Four common causes (in order of likelihood):
-
-1. **You haven't `/start`'d**. Daemon starts in local mode by default (cc TUI handles approvals). **Fix**: send `/start` from WeChat once.
-2. **No IM thread bound for that cc**. Even with IMWork on, you must have **chatted with that specific cc from WeChat at least once** in the current turn. If cc autonomously calls a tool without you ever `@<tab>`'ing it, the hook falls back to cc TUI menu. **Fix**: send `@frontend ping` once to bind a thread.
-3. **The tool is read-only**. cc calls Read / Grep / Glob / NotebookRead and similar without needing approval — multi-cc-im also auto-allows these to keep IM uncluttered. Only "destructive" tools (Bash / Edit / Write / WebFetch / etc.) trigger the IM forward.
-4. **You replied past the 10-second window**. Hook already exited with default-allow. Your `/1` is lost (the polling subprocess gone — daemon reaper cleans up the orphan files within 10s).
-
-### `@frontend /1` reply doesn't take effect
-
-- **Forgot the tab name**: bare `/1` with no `@<tabname>` is treated as plain content, not a permission response. Even with one cc running, `@<tabname> /1` is required.
-- **Past the window**: same as #4 above — 10s default-allow already fired.
-
-### setup-hooks complains about existing hooks
-
-setup-hooks **never destroys** existing non-multi-cc-im hooks; it merges. If you see weird state, two recovery paths:
-
-```bash
-# A. revert to last setup-hooks backup
-ls -la ~/.claude/settings.json.bak.*
-cp ~/.claude/settings.json.bak.<latest-ISO> ~/.claude/settings.json
-
-# B. nuke + redo (lose any bespoke cc hooks you added by hand)
-mv ~/.claude/settings.json ~/.claude/settings.json.before-redo
-./bin/multi-cc-im setup-hooks
+which wezterm   # must resolve
+# or write the path manually:
+echo '[wezterm]' >> ~/.multi-cc-im/config.toml
+echo 'path = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
 ```
 
 ### `multi-cc-im start` says "another daemon already running"
 
-multi-cc-im enforces single-instance via `state/daemon.pid` (per [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)). Two daemons polling iLink would steal each other's messages. Three recovery options:
-
 ```bash
-# 1. If you genuinely have a daemon already running (you forgot about it):
-pkill -f 'multi-cc-im start'
-./bin/multi-cc-im start
+# Show the locking PID:
+cat ~/.multi-cc-im/state/daemon.pid
 
-# 2. If you're sure no daemon is running (e.g. previous one was SIGKILL'd):
+# If it's a real running daemon, kill it normally (Ctrl+C in its terminal,
+# or `kill <pid>`).
+# If the PID is stale (process was SIGKILL'd), remove the lock:
 rm ~/.multi-cc-im/state/daemon.pid
-./bin/multi-cc-im start
-
-# 3. If unsure, the error message gives you the PID — check what it actually is:
-ps -p <pid> -o command=
-# If output is `node ... multi-cc-im start` → real daemon, kill it
-# Otherwise → PID was reused by some unrelated process; rm the lock file
 ```
 
-The 3rd case is rare (PID reuse window in the home-dir-daemon scenario is huge), and the lock format includes a `startedAt` timestamp that detects this — if reused, multi-cc-im automatically overwrites without erroring.
-
-### After Ctrl+C, IM still receives stale messages
-
-Shouldn't — daemon stop deletes `IMWork` + `daemon.pid`, and hooks check both before forwarding. If you see stale forwards:
+### Daemon runs but WeChat doesn't receive my messages
 
 ```bash
-# verify lock files cleared
-ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid 2>&1
-# both should be "No such file or directory"
+# 1. Cursor advancing?
+ls -la ~/.multi-cc-im/state/wechat-cursor
 
-# if not, manually clean:
-rm -f ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
+# 2. bot_token still valid?
+./bin/multi-cc-im login wechat   # re-login if needed
+
+# 3. cc hook actually firing?
+ls -la ~/.multi-cc-im/state/*.Stop.*
 ```
 
-If both files are gone but IM still routes, daemon is somehow still running — `pkill -f 'multi-cc-im start'` to be sure.
+### `@frontend` says "not found"
 
-### state/ directory accumulating files
+- Run `/rename frontend` inside the cc TUI.
+- Send `/list` from WeChat to see which tabs are addressable.
 
-This is normal during long daemon uptime. Run `./bin/multi-cc-im cleanup --dry-run` to preview; `./bin/multi-cc-im cleanup` to delete. Safe to run with daemon up.
+### IM doesn't receive tool permission prompts
 
-### Risk note: WeChat account ban
+1. Did you `/start off`? (default `/start` is auto-approve, no prompts forward.)
+2. Did you address that cc from WeChat first? (no `IMOrigin` → no thread to forward into).
+3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`).
 
-iLink Bot API talks to WeChat through Tencent's official protocol — far safer than 灰产 / iPad protocols (which **will** get your account flagged). But "personal bridge" use cases still carry small per-account risk if traffic is unusual. Mitigations:
+### `setup-hooks` complains about existing hooks
 
-- Use a secondary WeChat account if your primary is critical.
-- Don't blast > 1 message/sec; multi-cc-im paces requests but bot rate limits exist on Tencent's side.
-- Don't proxy others' messages through your bot (owner-only ACL is enforced at the protocol layer for this exact reason).
+Restore from the backup it wrote:
+
+```bash
+ls -la ~/.claude/settings.json.bak.*
+cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json
+```
+
+### After Ctrl+C, IM still receives stale forwards
+
+```bash
+ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
+# Both should be absent. If present, remove manually:
+rm -f ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/IMOrigin ~/.multi-cc-im/state/daemon.pid
+```
+
+### `state/` accumulating files
+
+```bash
+./bin/multi-cc-im cleanup --dry-run   # preview
+./bin/multi-cc-im cleanup             # actually sweep
+```
 
 ---
 
-## State files reference
+# Part 2 — Secondary development
 
-Everything multi-cc-im persists lives under `~/.multi-cc-im/state/`. The directory is **monitor-only**: cc's own transcript jsonl (`~/.claude/projects/<dir>/<sid>.jsonl`) is the source of truth for cc conversation content; multi-cc-im just bridges hook subprocesses ↔ daemon over short-lived files. All writes go through the storage-files atomic-write helper (mode-0600, same-dir tmp + fsync + rename).
+## Stack
 
-Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md), v1.4 keys hook-↔-daemon files by `<paneId>` (the live wezterm pane id captured from `process.env.WEZTERM_PANE` at hook entry). The live-pane set comes from `wezterm cli list --format json` — any state file whose paneId is not in that set is sweep-eligible. Hooks where `WEZTERM_PANE` is undefined exit silently (cc isn't inside wezterm — nothing to bridge).
+- TypeScript strict, ESM-only (`"type": "module"`)
+- Node ≥ 22
+- pnpm workspaces (monorepo)
+- Vitest (unit + integration tests)
+- tsup (CLI bundling)
 
-Two categories: **top-level** files (one per daemon) and **pane-keyed** files (per-pane / per-pane+session).
+## Repo layout
 
-### Top-level files
-
-| File | Schema | Writer | Deleter | Purpose |
-|---|---|---|---|---|
-| `daemon.pid` | JSON `{ pid: number, startedAt: string }` (`startedAt` = `ps -o lstart= -p <pid>` output, used to defend against PID reuse — [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)) | daemon `start` | daemon `stop` (Ctrl+C / graceful); state-sweep if PID dead or lstart mismatch | Lock file: hooks check `isDaemonAlive()` before walking forward path. Also enforces single-instance — second `start` errors out if first daemon's PID + lstart still match |
-| `IMWork` | JSON `{auto:boolean}` (file existence = IM mode ON; `auto:true` = auto-approve mode per [DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md); legacy 0-byte file falls back to `{auto:false}`) | router on `/start [off]` (orchestrator handler) | router on `/stop`; daemon `start` (always reset to OFF); daemon `stop` (Ctrl+C cleanup) | Master IM-mode switch. When **absent**, hooks short-circuit (cc TUI handles approvals locally); when **present**, IM mode is on and `@frontend body` from WeChat dispatches to cc. `auto:true` makes hook PreToolUse fast-allow without IM round-trip |
-| `IMOrigin` | JSON discriminated union by `imType` — for wechat: `{ imType: 'wechat', to: string, contextToken?: string }` (telegram / lark variants reserved) | `handleInbound` entry on **every** inbound IM message (bridge cmd / dispatch / permission response — same source as the synchronous echo's `msg.replyCtx`; newest ctx wins, [DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)) | daemon `start` (crash safety net + always-fresh on next IM); daemon `stop` (Ctrl+C cleanup); **never** on cc Stop forward / `/stop` (always-fresh lifecycle — mirrors IMWork) | Global IM reply context. Async outbound paths (cc Stop / PreToolUse forward) read this for a fresh `context_token`. Hook stat-checks this file before walking the forward path. Single global key — earlier per-pane caching kept stale tokens after server invalidated them in multi-cc / bridge-command / permission-response scenarios; global + always-overwritten fixes the bug |
-| `wechat-cursor` | text file (single string) | iLink getupdates loop on every advance (`atomicWrite`) | never deleted in normal operation | iLink long-poll cursor. Persists across daemon restart so messages aren't lost during the daemon-down window |
-
-### Pane-keyed files
-
-`<paneId>` is the wezterm pane id (numeric). `<sid>` is the cc session UUID v4 (e.g. `bbfd2f1f-5f89-447c-b5df-2032ce18e2a7`). `<id>` is an 8-char hex request id.
-
-| File | Schema | Writer | Deleter | Purpose |
-|---|---|---|---|---|
-| `<paneId>_<sid>.Stop.<ts>` | JSON `{ last_assistant_message: string }` (`<ts>` = ISO-style `2026-05-08T01-43-40-131Z`) | cc Stop hook subprocess (after passing 3 short-circuit guards: IMWork on, global `IMOrigin` set, daemon alive) | daemon's chokidar handler after forwarding to IM (~100ms typical lifetime); state-sweep when paneId not live | Per-turn assistant reply queue. Multiple files can stack if daemon was down; daemon processes them in lex (= chronological) order on next start |
-| `<paneId>_<sid>.PermissionRequest.<id>.json` | JSON `{ requestId, toolName, toolInput, createdAt }` | cc PreToolUse hook subprocess (after passing decision-tree guards) | hook subprocess after polling completes (~10s max); daemon-side reaper backstop (10s setTimeout on chokidar add); state-sweep when paneId not live | Hook → daemon "please ask the user about this tool call" |
-| `<paneId>_<sid>.PermissionResponse.<id>.json` | JSON `{ requestId, decision: 'allow'\|'deny', reason }` | orchestrator after IM user replies `@<tab> /1` or `/2` | hook subprocess after reading; daemon reaper backstop | Daemon → hook "user said allow / deny" |
-
-### Lifecycle invariants
-
-- **paneId in `wezterm cli list`** = pane is live → its `<paneId>_<sid>.*` files are kept.
-- **paneId NOT in live set** = the wezterm pane is gone (closed tab / quit wezterm) → state-sweep cleans every file with that paneId prefix. No more multi-signal PaneAlive — the live wezterm snapshot IS the ground truth.
-- **`daemon.pid` exists + `process.kill(pid, 0)` succeeds + `ps -o lstart=` matches** = daemon really running. Otherwise stale lock; next `daemon start` overwrites silently, sweep cleans it.
-- **`IMWork` exists + global `IMOrigin` exists + daemon alive** = the only state where hook PreToolUse / Stop walk the forward path. Any other combination → short-circuit (cc TUI takes over for PreToolUse; void return for Stop).
-- **`IMOrigin`** is rewritten by every inbound IM message and only deleted at daemon `start` / `stop` — it tracks "your most recent IM thread" globally, not per-pane (per [DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md), fixing stale `context_token` after server invalidation).
-- **`wechat-cursor`** is the only file that survives every daemon restart — it's iLink protocol state, can't be regenerated from local data.
-
-### Quick inspection
-
-```bash
-ls -la ~/.multi-cc-im/state/
-
-# Top-level locks present?
-test -f ~/.multi-cc-im/state/daemon.pid && jq . ~/.multi-cc-im/state/daemon.pid
-test -f ~/.multi-cc-im/state/IMWork && echo "IM mode ON" || echo "IM mode OFF"
-
-# Latest IM reply ctx (global; rewritten on every inbound IM message):
-test -f ~/.multi-cc-im/state/IMOrigin && jq . ~/.multi-cc-im/state/IMOrigin
-
-# Pending permission prompts (should be 0 in steady state):
-ls ~/.multi-cc-im/state/*_*.PermissionRequest.*.json 2>/dev/null | wc -l
+```
+multi-cc-im/
+├── apps/multi-cc-im/        — CLI binary (bundled by tsup → dist/cli.js)
+├── packages/
+│   ├── shared/              — Cross-package types + zod schemas
+│   ├── storage-files/       — TOML + JSON file stores (config, credentials, cursor, queues)
+│   ├── im-wechat/           — iLink Bot adapter (vendored Tencent OpenClaw)
+│   ├── term-wezterm/        — wezterm CLI adapter
+│   ├── cli-cc/              — Claude Code hook adapter
+│   ├── bridge/              — Router + orchestrator + AI-routed dispatch
+│   └── openclaw/            — Vendored Tencent OpenClaw shim
+├── bin/multi-cc-im          — Bash wrapper (resolves dist or tsx)
+├── docs/
+│   ├── architecture.md      — Full architecture + state schema + IPC
+│   ├── dev.md               — Dev commands + TDD rhythm + debugging tips
+│   ├── competitors.md       — Comparison with related tools
+│   └── superpowers/specs/   — DD reports (one per major decision)
+└── CLAUDE.md                — Project rules (mandatory before any contribution)
 ```
 
-Detailed schemas + cross-package references at [docs/architecture.md](docs/architecture.md) "数据存储" section. Each file's behaviour is locked by a DD in [docs/superpowers/specs/](docs/superpowers/specs/).
+## Dev commands
 
----
+| Command | Description |
+|---|---|
+| `pnpm install` | Install all workspace deps |
+| `pnpm --filter multi-cc-im dev <args>` | Run CLI from source via tsx |
+| `pnpm typecheck` | `tsc --noEmit` across all packages |
+| `pnpm test` | Run all vitest suites |
+| `pnpm test:watch` | Vitest watch mode |
+| `pnpm test:coverage` | Vitest with V8 coverage report |
+| `pnpm --filter @multi-cc-im/bridge exec vitest run src/router.test.ts` | Run a single test file |
+| `pnpm --filter multi-cc-im build` | Bundle CLI to `apps/multi-cc-im/dist/cli.js` |
+| `pnpm --filter multi-cc-im smoke` | Run the bundled CLI (`node dist/cli.js`) |
+
+Coverage threshold: ≥ 80% line coverage workspace-wide. CI enforces.
+
+## TDD rhythm
+
+Per `CLAUDE.md` and [`docs/dev.md`](docs/dev.md): write a failing test that codifies the target behavior → minimal implementation to pass → refactor + verify ≥ 80% coverage. If the test cannot pass under the current design, stop and re-do the DD — don't patch the wrong assumption.
+
+## Adding a new IM adapter (Telegram / Lark / etc.)
+
+1. Create `packages/im-<name>/` mirroring `packages/im-wechat/` layout.
+2. Implement the `IMAdapter` interface from `@multi-cc-im/shared`:
+   - `start(handler: IMHandler): Promise<void>`
+   - `send(text: string, replyCtx: IMReplyContext): Promise<void>`
+   - `stop(): Promise<void>`
+3. Define an `IMReplyContext` discriminated-union variant with `imType: 'telegram' | 'lark' | ...`.
+4. Wire it into `apps/multi-cc-im/src/start.ts` based on a config flag.
+5. Add credential storage under `~/.multi-cc-im/credentials/<im>.json` (mode 0600). **Do not** call OS keychain — see [DD: credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md).
+
+## Adding a new terminal adapter (tmux / kitty / etc.)
+
+1. Create `packages/term-<name>/`.
+2. Implement `TermAdapter` + `TermListPanes` from `@multi-cc-im/shared`:
+   - `start(): Promise<void>`
+   - `listPanes(): Promise<TermPaneInfo[]>` — must return tab titles
+   - `sendText(paneId, content): Promise<void>` — paste-only (no submit)
+   - `sendKeystroke(paneId, key): Promise<void>` — submit key (`\r`)
+   - `stop(): Promise<void>`
+3. Use a two-step send: paste content (`sendText`), wait ~300ms, submit (`sendKeystroke('\r')`). Single-step send-with-newline is forbidden — see `CLAUDE.md`「send-text 注入两步法」.
+
+## Adding a new CLI adapter (codex / aider / etc.)
+
+The cc adapter (`packages/cli-cc/`) couples to cc-specific hooks (`PreToolUse`, `Stop`) + jsonl transcripts. A new CLI needs equivalent extension points; if none exist, raise a DD before implementing — see `CLAUDE.md`「不破坏现有 cc 进程」.
+
+## Major decision (DD) flow
+
+Any change that affects the security model, long-term maintenance, cross-package interfaces, or "use existing SDKs" principle requires a DD report under `docs/superpowers/specs/<date>-<topic>-dd.md`. The DD must enumerate candidates (including "do not do X"), evidence-based comparison matrix, and a recommendation traceable to matrix cells. See `CLAUDE.md`「重大决策 DD 流程」.
+
+## Documentation pointers
+
+| Document | Use when |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) | Project-wide rules + prohibitions (read first) |
+| [`docs/architecture.md`](docs/architecture.md) | Architecture diagram, state schema, file IPC |
+| [`docs/dev.md`](docs/dev.md) | Dev commands + TDD rhythm + debugging tips |
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD reports (one per locked decision) |
+| [`docs/competitors.md`](docs/competitors.md) | Why not adopt project X |
 
 ## License
 
-MIT
+See [`LICENSE`](LICENSE).
