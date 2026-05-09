@@ -60,9 +60,10 @@ type ClassifiedFile = ClassifiedStopFile | ClassifiedPreToolUseFile;
 /**
  * Classify a state-dir basename. Returns null for any file that's not a
  * cc-hook-fired event we route on (i.e. ignores `<paneId>.IMOrigin` /
- * `IMWork` / `daemon.pid` / `wechat-cursor` / `<paneId>_<sid>.PermissionResponse.*`
- * — the daemon writes Response, hook reads it; daemon does not dispatch
- * Response chokidar events to handlers).
+ * `IMWork` / `daemon.pid` / IM-adapter-owned top-level files like
+ * `lark-cursor` / `<paneId>_<sid>.PermissionResponse.*` — the daemon
+ * writes Response, hook reads it; daemon does not dispatch Response
+ * chokidar events to handlers).
  *
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
  *   - `<paneId>_<sid>.Stop.<ts>`                    → ClassifiedStopFile
@@ -117,8 +118,8 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
   /**
    * Per-(paneId, sessionId) serial dispatch chain. Stop files for the same
    * cc are written one per turn; daemon must process them in arrival order
-   * so wechat sees the assistant turns in correct order. Different cc
-   * sessions are independent and dispatch in parallel.
+   * so the IM channel sees the assistant turns in correct order. Different
+   * cc sessions are independent and dispatch in parallel.
    *
    * Key: `<paneId>_<sid>` — same as the file prefix.
    */

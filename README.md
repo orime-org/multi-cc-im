@@ -2,7 +2,9 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to WeChat via Tencent's iLink Bot API. Address sessions by `@<tab-name>`. Plain (no-mention) messages are AI-routed to the most relevant cc tab. Includes WeChat-side tool permission gate (`/1` allow / `/2` deny) and a pluggable architecture for additional IMs / terminals / CLIs.
+Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app, addressed by `@<tab-name>`. Plain (no-mention) messages are AI-routed to the most relevant cc tab. Includes IM-side tool permission gate (`/1` allow / `/2` deny) and a pluggable architecture for additional IMs / terminals / CLIs.
+
+> **⚠️ v1.5 transitional state (2026-05-09 — M1 in progress)**: the legacy WeChat adapter has been **removed** in M1 ([DD #86 §11.2](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)) due to repeated upstream `undici` instability (PRs #76 / #78 / #82). The Lark/Feishu replacement (M2-M8) is **not yet implemented**. Running `multi-cc-im start` on `main` exits with `"no IM adapter configured"`. Sections below (login / commands / file paths) describe the **target shape after M2-M8 land**; they are not all wired yet. Track [DD #86 §11.4 implementation milestones](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md) for status.
 
 ---
 
@@ -15,7 +17,7 @@ Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to WeChat via 
 - pnpm ≥ 9
 - WezTerm ≥ 20240203
 - Claude Code CLI logged in (`claude` resolvable via `PATH`; cc Pro/Max account required for AI routing)
-- A WeChat account dedicated as bot
+- A Lark account dedicated as bot
 
 ## Install
 
@@ -36,13 +38,13 @@ ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 
 ## Setup (one-time)
 
-### 1. Login to WeChat
+### 1. Login to Lark
 
 ```bash
-./bin/multi-cc-im login wechat
+./bin/multi-cc-im login lark
 ```
 
-A QR code prints to the terminal. Scan it with your phone WeChat. Token saved to `~/.multi-cc-im/credentials/wechat.json` (mode 0600).
+A QR code prints to the terminal. Scan it with your phone Lark. Token saved to `~/.multi-cc-im/credentials/lark.json` (mode 0600).
 
 cc hooks are auto-registered by `start` (next section) — no separate setup step. The first `start` writes a timestamped `.bak.<iso>` backup of `~/.claude/settings.json` before merging the `PreToolUse` and `Stop` hook entries. Existing hooks from other tools are preserved.
 
@@ -56,9 +58,9 @@ Daemon runs in the foreground. Stderr carries log output. Ctrl+C stops the daemo
 
 Only one daemon per machine. Re-running `start` while one is alive exits with code 1 and prints the existing PID.
 
-## Daemon commands (sent from WeChat)
+## Daemon commands (sent from Lark)
 
-Every command is a single message sent to the bot's WeChat thread.
+Every command is a single message sent to the bot's Lark thread.
 
 | Command | Effect |
 |---|---|
@@ -66,12 +68,12 @@ Every command is a single message sent to the bot's WeChat thread.
 | `/help` | Routing examples |
 | `/current` | Show current sticky target + IMWork status |
 | `/start` | Enable IM mode with **auto-approve** (cc tool calls auto-pass) |
-| `/start off` | Enable IM mode with **ask** mode (every tool call forwards to WeChat for `/1` / `/2`) |
+| `/start off` | Enable IM mode with **ask** mode (every tool call forwards to Lark for `/1` / `/2`) |
 | `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts handled in cc native menu) |
 
-`IMWork` resets to OFF on every daemon start. You must `/start` from WeChat each session.
+`IMWork` resets to OFF on every daemon start. You must `/start` from Lark each session.
 
-## Routing (sent from WeChat)
+## Routing (sent from Lark)
 
 | Message | Effect |
 |---|---|
@@ -90,7 +92,7 @@ Every command is a single message sent to the bot's WeChat thread.
 
 ## Tool permission flow (ask mode only)
 
-When `/start off` is active and you address a cc from WeChat, cc tool calls trigger this round-trip:
+When `/start off` is active and you address a cc from Lark, cc tool calls trigger this round-trip:
 
 ```
 [frontend] 准备跑工具:
@@ -114,15 +116,15 @@ Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) are auto-allowed wit
 | Path | Purpose |
 |---|---|
 | `~/.multi-cc-im/config.toml` | Daemon config (created on first login) |
-| `~/.multi-cc-im/credentials/wechat.json` | `bot_token` + login state (mode 0600) |
-| `~/.multi-cc-im/state/wechat-cursor` | iLink getupdates cursor (resume across restarts) |
+| `~/.multi-cc-im/credentials/lark.json` | `app_id + app_secret` + login state (mode 0600) |
+| `~/.multi-cc-im/state/lark-cursor` | iLink getupdates cursor (resume across restarts) |
 | `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM mode toggle (file existence = ON) |
 | `~/.multi-cc-im/state/IMOrigin` | Latest IM reply context (overwritten on every inbound) |
 | `~/.multi-cc-im/state/daemon.pid` | Daemon liveness lock |
 | `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc reply event (consumed by daemon) |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | In-flight tool approval |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | Approval result |
-| `~/.multi-cc-im/inbox/wechat/<sid>/` | Decrypted inbound images / files for cc to `Read` |
+| `~/.multi-cc-im/inbox/lark/<sid>/` | Decrypted inbound images / files for cc to `Read` |
 
 Override the root with `MULTI_CC_IM_HOME` env.
 
@@ -131,7 +133,7 @@ Override the root with `MULTI_CC_IM_HOME` env.
 | Command | Description |
 |---|---|
 | `multi-cc-im start` | Start the bridge daemon (long-running, foreground); auto-registers cc hooks in `~/.claude/settings.json` on first run (idempotent merge) |
-| `multi-cc-im login wechat` | Scan QR + save `bot_token` |
+| `multi-cc-im login lark` | Scan QR + save `app_id + app_secret` |
 | `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running |
 | `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`) |
 | `multi-cc-im --help` / `-h` | Print help |
@@ -162,14 +164,14 @@ cat ~/.multi-cc-im/state/daemon.pid
 rm ~/.multi-cc-im/state/daemon.pid
 ```
 
-### Daemon runs but WeChat doesn't receive my messages
+### Daemon runs but Lark doesn't receive my messages
 
 ```bash
 # 1. Cursor advancing?
-ls -la ~/.multi-cc-im/state/wechat-cursor
+ls -la ~/.multi-cc-im/state/lark-cursor
 
-# 2. bot_token still valid?
-./bin/multi-cc-im login wechat   # re-login if needed
+# 2. app_id + app_secret still valid?
+./bin/multi-cc-im login lark   # re-login if needed
 
 # 3. cc hook actually firing?
 ls -la ~/.multi-cc-im/state/*.Stop.*
@@ -178,12 +180,12 @@ ls -la ~/.multi-cc-im/state/*.Stop.*
 ### `@frontend` says "not found"
 
 - Run `/rename frontend` inside the cc TUI.
-- Send `/list` from WeChat to see which tabs are addressable.
+- Send `/list` from Lark to see which tabs are addressable.
 
 ### IM doesn't receive tool permission prompts
 
 1. Did you `/start off`? (default `/start` is auto-approve, no prompts forward.)
-2. Did you address that cc from WeChat first? (no `IMOrigin` → no thread to forward into).
+2. Did you address that cc from Lark first? (no `IMOrigin` → no thread to forward into).
 3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`).
 
 ### Hook registration (auto-run by `start`) complains about existing hooks
@@ -230,11 +232,10 @@ multi-cc-im/
 ├── packages/
 │   ├── shared/              — Cross-package types + zod schemas
 │   ├── storage-files/       — TOML + JSON file stores (config, credentials, cursor, queues)
-│   ├── im-wechat/           — iLink Bot adapter (vendored Tencent OpenClaw)
+│   ├── im-lark/             — Lark/Feishu adapter (M2-M8 in progress; npm depend `@larksuiteoapi/node-sdk`)
 │   ├── term-wezterm/        — wezterm CLI adapter
 │   ├── cli-cc/              — Claude Code hook adapter
-│   ├── bridge/              — Router + orchestrator + AI-routed dispatch
-│   └── openclaw/            — Vendored Tencent OpenClaw shim
+│   └── bridge/              — Router + orchestrator + AI-routed dispatch
 ├── bin/multi-cc-im          — Bash wrapper (resolves dist or tsx)
 ├── docs/
 │   ├── architecture.md      — Full architecture + state schema + IPC
@@ -264,9 +265,9 @@ Coverage threshold: ≥ 80% line coverage workspace-wide. CI enforces.
 
 Per `CLAUDE.md` and [`docs/dev.md`](docs/dev.md): write a failing test that codifies the target behavior → minimal implementation to pass → refactor + verify ≥ 80% coverage. If the test cannot pass under the current design, stop and re-do the DD — don't patch the wrong assumption.
 
-## Adding a new IM adapter (Telegram / Lark / etc.)
+## Adding a new IM adapter (Telegram / Slack / etc.)
 
-1. Create `packages/im-<name>/` mirroring `packages/im-wechat/` layout.
+1. Create `packages/im-<name>/` mirroring `packages/im-lark/` layout (once M2 lands).
 2. Implement the `IMAdapter` interface from `@multi-cc-im/shared`:
    - `start(handler: IMHandler): Promise<void>`
    - `send(text: string, replyCtx: IMReplyContext): Promise<void>`

@@ -81,7 +81,7 @@ function makeMockIM(): MockIM {
   const sent: { content: string; replyCtx: IMReplyContext }[] = [];
   let handler: IMHandler | undefined;
   return {
-    name: 'wechat-mock',
+    name: 'lark-mock',
     sent,
     get handler() {
       return handler;
@@ -158,14 +158,14 @@ function memState(): RouterState {
 function incoming(
   text: string,
   replyCtx: IMReplyContext = {
-    imType: 'wechat',
-    to: 'wxid_owner',
-    contextToken: 'ctx',
+    imType: 'lark',
+    openId: 'ou_owner',
+    chatId: 'oc_chat',
   },
 ): IncomingMessage {
   return {
     msgId: 'm1',
-    from: 'wxid_owner',
+    from: 'ou_owner',
     text,
     attachments: [],
     replyCtx,
@@ -317,10 +317,10 @@ describe('createOrchestrator — start/stop lifecycle', () => {
 });
 
 // ============================================================================
-// Inbound: wechat → router → term sendText
+// Inbound: IM → router → term sendText
 // ============================================================================
 
-describe('createOrchestrator — inbound (wechat → cc)', () => {
+describe('createOrchestrator — inbound (IM → cc)', () => {
   it('plain msg + single named pane → two-step sendText + sendKeystroke', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);
@@ -447,25 +447,25 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
 
     await im.handler!.onMessage(
       incoming('@frontend first', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tok-A',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_tok-A',
       }),
     );
     expect(await existsIMOriginFile(testStateDir)).toBe(true);
 
     await im.handler!.onMessage(
       incoming('@frontend second', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tok-B',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_tok-B',
       }),
     );
     const ctx = await readIMOriginFile(testStateDir);
     expect(ctx).toEqual({
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'tok-B',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_tok-B',
     });
 
     await orch.stop();
@@ -487,15 +487,15 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     // First a real dispatch to seed IMOrigin = tok-A.
     await im.handler!.onMessage(
       incoming('@frontend hello', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tok-A',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_tok-A',
       }),
     );
     {
       const ctx = await readIMOriginFile(testStateDir);
-      expect(ctx?.imType).toBe('wechat');
-      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-A');
+      expect(ctx?.imType).toBe('lark');
+      if (ctx?.imType === 'lark') expect(ctx.chatId).toBe('oc_chat_tok-A');
     }
 
     // Then a bridge command — does NOT dispatch, but server still issued
@@ -503,29 +503,29 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     // at tok-A (stale). Post-fix: every inbound overwrites.
     await im.handler!.onMessage(
       incoming('/list', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tok-B',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_tok-B',
       }),
     );
     {
       const ctx = await readIMOriginFile(testStateDir);
-      expect(ctx?.imType).toBe('wechat');
-      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-B');
+      expect(ctx?.imType).toBe('lark');
+      if (ctx?.imType === 'lark') expect(ctx.chatId).toBe('oc_chat_tok-B');
     }
 
     // Now a permission response — also a non-dispatch path; same story.
     await im.handler!.onMessage(
       incoming('@frontend /1', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'tok-C',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_tok-C',
       }),
     );
     {
       const ctx = await readIMOriginFile(testStateDir);
-      expect(ctx?.imType).toBe('wechat');
-      if (ctx?.imType === 'wechat') expect(ctx.contextToken).toBe('tok-C');
+      expect(ctx?.imType).toBe('lark');
+      if (ctx?.imType === 'lark') expect(ctx.chatId).toBe('oc_chat_tok-C');
     }
 
     await orch.stop();
@@ -533,10 +533,10 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
 });
 
 // ============================================================================
-// Outbound: cc Stop → wechat
+// Outbound: cc Stop → IM
 // ============================================================================
 
-describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
+describe('createOrchestrator — outbound (cc Stop → IM)', () => {
   it('cc Stop with stored IMOrigin → forward last_assistant_message', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
@@ -554,9 +554,9 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     // Inbound dispatch sets the IMOrigin for FRONTEND_PANE
     await im.handler!.onMessage(
       incoming('hello', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'ctx-frontend',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_ctx-frontend',
       }),
     );
     im.sent.length = 0;
@@ -568,9 +568,9 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     expect(im.sent).toHaveLength(1);
     expect(im.sent[0]?.content).toBe('[frontend]\ndone');
     expect(im.sent[0]?.replyCtx).toEqual({
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'ctx-frontend',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_ctx-frontend',
     });
     await orch.stop();
   });
@@ -681,9 +681,9 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     for (const turn of [1, 2, 3]) {
       await im.handler!.onMessage(
         incoming(`turn ${turn}`, {
-          imType: 'wechat',
-          to: 'wxid_alice',
-          contextToken: `ctx-${turn}`,
+          imType: 'lark',
+          openId: 'ou_alice',
+          chatId: `oc_chat_ctx-${turn}`,
         }),
       );
       im.sent.length = 0;
@@ -744,9 +744,9 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
 
     await im.handler!.onMessage(
       incoming('@frontend @api hi', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'ctx-multi',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_ctx-multi',
       }),
     );
     im.sent.length = 0;
@@ -776,9 +776,9 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
     const cli = makeMockCLI();
     // Pane 99 not in the listPanes snapshot — simulate "user closed wezterm tab".
     await writeIMOriginFile(testStateDir, {
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'ctx-99',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_ctx-99',
     });
     const orch = createOrchestrator({
       stateDir: testStateDir,
@@ -803,7 +803,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
 // ============================================================================
 
 describe('createOrchestrator — error handling', () => {
-  it('term sendText throws → error echoed to wechat, dispatch aborted (no keystroke)', async () => {
+  it('term sendText throws → error echoed to IM, dispatch aborted (no keystroke)', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);
     term.sendText = vi.fn().mockRejectedValue(new Error('pane-id 99: not found'));
@@ -877,7 +877,7 @@ describe('createOrchestrator — error handling', () => {
 // ============================================================================
 
 describe('createOrchestrator — log sink', () => {
-  it('inbound dispatch emits one [wechat → name] line', async () => {
+  it('inbound dispatch emits one [IM → name] line', async () => {
     const im = makeMockIM();
     const lines: string[] = [];
     const orch = createOrchestrator({
@@ -892,13 +892,13 @@ describe('createOrchestrator — log sink', () => {
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello world'));
-    const dispatchLine = lines.find((l) => l.startsWith('[wechat →'));
+    const dispatchLine = lines.find((l) => l.startsWith('[IM →'));
     expect(dispatchLine).toContain('frontend');
     expect(dispatchLine).toContain('hello world');
     await orch.stop();
   });
 
-  it('cc Stop emits [cc → wechat] line with truncated reply', async () => {
+  it('cc Stop emits [cc → IM] line with truncated reply', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const lines: string[] = [];
@@ -922,7 +922,7 @@ describe('createOrchestrator — log sink', () => {
         message: 'cc replied',
       }),
     );
-    const stopLine = lines.find((l) => l.startsWith('[cc → wechat]'));
+    const stopLine = lines.find((l) => l.startsWith('[cc → IM]'));
     expect(stopLine).toContain('cc replied');
     expect(stopLine).toContain('frontend');
     await orch.stop();
@@ -967,7 +967,7 @@ describe('createOrchestrator — log sink', () => {
     });
     await orch.start();
     await im.handler!.onMessage(incoming('x'.repeat(200)));
-    const line = lines.find((l) => l.startsWith('[wechat →'))!;
+    const line = lines.find((l) => l.startsWith('[IM →'))!;
     expect(line.length).toBeLessThan(150);
     expect(line.endsWith('…')).toBe(true);
     await orch.stop();
@@ -1287,9 +1287,9 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     reaperStateDir = mkdtempSync(join(tmpdir(), 'orch-reaper-'));
     await writeIMWorkFile(reaperStateDir);
     await writeIMOriginFile(reaperStateDir, {
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'tk',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_tk',
     });
   });
 
@@ -1478,9 +1478,9 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
     await orch.start();
     await im.handler!.onMessage(
       incoming('给前端那个写个登录页', {
-        imType: 'wechat',
-        to: 'wxid_owner',
-        contextToken: 'ctx-ai-1',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat_ctx-ai-1',
       }),
     );
     expect(term.sendTextCalls).toEqual([

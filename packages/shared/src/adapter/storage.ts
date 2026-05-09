@@ -30,14 +30,13 @@ export interface CursorStore {
 // ============================================================================
 
 /**
- * Persists IM-specific credentials (e.g. wechat `bot_token`) at a 0600 JSON
- * file. Per [DD: credentials persistence strategy](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
- * we don't use OS keychain — stays consistent with Tencent OpenClaw vendor
- * upstream, the wechat ecosystem default, and avoids the WSL / DPAPI
- * same-user-process gotchas.
+ * Persists IM-specific credentials (e.g. lark `app_id` + `app_secret`) at a
+ * 0600 JSON file. Per [DD: credentials persistence strategy](../../../../docs/superpowers/specs/2026-05-03-keychain-library-dd.md)
+ * we don't use OS keychain — avoids the WSL / DPAPI same-user-process
+ * gotchas and matches the established convention.
  *
  * One store instance = one IM's credentials file (e.g.
- * `~/.multi-cc-im/credentials/wechat.json`). The credentials shape `T` is
+ * `~/.multi-cc-im/credentials/lark.json`). The credentials shape `T` is
  * IM-specific; concrete adapters declare their schema (zod) and pass it to
  * `createCredentialStore`.
  */

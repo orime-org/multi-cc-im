@@ -372,11 +372,13 @@ describe('createCcCliAdapter', () => {
       await adapter.stop();
     });
 
-    it('ignores top-level files like IMWork / daemon.pid / wechat-cursor', async () => {
+    it('ignores top-level files like IMWork / daemon.pid / IM-adapter cursor files', async () => {
       await import('node:fs/promises').then(async (fs) => {
         await fs.writeFile(join(stateDir, 'IMWork'), '');
         await fs.writeFile(join(stateDir, 'daemon.pid'), '{"pid":1}');
-        await fs.writeFile(join(stateDir, 'wechat-cursor'), '0');
+        // Any non-cc-hook top-level file (e.g. an IM adapter's long-poll
+        // cursor like `lark-cursor`) must not trigger dispatch.
+        await fs.writeFile(join(stateDir, 'lark-cursor'), '0');
       });
 
       const adapter = createCcCliAdapter({ stateDir });

@@ -54,10 +54,10 @@ const SID2 = '00000000-1111-2222-3333-444444444444';
 const PANE_ID = 42;
 const PANE_ID2 = 99;
 
-const WECHAT_CTX: IMReplyContext = {
-  imType: 'wechat',
-  to: 'wxid_user',
-  contextToken: 'ctx-1',
+const LARK_CTX: IMReplyContext = {
+  imType: 'lark',
+  openId: 'ou_user',
+  chatId: 'oc_chat',
 };
 
 describe('state-files', () => {
@@ -473,10 +473,10 @@ describe('state-files', () => {
       expect(IM_ORIGIN_FILE_NAME).toBe('IMOrigin');
     });
 
-    it('writeIMOriginFile + readIMOriginFile round-trip wechat ctx', async () => {
-      await writeIMOriginFile(stateDir, WECHAT_CTX);
+    it('writeIMOriginFile + readIMOriginFile round-trip lark ctx', async () => {
+      await writeIMOriginFile(stateDir, LARK_CTX);
       const got = await readIMOriginFile(stateDir);
-      expect(got).toEqual(WECHAT_CTX);
+      expect(got).toEqual(LARK_CTX);
     });
 
     it('writeIMOriginFile rejects ctx without imType discriminator', async () => {
@@ -508,26 +508,26 @@ describe('state-files', () => {
 
     it('latest-wins: second writeIMOriginFile overwrites first (modeling each inbound covers prior token)', async () => {
       await writeIMOriginFile(stateDir, {
-        imType: 'wechat',
-        to: 'wxid_user',
-        contextToken: 'token-A',
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat_A',
       });
       await writeIMOriginFile(stateDir, {
-        imType: 'wechat',
-        to: 'wxid_user',
-        contextToken: 'token-B',
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat_B',
       });
       const got = await readIMOriginFile(stateDir);
       expect(got).toEqual({
-        imType: 'wechat',
-        to: 'wxid_user',
-        contextToken: 'token-B',
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat_B',
       });
     });
 
     it('existsIMOriginFile / deleteIMOriginFile lifecycle', async () => {
       expect(await existsIMOriginFile(stateDir)).toBe(false);
-      await writeIMOriginFile(stateDir, WECHAT_CTX);
+      await writeIMOriginFile(stateDir, LARK_CTX);
       expect(await existsIMOriginFile(stateDir)).toBe(true);
       await deleteIMOriginFile(stateDir);
       expect(await existsIMOriginFile(stateDir)).toBe(false);
@@ -591,7 +591,7 @@ describe('state-files', () => {
 
   describe('atomic write permissions (0600)', () => {
     it('writeIMOriginFile produces 0600 file', async () => {
-      await writeIMOriginFile(stateDir, WECHAT_CTX);
+      await writeIMOriginFile(stateDir, LARK_CTX);
       const st = await stat(imOriginPath(stateDir));
       // 0o777 is the rwx mask; check the lower bits == 0o600.
       expect(st.mode & 0o777).toBe(0o600);

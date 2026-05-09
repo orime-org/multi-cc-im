@@ -24,7 +24,7 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  *   read and the rewrite — that producer's line will be **lost** in the
  *   rewrite. For multi-cc-im (single-user, low Hz) this is acceptable; if
  *   the producer rate ever rises, swap in `proper-lockfile` (already a
- *   workspace dep via storage-files / im-wechat openclaw shim).
+ *   workspace dep via storage-files).
  *
  * Malformed lines are silently skipped on pop (don't block the queue);
  * caller logs separately if it cares.

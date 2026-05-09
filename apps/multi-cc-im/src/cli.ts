@@ -4,21 +4,21 @@
 // handles the extension rewrite. v2 will tsup-bundle to .js, at which point
 // this file could regain a `#!/usr/bin/env node` shebang directly.
 
-import qrcodeTerminal from 'qrcode-terminal';
 import { runCleanupCommand } from './cleanup.js';
 import { runHookCommand } from './hook.js';
-import { runLoginWechatCommand } from './login.js';
 import { runStartCommand } from './start.js';
 
-const HELP_TEXT = `multi-cc-im — wechat ↔ Claude Code TUI bridge
+const HELP_TEXT = `multi-cc-im — IM ↔ Claude Code TUI bridge
 
 Usage:
   multi-cc-im start                — start the bridge daemon (long-running);
                                      auto-registers cc hooks in
                                      ~/.claude/settings.json on first run
                                      (idempotent merge, preserves other
-                                     tools' hooks)
-  multi-cc-im login wechat         — scan QR + save bot_token to credentials
+                                     tools' hooks).
+                                     M1 transitional: no IM adapter wired
+                                     yet (lark M2-M8 in progress per
+                                     DD #86 §11.4).
   multi-cc-im cleanup [--dry-run]  — manually sweep ~/.multi-cc-im/state/
                                      (paired SessionStart+SessionEnd, orphan Stop
                                      files, legacy state files). Same as the
@@ -59,8 +59,6 @@ async function main(): Promise<number> {
   switch (subcommand) {
     case 'hook':
       return await dispatchHook(rest);
-    case 'login':
-      return await dispatchLogin(rest);
     case 'cleanup':
       return await dispatchCleanup(rest);
     case 'start':
@@ -102,30 +100,6 @@ async function dispatchHook(args: string[]): Promise<number> {
   const result = await runHookCommand({ stdin, stateDir });
 
   if (result.stdout.length > 0) process.stdout.write(result.stdout);
-  if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
-  return result.exitCode;
-}
-
-async function dispatchLogin(args: string[]): Promise<number> {
-  const [im] = args;
-  if (im !== 'wechat') {
-    process.stderr.write(
-      `multi-cc-im login: unsupported IM '${im ?? '(none)'}' — only 'wechat' is supported\n`,
-    );
-    return 2;
-  }
-
-  const result = await runLoginWechatCommand({
-    output: {
-      renderQR: (url) => {
-        qrcodeTerminal.generate(url, { small: true });
-        process.stdout.write(
-          `\nIf the QR code above didn't render correctly, open this URL in a browser to scan it:\n${url}\n\n`,
-        );
-      },
-      println: (msg) => process.stdout.write(`${msg}\n`),
-    },
-  });
   if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
   return result.exitCode;
 }

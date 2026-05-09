@@ -22,48 +22,34 @@ export interface Handler {
  * **Discriminated union** on `imType`. Each variant carries the per-IM
  * fields needed by that adapter's `send()`:
  *
- *   - `wechat`  : `{ imType: 'wechat',  to, contextToken? }` — iLink
- *                  cc-bot reply protocol; `contextToken` is required by
- *                  the upstream server, may be undefined for system msgs.
+ *   - `lark`    : `{ imType: 'lark', openId, chatId }` — Feishu CN
+ *                  self-built app, IM v1 messaging via official
+ *                  `@larksuiteoapi/node-sdk`. Per [DD #86](../../../docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md).
  *   - `telegram`: `{ imType: 'telegram', chatId, messageId }` — reserved
  *                  for tg adapter (not implemented yet).
- *   - `lark`    : `{ imType: 'lark', openId, chatId }` — reserved for
- *                  飞书 adapter (not implemented yet).
  *
  * The bridge **switches on `imType`** to dispatch to the correct adapter.
  * Persisted form (`<paneId>.IMOrigin` file) is the JSON of one variant.
  *
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
+ *
+ * **History note**: `'wechat'` was the original variant (Tencent OpenClaw
+ * iLink protocol). Removed in DD #86 §11.2 / M1 wechat purge after
+ * undici-upgrade instability (PRs #76 / #78 / #82) made the path not worth
+ * maintaining.
  */
-export type ReplyContext =
-  | WechatReplyContext
-  | TelegramReplyContext
-  | LarkReplyContext;
+export type ReplyContext = LarkReplyContext | TelegramReplyContext;
 
-export interface WechatReplyContext {
-  imType: 'wechat';
-  /** WeixinMessage.from_user_id — the target we're replying to. */
-  to: string;
-  /**
-   * WeixinMessage.context_token; iLink rejects cc-bot reply without it for
-   * regular text messages, but system events (group join, etc.) carry no
-   * token. Optional reflects the JSON shape: `JSON.stringify({...,
-   * contextToken: undefined})` omits the key, so absent and present-but-
-   * undefined are equivalent on disk.
-   */
-  contextToken?: string;
+export interface LarkReplyContext {
+  imType: 'lark';
+  openId: string;
+  chatId: string;
 }
 
 export interface TelegramReplyContext {
   imType: 'telegram';
   chatId: number;
   messageId: number;
-}
-
-export interface LarkReplyContext {
-  imType: 'lark';
-  openId: string;
-  chatId: string;
 }
 
 /**
@@ -75,29 +61,24 @@ export interface LarkReplyContext {
  */
 export const ReplyContextSchema = z.discriminatedUnion('imType', [
   z.object({
-    imType: z.literal('wechat'),
-    to: z.string(),
-    contextToken: z.string().optional(),
+    imType: z.literal('lark'),
+    openId: z.string(),
+    chatId: z.string(),
   }),
   z.object({
     imType: z.literal('telegram'),
     chatId: z.number(),
     messageId: z.number(),
   }),
-  z.object({
-    imType: z.literal('lark'),
-    openId: z.string(),
-    chatId: z.string(),
-  }),
 ]);
 
 /**
- * Core IMAdapter interface — every IM channel implementation (wechat / telegram /
+ * Core IMAdapter interface — every IM channel implementation (lark / telegram /
  * slack / etc.) must satisfy this. Capabilities below extend this with optional
  * features; use type guards in `../guards.ts` to narrow before calling them.
  */
 export interface Adapter {
-  /** Stable identifier for log / config keys (e.g. `'wechat'`). */
+  /** Stable identifier for log / config keys (e.g. `'lark'`). */
   readonly name: string;
   /** Begin polling / connecting. Hands events to the supplied handler. */
   start(handler: Handler): Promise<void>;

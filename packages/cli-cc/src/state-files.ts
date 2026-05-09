@@ -22,7 +22,9 @@ import {
  *                      Every IM inbound overwrites; daemon start/stop deletes
  *                      (always-fresh, like IMWork). Per [DD: IMOrigin global](../../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md).
  * - `daemon.pid`     — daemon PID lock (JSON `{pid, startedAt}`)
- * - `wechat-cursor`  — iLink long-poll cursor (handled by im-wechat package, not here)
+ * - Top-level files written by the active IM adapter (e.g. `lark-cursor`
+ *   long-poll cursor for the future M2 lark adapter) are owned by that
+ *   adapter, not here.
  *
  * **Per-pane (cc-fired, prefixed by wezterm pane id):**
  * - `<paneId>_<sid>.Stop.<ts>`                    — cc Stop hook writes
@@ -176,7 +178,7 @@ export function parseLegacyPaneOriginFilename(
 /**
  * Generic "is this filename a pane-prefixed cc-hook file?" check.
  * Used by state-sweep to decide whether a file falls under "per-pane" cleanup
- * (vs top-level files like IMWork / IMOrigin / daemon.pid / wechat-cursor).
+ * (vs top-level files like IMWork / IMOrigin / daemon.pid / `<im>-cursor`).
  *
  * Recognizes the new pane-keyed naming `<paneId>_<sid>.<event>` AND the
  * legacy `<paneId>.IMOrigin` (auto-migrated when paneId not in live set).
@@ -197,7 +199,7 @@ export function extractPaneIdFromFilename(name: string): number | null {
 // ============================================================================
 
 export interface StopFile {
-  /** cc's last assistant message text — bridge forwards verbatim to wechat. */
+  /** cc's last assistant message text — bridge forwards verbatim to IM. */
   last_assistant_message: string;
 }
 

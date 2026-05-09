@@ -1,5 +1,7 @@
 # 开发命令 · TDD 节奏 · 调试
 
+> **⚠️ v1.5 transitional state（2026-05-09）**：本文大部分调试 / 故障排查段是 v1.4 wechat 时代的真实经验。M1 wechat purge（DD #86 §11.2）已删 wechat 路径；M2-M8 lark adapter 完成后本文会更新。当前 daemon 不可运行（无 IM adapter），直到 M2 落地。
+
 > 本文是 v1 实施后的真实命令清单。新人 onboard 可对着跑。
 
 ## 快速跑通

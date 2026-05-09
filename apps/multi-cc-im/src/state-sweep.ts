@@ -40,7 +40,8 @@ import {
  * Top-level files NEVER swept here:
  * - `IMWork` (managed by daemon start/stop + IM `/start /stop`)
  * - `IMOrigin` (managed by daemon start/stop + every inbound — DD: IMOrigin global)
- * - `wechat-cursor` (iLink protocol state, must persist across restart)
+ * - `<im>-cursor` (e.g. future `lark-cursor` long-poll state — per-adapter
+ *   ownership; must persist across daemon restart)
  *
  * The sweep MUST run before chokidar starts watching at daemon start
  * (otherwise the unlinks would fire spurious chokidar events).
@@ -153,7 +154,12 @@ export async function sweepStaleStateFiles(
     // Top-level files we never touch:
     if (name === IM_WORK_FILE_NAME) continue;
     if (name === IM_ORIGIN_FILE_NAME) continue;
-    if (name === 'wechat-cursor') continue;
+    // IM-adapter-owned long-poll cursor files (e.g. future `lark-cursor`).
+    // Pattern: any top-level file ending in `-cursor`. Includes legacy
+    // `wechat-cursor` files left on disk from before the wechat purge
+    // (DD #86 §11.2 — codebase no longer creates them, but user disks may
+    // still have one).
+    if (name.endsWith('-cursor')) continue;
 
     // daemon.pid — check liveness; keep if alive.
     if (name === DAEMON_PID_FILE_NAME) {

@@ -31,8 +31,8 @@ describe('resolveAppPaths', () => {
 
   it('credentials path for an IM is `<credentialsDir>/<im>.json`', () => {
     const paths = resolveAppPaths({ home: '/home/x', env: {} });
-    expect(paths.credentialFor('wechat')).toBe(
-      '/home/x/.multi-cc-im/credentials/wechat.json',
+    expect(paths.credentialFor('lark')).toBe(
+      '/home/x/.multi-cc-im/credentials/lark.json',
     );
     expect(paths.credentialFor('telegram')).toBe(
       '/home/x/.multi-cc-im/credentials/telegram.json',
@@ -41,8 +41,8 @@ describe('resolveAppPaths', () => {
 
   it('inbound dir for an IM is `<inboundDir>/<im>`', () => {
     const paths = resolveAppPaths({ home: '/home/x', env: {} });
-    expect(paths.inboundFor('wechat')).toBe(
-      '/home/x/.multi-cc-im/inbound/wechat',
+    expect(paths.inboundFor('lark')).toBe(
+      '/home/x/.multi-cc-im/inbound/lark',
     );
   });
 });

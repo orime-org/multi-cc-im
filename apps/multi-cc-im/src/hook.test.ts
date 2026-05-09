@@ -63,9 +63,9 @@ describe('runHookCommand', () => {
   async function setupBoundState(): Promise<void> {
     await writeIMWorkFile(stateDir);
     await writeIMOriginFile(stateDir, {
-      imType: 'wechat',
-      to: 'wxid_user',
-      contextToken: 'tk',
+      imType: 'lark',
+      openId: 'ou_user',
+      chatId: 'oc_chat_tk',
     });
     const lstart = await captureProcessLstart(process.pid);
     await writeDaemonPidFile({

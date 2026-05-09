@@ -34,14 +34,14 @@ function memState(initial: PaneId | null = null): RouterState {
 function incoming(text: string): IncomingMessage {
   return {
     msgId: 'm1',
-    from: 'wxid_owner',
+    from: 'ou_owner',
     text,
     attachments: [],
     timestamp: Date.now(),
     replyCtx: {
-      imType: 'wechat',
-      to: 'wxid_owner',
-      contextToken: 'ctx-abc',
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat_ctx-abc',
     },
   };
 }
@@ -639,13 +639,14 @@ describe('router — empty / null text passthrough', () => {
   it('null text → empty result (image-only message)', async () => {
     const msg: IncomingMessage = {
       msgId: 'm2',
-      from: 'wxid_owner',
+      from: 'ou_owner',
       text: null,
       attachments: [],
       timestamp: Date.now(),
       replyCtx: {
-        imType: 'wechat',
-        to: 'wxid_owner',
+        imType: 'lark',
+        openId: 'ou_owner',
+        chatId: 'oc_chat',
       },
     };
     const result = await routeOn(msg, {

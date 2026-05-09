@@ -6,7 +6,6 @@ export type {
   Adapter as IMAdapter,
   Handler as IMHandler,
   ReplyContext as IMReplyContext,
-  WechatReplyContext as IMWechatReplyContext,
   TelegramReplyContext as IMTelegramReplyContext,
   LarkReplyContext as IMLarkReplyContext,
   ImageSender as IMImageSender,

@@ -58,7 +58,7 @@ describe('runCleanupCommand', () => {
     await writeFiles({
       [`${PANE_DEAD}_${SID_A}.Stop.T1`]: '{}',
       [`${PANE_DEAD}.IMOrigin`]:
-        '{"imType":"wechat","to":"u","contextToken":"x"}',
+        '{"imType":"lark","openId":"ou_user","chatId":"oc_chat"}',
       [`${SID_A}.SessionStart`]: '{}',
       'daemon.pid': JSON.stringify({ pid: 999_999, startedAt: 'fake' }),
     });

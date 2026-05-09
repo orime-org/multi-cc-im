@@ -2,7 +2,9 @@
 
 [English](README.md) | **中文**
 
-通过腾讯 iLink Bot API 把跑在 WezTerm tab 里的多个 Claude Code (cc) session 暴露到微信。`@<tab-name>` 寻址；不带 `@` 的纯消息由 AI 路由到最匹配的 cc tab。包含微信端工具审批通路 (`/1` 允许 / `/2` 拒绝)，可扩展更多 IM / 终端 / CLI。
+通过飞书 (Lark) IM 把跑在 WezTerm tab 里的多个 Claude Code (cc) session 暴露到手机。`@<tab-name>` 寻址；不带 `@` 的纯消息由 AI 路由到最匹配的 cc tab。包含 IM 端工具审批通路 (`/1` 允许 / `/2` 拒绝)，可扩展更多 IM / 终端 / CLI。
+
+> **⚠️ v1.5 transitional state（2026-05-09 — M1 实施中）**：旧版微信 (WeChat) adapter 已在 M1 删除（[DD #86 §11.2](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)），原因是上游 `undici` 反复升级 instability（PR #76 / #78 / #82）。飞书 (Lark/Feishu) 替代 (M2-M8) **尚未实施**。`main` 上跑 `multi-cc-im start` 会以 `"no IM adapter configured"` 退出。下文（登录 / 命令 / 文件路径）描述的是 **M2-M8 全部完成后的目标形态**，目前并未全部接通。状态跟踪请看 [DD #86 §11.4 implementation milestones](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)。
 
 ---
 
@@ -15,7 +17,7 @@
 - pnpm ≥ 9
 - WezTerm ≥ 20240203
 - 已登录的 Claude Code CLI（`claude` 在 `PATH` 中可执行；AI 路由需要 cc Pro/Max 订阅）
-- 一个专用做 bot 的微信账号
+- 一个专用做 bot 的飞书账号
 
 ## 安装
 
@@ -36,13 +38,13 @@ ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 
 ## 初始化（一次性）
 
-### 1. 微信登录
+### 1. 飞书登录
 
 ```bash
-./bin/multi-cc-im login wechat
+./bin/multi-cc-im login lark
 ```
 
-终端打印二维码，手机微信扫码。Token 存到 `~/.multi-cc-im/credentials/wechat.json`（mode 0600）。
+终端打印二维码，手机飞书扫码。Token 存到 `~/.multi-cc-im/credentials/lark.json`（mode 0600）。
 
 cc hook 由 `start`（下一节）自动注册，不需要单独跑命令。首次 `start` 会先写时间戳 `.bak.<iso>` 备份 `~/.claude/settings.json`，再幂等合并 `PreToolUse` + `Stop` 两条 hook entries。其他工具的 hook 保留不动。
 
@@ -56,9 +58,9 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 
 每台机器只能跑一个 daemon。已有 daemon 时再次 `start` 会 exit 1 并打印已存在的 PID。
 
-## Daemon 命令（在微信发）
+## Daemon 命令（在 IM 发）
 
-每条命令是发给 bot 微信会话的单条消息。
+每条命令是发给 bot IM 会话的单条消息。
 
 | 命令 | 效果 |
 |---|---|
@@ -66,12 +68,12 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 | `/help` | 路由示例 |
 | `/current` | 显示当前 sticky target + IMWork 状态 |
 | `/start` | 开启 IM 模式 + **auto-approve**（cc 工具调用直接放行）|
-| `/start off` | 开启 IM 模式 + **ask** 模式（每次工具调用转到微信走 `/1` / `/2`）|
+| `/start off` | 开启 IM 模式 + **ask** 模式（每次工具调用转到 IM 走 `/1` / `/2`）|
 | `/stop` | 关闭 IM 模式（cc 回复留 cc TUI；工具审批走 cc 原生菜单）|
 
 每次 daemon start 会重置 `IMWork` 为 OFF。每段远程会话都需要重新 `/start`。
 
-## 路由（在微信发）
+## 路由（在 IM 发）
 
 | 消息 | 效果 |
 |---|---|
@@ -90,7 +92,7 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 
 ## 工具审批通路（仅 ask 模式）
 
-`/start off` 生效时，从微信寻址 cc 后，cc 调工具会触发这条往返：
+`/start off` 生效时，从 IM 寻址 cc 后，cc 调工具会触发这条往返：
 
 ```
 [frontend] 准备跑工具:
@@ -114,15 +116,15 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 | 路径 | 用途 |
 |---|---|
 | `~/.multi-cc-im/config.toml` | daemon 配置（首次登录后生成）|
-| `~/.multi-cc-im/credentials/wechat.json` | `bot_token` + 登录态（mode 0600）|
-| `~/.multi-cc-im/state/wechat-cursor` | iLink getupdates cursor（重启续接）|
+| `~/.multi-cc-im/credentials/lark.json` | `app_id + app_secret` + 登录态（mode 0600）|
+| `~/.multi-cc-im/state/lark-cursor` | IM long-poll cursor（重启续接）|
 | `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM 模式开关（文件存在 = ON）|
 | `~/.multi-cc-im/state/IMOrigin` | 最新 IM 回复上下文（每条入站覆盖）|
 | `~/.multi-cc-im/state/daemon.pid` | daemon 活性锁 |
 | `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc 回复事件（daemon 消费）|
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | in-flight 工具审批请求 |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | 审批结果 |
-| `~/.multi-cc-im/inbox/wechat/<sid>/` | 解密后的入站图片 / 文件（cc 用 `Read` 读取）|
+| `~/.multi-cc-im/inbox/lark/<sid>/` | 解密后的入站图片 / 文件（cc 用 `Read` 读取）|
 
 `MULTI_CC_IM_HOME` 环境变量可覆盖根目录。
 
@@ -131,7 +133,7 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 | 命令 | 说明 |
 |---|---|
 | `multi-cc-im start` | 启动 bridge daemon（前台长跑）；首次自动注册 cc hook 到 `~/.claude/settings.json`（幂等合并）|
-| `multi-cc-im login wechat` | 扫码登录 + 保存 `bot_token` |
+| `multi-cc-im login lark` | 扫码登录 + 保存 `app_id + app_secret` |
 | `multi-cc-im cleanup [--dry-run]` | 清理过期 state 文件；daemon 跑着也安全 |
 | `multi-cc-im hook <event>` | cc 内部 hook 入口（由 `~/.claude/settings.json` 调用）|
 | `multi-cc-im --help` / `-h` | 打印 help |
@@ -161,14 +163,14 @@ cat ~/.multi-cc-im/state/daemon.pid
 rm ~/.multi-cc-im/state/daemon.pid
 ```
 
-### Daemon 跑着但微信收不到消息
+### Daemon 跑着但 IM 收不到消息
 
 ```bash
 # 1. cursor 在推进吗？
-ls -la ~/.multi-cc-im/state/wechat-cursor
+ls -la ~/.multi-cc-im/state/lark-cursor
 
-# 2. bot_token 还有效吗？
-./bin/multi-cc-im login wechat   # 必要时重登
+# 2. app_id + app_secret 还有效吗？
+./bin/multi-cc-im login lark   # 必要时重登
 
 # 3. cc hook 真的有触发吗？
 ls -la ~/.multi-cc-im/state/*.Stop.*
@@ -177,12 +179,12 @@ ls -la ~/.multi-cc-im/state/*.Stop.*
 ### `@frontend` 报 "not found"
 
 - 进 cc TUI 跑 `/rename frontend`。
-- 在微信发 `/list` 看哪些 tab 可寻址。
+- 在 IM 发 `/list` 看哪些 tab 可寻址。
 
 ### 工具审批转发不到 IM
 
 1. 是不是 `/start off` 模式？（默认 `/start` 是 auto-approve，不会转发）
-2. 你之前从微信寻址过这个 cc 吗？（没 `IMOrigin` → 没 thread 可转发）
+2. 你之前从 IM 寻址过这个 cc 吗？（没 `IMOrigin` → 没 thread 可转发）
 3. daemon 还活着吗？（`cat ~/.multi-cc-im/state/daemon.pid`）
 
 ### Hook 注册（`start` 时自动跑）报现有 hook 冲突
@@ -229,11 +231,10 @@ multi-cc-im/
 ├── packages/
 │   ├── shared/              — 跨包类型 + zod schema
 │   ├── storage-files/       — TOML + JSON 文件存储（config / 凭据 / cursor / queue）
-│   ├── im-wechat/           — iLink Bot 适配器（vendored Tencent OpenClaw）
+│   ├── im-lark/             — Lark/Feishu 适配器（M2-M8 进行中；npm depend `@larksuiteoapi/node-sdk`）
 │   ├── term-wezterm/        — wezterm CLI 适配器
 │   ├── cli-cc/              — Claude Code hook 适配器
-│   ├── bridge/              — 路由器 + orchestrator + AI 分诊
-│   └── openclaw/            — Tencent OpenClaw vendor shim
+│   └── bridge/              — 路由器 + orchestrator + AI 分诊
 ├── bin/multi-cc-im          — Bash 包装脚本（解析 dist 或 tsx）
 ├── docs/
 │   ├── architecture.md      — 完整架构 + state schema + IPC
@@ -265,7 +266,7 @@ multi-cc-im/
 
 ## 加新 IM 适配器（Telegram / 飞书 / 等）
 
-1. 在 `packages/im-<name>/` 镜像 `packages/im-wechat/` 的目录结构。
+1. 在 `packages/im-<name>/` 镜像 `packages/im-lark/` 的目录结构（待 M2 完成）。
 2. 实现 `@multi-cc-im/shared` 的 `IMAdapter` 接口：
    - `start(handler: IMHandler): Promise<void>`
    - `send(text: string, replyCtx: IMReplyContext): Promise<void>`
