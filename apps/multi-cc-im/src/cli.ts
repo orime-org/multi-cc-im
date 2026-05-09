@@ -6,6 +6,7 @@
 
 import { runCleanupCommand } from './cleanup.js';
 import { runHookCommand } from './hook.js';
+import { runLoginLarkCommand } from './login.js';
 import { runStartCommand } from './start.js';
 
 const HELP_TEXT = `multi-cc-im — IM ↔ Claude Code TUI bridge
@@ -16,9 +17,14 @@ Usage:
                                      ~/.claude/settings.json on first run
                                      (idempotent merge, preserves other
                                      tools' hooks).
-                                     M1 transitional: no IM adapter wired
-                                     yet (lark M2-M8 in progress per
-                                     DD #86 §11.4).
+                                     Transitional: lark M3-M8 wiring
+                                     pending per DD #86 §11.4.
+  multi-cc-im login lark           — validate Feishu app_id + app_secret +
+                                     persist to ~/.multi-cc-im/credentials/
+                                     lark.json (mode 0600). Source the
+                                     two values from --app-id / --app-secret
+                                     args or LARK_APP_ID / LARK_APP_SECRET
+                                     env vars.
   multi-cc-im cleanup [--dry-run]  — manually sweep ~/.multi-cc-im/state/
                                      (paired SessionStart+SessionEnd, orphan Stop
                                      files, legacy state files). Same as the
@@ -30,6 +36,8 @@ Usage:
 
 Environment:
   MULTI_CC_IM_HOME                 — override default ~/.multi-cc-im root
+  LARK_APP_ID                      — Feishu self-built app_id (login lark fallback)
+  LARK_APP_SECRET                  — Feishu self-built app_secret (login lark fallback)
 
 Exit codes:
   0  — success
@@ -59,6 +67,8 @@ async function main(): Promise<number> {
   switch (subcommand) {
     case 'hook':
       return await dispatchHook(rest);
+    case 'login':
+      return await dispatchLogin(rest);
     case 'cleanup':
       return await dispatchCleanup(rest);
     case 'start':
@@ -69,6 +79,48 @@ async function main(): Promise<number> {
       );
       return 2;
   }
+}
+
+async function dispatchLogin(args: string[]): Promise<number> {
+  const [im, ...rest] = args;
+  if (im !== 'lark') {
+    process.stderr.write(
+      `multi-cc-im login: unsupported IM '${im ?? '(none)'}' — only 'lark' is supported in M2.\n` +
+        `  See DD #86 §11.4 for the milestone status.\n`,
+    );
+    return 2;
+  }
+
+  // Parse `--app-id <id>` and `--app-secret <secret>` from the remaining
+  // args. Falls back to LARK_APP_ID / LARK_APP_SECRET env when absent.
+  let appId = process.env.LARK_APP_ID ?? '';
+  let appSecret = process.env.LARK_APP_SECRET ?? '';
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === '--app-id' && i + 1 < rest.length) {
+      appId = rest[i + 1]!;
+      i++;
+    } else if (arg === '--app-secret' && i + 1 < rest.length) {
+      appSecret = rest[i + 1]!;
+      i++;
+    } else {
+      process.stderr.write(
+        `multi-cc-im login lark: unknown arg '${arg}'\n` +
+          `Usage: multi-cc-im login lark [--app-id <id>] [--app-secret <secret>]\n` +
+          `       (or set LARK_APP_ID / LARK_APP_SECRET env vars).\n`,
+      );
+      return 2;
+    }
+  }
+
+  const result = await runLoginLarkCommand({ appId, appSecret });
+  if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
+  if (result.exitCode === 0 && result.credentials) {
+    process.stdout.write(
+      `✓ lark login successful — credentials saved to ~/.multi-cc-im/credentials/lark.json\n`,
+    );
+  }
+  return result.exitCode;
 }
 
 async function dispatchCleanup(args: string[]): Promise<number> {

@@ -306,8 +306,9 @@ export async function runStartCommand(
       exitCode: 1,
       stderr:
         `multi-cc-im start: no IM adapter configured.\n` +
-        `  M1 (wechat purge) is complete; M2-M8 (lark adapter) is not\n` +
-        `  yet implemented. See DD #86 §11.4 implementation milestones:\n` +
+        `  M1-M2 done (wechat purge + lark login); M3-M8 (orchestrator\n` +
+        `  wiring) still in progress. See DD #86 §11.4 implementation\n` +
+        `  milestones for status:\n` +
         `  docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md\n`,
     };
   }
