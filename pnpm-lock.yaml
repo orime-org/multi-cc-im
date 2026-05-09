@@ -32,9 +32,6 @@ importers:
       '@multi-cc-im/cli-cc':
         specifier: workspace:*
         version: link:../../packages/cli-cc
-      '@multi-cc-im/im-wechat':
-        specifier: workspace:*
-        version: link:../../packages/im-wechat
       '@multi-cc-im/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -47,22 +44,10 @@ importers:
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
-      qrcode-terminal:
-        specifier: ^0.12.0
-        version: 0.12.0
-      silk-wasm:
-        specifier: ^3.7.1
-        version: 3.7.1
-      undici:
-        specifier: ^8.2.0
-        version: 8.2.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@types/qrcode-terminal':
-        specifier: ^0.12.2
-        version: 0.12.2
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.12)(tsx@4.21.0)(typescript@5.9.3)
@@ -96,41 +81,6 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
-
-  packages/im-wechat:
-    dependencies:
-      '@multi-cc-im/shared':
-        specifier: workspace:*
-        version: link:../shared
-      openclaw:
-        specifier: workspace:*
-        version: link:../openclaw
-      qrcode-terminal:
-        specifier: ^0.12.0
-        version: 0.12.0
-      silk-wasm:
-        specifier: ^3.7.1
-        version: 3.7.1
-      undici:
-        specifier: ^8.2.0
-        version: 8.2.0
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@types/qrcode-terminal':
-        specifier: ^0.12.2
-        version: 0.12.2
-
-  packages/openclaw:
-    dependencies:
-      proper-lockfile:
-        specifier: ^4.1.2
-        version: 4.1.2
-    devDependencies:
-      '@types/proper-lockfile':
-        specifier: ^4.1.4
-        version: 4.1.4
 
   packages/shared:
     dependencies:
@@ -635,15 +585,6 @@ packages:
   '@types/node@22.19.17':
     resolution: {integrity: sha512-wGdMcf+vPYM6jikpS/qhg6WiqSV/OhG+jeeHT/KlVqxYfD40iYJf9/AE1uQxVWFvU7MipKRkRv8NSHiCGgPr8Q==}
 
-  '@types/proper-lockfile@4.1.4':
-    resolution: {integrity: sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ==}
-
-  '@types/qrcode-terminal@0.12.2':
-    resolution: {integrity: sha512-v+RcIEJ+Uhd6ygSQ0u5YYY7ZM+la7GgPbs0V/7l/kFs2uO4S8BcIUEMoP7za4DNIqNnUD5npf0A/7kBhrCKG5Q==}
-
-  '@types/retry@0.12.5':
-    resolution: {integrity: sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw==}
-
   '@vitest/coverage-v8@2.1.9':
     resolution: {integrity: sha512-Z2cOr0ksM00MpEfyVE8KXIYPEcBFxdbLSs56L8PO0QQMxt/6bDj45uQfxoc96v05KW3clk7vvgP0qfDit9DmfQ==}
     peerDependencies:
@@ -996,10 +937,6 @@ packages:
   proper-lockfile@4.1.2:
     resolution: {integrity: sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA==}
 
-  qrcode-terminal@0.12.0:
-    resolution: {integrity: sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==}
-    hasBin: true
-
   readdirp@4.1.2:
     resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
     engines: {node: '>= 14.18.0'}
@@ -1042,10 +979,6 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
-
-  silk-wasm@3.7.1:
-    resolution: {integrity: sha512-mXPwLRtZxrYV3TZx41jMAeKc80wvmyrcXIcs8HctFxK15Ahz2OJQENYhNgEPeCEOdI6Mbx1NxQsqxzwc3DKerw==}
-    engines: {node: '>=16.11.0'}
 
   smol-toml@1.6.1:
     resolution: {integrity: sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg==}
@@ -1164,10 +1097,6 @@ packages:
 
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
-
-  undici@8.2.0:
-    resolution: {integrity: sha512-Z+4Hx9GE26Lh9Upwfnc8C7SsrpBPGaM/Gm6kMFtiG7c+5IvQKlXi/t+9x9DrrCh29cww5TSP9YdVaBcnLDs5fQ==}
-    engines: {node: '>=22.19.0'}
 
   vite-node@2.1.9:
     resolution: {integrity: sha512-AM9aQ/IPrW/6ENLQg3AGY4K1N2TGZdR5e4gu/MmmR2xR3Ll1+dib+nook92g4TV3PXVyeyxdWwtaCAiUL0hMxA==}
@@ -1528,14 +1457,6 @@ snapshots:
   '@types/node@22.19.17':
     dependencies:
       undici-types: 6.21.0
-
-  '@types/proper-lockfile@4.1.4':
-    dependencies:
-      '@types/retry': 0.12.5
-
-  '@types/qrcode-terminal@0.12.2': {}
-
-  '@types/retry@0.12.5': {}
 
   '@vitest/coverage-v8@2.1.9(vitest@2.1.9(@types/node@22.19.17))':
     dependencies:
@@ -1906,8 +1827,6 @@ snapshots:
       retry: 0.12.0
       signal-exit: 3.0.7
 
-  qrcode-terminal@0.12.0: {}
-
   readdirp@4.1.2: {}
 
   resolve-from@5.0.0: {}
@@ -1960,8 +1879,6 @@ snapshots:
   signal-exit@3.0.7: {}
 
   signal-exit@4.1.0: {}
-
-  silk-wasm@3.7.1: {}
 
   smol-toml@1.6.1: {}
 
@@ -2080,8 +1997,6 @@ snapshots:
   ufo@1.6.4: {}
 
   undici-types@6.21.0: {}
-
-  undici@8.2.0: {}
 
   vite-node@2.1.9(@types/node@22.19.17):
     dependencies:
