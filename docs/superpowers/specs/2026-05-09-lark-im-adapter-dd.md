@@ -1,9 +1,9 @@
 # DD: Lark / Feishu IM Adapter
 
 **Date**: 2026-05-09
-**Status**: 待用户决策（PENDING USER DECISION）
+**Status**: ✅ **LOCKED** (decisions accepted by user 2026-05-09; see §11 below)
 **Author**: multi-cc-im maintainer
-**Scope**: how to add a Lark/Feishu IM adapter (`packages/im-lark/`) alongside the existing `packages/im-wechat/`. **This DD only locks in the protocol layer + bot type + dependency strategy.** Implementation begins after user picks a candidate.
+**Scope**: how to add a Lark/Feishu IM adapter (`packages/im-lark/`) **and remove the existing `packages/im-wechat/`**. Implementation begins after this DD merges.
 
 ---
 
@@ -199,18 +199,13 @@ wechat currently supports text + image + file + voice (with `voice_text` extract
 
 When the user accepts (or amends and accepts) §8 decisions:
 
-1. Save the user's chosen § 8 values **into this DD** under a "Locked decisions" section.
-2. Update `CLAUDE.md` 状态总表 with a new row: `Lark/Feishu IM adapter | ✓ DD完成 | A1 + Feishu CN + 'lark' + MVP text+cards + caret`.
-3. Update `CLAUDE.md` 修订记录 with a v1.5 line.
-4. Open an implementation PR that creates `packages/im-lark/` per the locked decisions.
+1. Save the user's chosen § 8 values **into this DD** under a "Locked decisions" section. ← **Done in §11 below**
+2. Update `CLAUDE.md` 状态总表 with a new row: `Lark/Feishu IM adapter | ✓ DD完成 | A1 + Feishu CN + 'lark' + MVP text+cards + caret`. ← **Done in implementation PR**
+3. Update `CLAUDE.md` 修订记录 with a v1.5 line. ← **Done in implementation PR**
+4. Open an implementation PR that creates `packages/im-lark/` per the locked decisions. ← **Next step after this DD merges**
 
-Implementation milestones (not part of this DD):
-- M1. `packages/im-lark/src/credentials.ts` + `WeixinCredentials`-style schema for `lark.json`.
-- M2. `packages/im-lark/src/login.ts` — exchange `app_id` + `app_secret` for `tenant_access_token`, save to credential store.
-- M3. `packages/im-lark/src/adapter.ts` — `createLarkAdapter()` returning `IMAdapter`. Internally uses `client.ws.start()` for inbound + `client.im.message.create()` for outbound. Mirrors `packages/im-wechat/src/adapter.ts` shape.
-- M4. `packages/shared/src/adapter/im.ts` — confirm `LarkReplyContext` already exists; flesh it out per the new `app_id` + `chat_id` + `message_id` shape.
-- M5. orchestrator wiring in `apps/multi-cc-im/src/start.ts` + new CLI `multi-cc-im login lark` subcommand.
-- M6. Tests + docs (CLAUDE.md status table, README EN+CN, architecture.md).
+Implementation milestones (see §11.4 for the locked sequence — supersedes this earlier draft):
+- M1–M6 originally drafted assuming wechat coexistence; superseded by the **wechat purge + lark MVP** plan in §11.4.
 
 ---
 
@@ -222,3 +217,70 @@ Implementation milestones (not part of this DD):
 - [Lark/Feishu official Node SDK](https://github.com/larksuite/node-sdk)
 - [Feishu event subscription docs (CN)](https://open.feishu.cn/document/server-docs/event-subscription-guide/overview)
 - [Feishu im-v1 message create](https://open.feishu.cn/document/server-docs/im-v1/message/create)
+
+---
+
+## 11. Locked decisions (accepted 2026-05-09)
+
+User accepted recommendations on §8.2 / §8.3 / §8.4 / §8.5 verbatim. §8.1 was decided as **replace** (not coexist). Additional clean-up rules were added when the user pointed out that "remove wechat" must purge wechat-specific naming throughout the codebase, not just the adapter package.
+
+### 11.1 Five §8 decisions
+
+| # | Topic | Locked value |
+|---|---|---|
+| §8.1 | wechat coexistence | **Replace** — fully remove `packages/im-wechat/` and all wechat-specific naming from the codebase. wechat path's instability across `undici` upgrades made coexistence not worth the maintenance burden. |
+| §8.2 | imType naming | **`'lark'`** — matches SDK package name + `IMReplyContext` already-reserved variant |
+| §8.3 | Tenant scope | **v1 = Feishu CN only** — Lark international support deferred until WSClient exposure on intl Developer Console can be smoke-tested with a real account |
+| §8.4 | MVP message types | **text + interactive cards** — text covers `@<tab>` routing + cc replies + daemon `/<cmd>`; interactive cards replace wechat's `@<tab> /1 /2` flow with allow/deny buttons (better UX). Image / file / voice deferred to v2. |
+| §8.5 | Dependency pin | **`^1.63.1`** — matches workspace caret convention; CI smoke catches breaking changes early |
+
+### 11.2 Wechat purge scope (full codebase removal — added 2026-05-09 after user clarification)
+
+| Target | Action |
+|---|---|
+| `packages/im-wechat/` (the entire package incl. vendor `lib/ilink/`, credentials schema, adapter, login, all tests) | **delete** |
+| `~/.multi-cc-im/credentials/wechat.json` (user disk) | **do NOT touch user's existing file** — codebase removes all `credentialFor('wechat')` references; new deployments stop generating it; user can `rm` manually |
+| `~/.multi-cc-im/inbox/wechat/<sid>/` (user disk) | same — codebase loses all references; user can `rm -rf` manually |
+| `~/.multi-cc-im/state/wechat-cursor` (user disk) | same |
+| `IMReplyContext` discriminated union in `packages/shared/src/adapter/im.ts` | **delete `'wechat'` variant + `WechatReplyContext` type**. Keep `'lark'` (now active) + the placeholder `'telegram'` / etc. for future adapters. |
+| All wechat-related imports across `shared`, `bridge`, `cli-cc`, `apps/multi-cc-im` | **grep + remove**; orchestrator stops spawning wechat adapter |
+| CLI subcommand | rename `multi-cc-im login wechat` → `multi-cc-im login lark` |
+| Docs describing **current** behavior (CLAUDE.md core rules / status table / README EN+CN operational sections / architecture.md current-state passages) | **rewrite** to lark |
+| Docs describing **history** (CLAUDE.md 修订记录 v1.0 → v1.4 lines, prior wechat-era DD reports under `docs/superpowers/specs/`, VENDOR.md content for the now-removed `lib/ilink/` ← VENDOR.md itself goes with the package) | **preserve as project history** — do not rewrite |
+
+### 11.3 Future inbox path convention (architectural decision; v1 lark MVP doesn't use it)
+
+When v2 lark adapter ships image / file / voice support, decrypted inbound media will land in:
+
+```
+~/.multi-cc-im/inbox/<imType>/<sid>/<filename>
+```
+
+Concretely: `~/.multi-cc-im/inbox/lark/<sid>/<filename>` for lark, `~/.multi-cc-im/inbox/telegram/<sid>/<filename>` if/when telegram adapter is added. This per-`imType` subdirectory pattern mirrors:
+
+- `~/.multi-cc-im/credentials/<imType>.json`
+- `IMReplyContext` discriminated union by `imType`
+
+so all per-IM data segregates symmetrically. v1 lark MVP doesn't receive media, so this directory is a documented contract — implementation starts in v2.
+
+### 11.4 Implementation milestones (supersedes draft in §9)
+
+After this DD merges, the implementation PR(s) deliver:
+
+- **M1. Wechat purge** — delete `packages/im-wechat/`, drop `'wechat'` variant from `IMReplyContext`, grep + remove all wechat references from `shared` / `bridge` / `cli-cc` / `apps/multi-cc-im` / docs (current-behavior sections only). Verify with `pnpm typecheck` + `pnpm test` + cmp dotfile + `git grep -i wechat` returning only history-preservation hits. **Single PR**, isolated from M2+.
+- **M2. `packages/im-lark/`** new package — credentials schema + `LarkCredentials` (`{ appId, appSecret, savedAt }`) + login flow that calls `client.im.v1.message.create` test ping after acquiring `tenant_access_token`.
+- **M3. `createLarkAdapter()`** — implements `IMAdapter`. Uses `lark.WSClient` for inbound (`im.message.receive_v1` events) + `lark.Client.im.v1.message.create` for outbound. Health-probed dispatcher pattern not needed — official SDK handles connection management internally.
+- **M4. `IMReplyContext` 'lark' variant** — confirm shape: `{ imType: 'lark', chatId, messageId, tenantKey?, openId }` (final fields TBD by SDK event payload).
+- **M5. Interactive card rendering** for tool-permission flow — replace `@<tab> /1 /2` with cc-tool-decision card that has [允许] [拒绝] buttons. Daemon listens for card-action callbacks (note: this requires webhook listener — Feishu cards do NOT come over WSClient per official docs; need to investigate at M5 start whether to defer this or add an embedded HTTP server).
+- **M6. CLI** — `multi-cc-im login lark` (replaces `login wechat`).
+- **M7. Daemon orchestration** — `apps/multi-cc-im/src/start.ts` wires `createLarkAdapter` (replaces `createWeixinAdapter`).
+- **M8. Tests + docs** — CLAUDE.md status row v1.5, README EN+CN rewrite, architecture.md update, VENDOR.md goes with the deleted package.
+
+### 11.5 Open question to resolve at M5 start
+
+Interactive cards in Feishu deliver button-click callbacks via **webhook only**, not via WSClient (per Feishu official docs §"Configure event subscription method"). For our no-public-IP daemon, this means:
+
+- Either embed a small HTTP server in the daemon listening on `localhost:<port>` and use a service like Cloudflare Tunnel for inbound public URL (violates local-first principle).
+- Or fall back to text commands `@<tab> /1 /2` for the v1 lark adapter, defer interactive cards to v2.
+
+**Decision deferred to M5 implementation start** — needs a small smoke test against a real Feishu app to confirm the docs are accurate before deciding. If cards require public webhook, v1 ships with text-command auth and §8.4's "interactive cards" recommendation degrades to "text-only with same `@<tab> /1 /2` flow as wechat had". DD remains accepted as-is; M5 is the only locked-decision risk.
