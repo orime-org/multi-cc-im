@@ -298,7 +298,8 @@ cc 适配器（`packages/cli-cc/`）耦合到 cc 特有的 hook（`PreToolUse` /
 
 | 文档 | 用途 |
 |---|---|
-| [`CLAUDE.md`](CLAUDE.md) | 项目规则 + 禁止清单（先读这个）|
+| [`CLAUDE.md`](CLAUDE.md) | AI 干活纪律（找根因 / DD 流程 / 编码行为准则 / 通用工程规范）|
+| [`docs/conventions.md`](docs/conventions.md) | 项目特定技术规范（状态总表、hook timeout / send-text 两步法 / 路由 key / 项目特定禁令）|
 | [`docs/architecture.md`](docs/architecture.md) | 架构图、state schema、文件 IPC |
 | [`docs/dev.md`](docs/dev.md) | 开发命令 + TDD 节奏 + 调试技巧 |
 | [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD 报告（每条锁定决策一份）|

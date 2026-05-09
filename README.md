@@ -299,7 +299,8 @@ Any change that affects the security model, long-term maintenance, cross-package
 
 | Document | Use when |
 |---|---|
-| [`CLAUDE.md`](CLAUDE.md) | Project-wide rules + prohibitions (read first) |
+| [`CLAUDE.md`](CLAUDE.md) | AI working discipline (root-cause / DD flow / coding-behavior / general engineering rules) |
+| [`docs/conventions.md`](docs/conventions.md) | Project-specific tech conventions (status table, hook timeout / send-text two-step / routing keys / project-specific prohibitions) |
 | [`docs/architecture.md`](docs/architecture.md) | Architecture diagram, state schema, file IPC |
 | [`docs/dev.md`](docs/dev.md) | Dev commands + TDD rhythm + debugging tips |
 | [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD reports (one per locked decision) |
