@@ -295,3 +295,77 @@ describe("apiPostFetch transient retry (PR-F: ECONNRESET / undici socket errors)
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
+
+// ============================================================================
+// Forbidden request headers (per fetch spec). undici 8 / Node 22 native fetch
+// strictly reject any user-set Content-Length / Host / Connection / etc.
+// (`UND_ERR_INVALID_ARG: invalid content-length header`). Vendor upstream
+// (Tencent OpenClaw v2.1.7) historically set Content-Length manually — this
+// regressed under Node 22 and broke long-poll outright. See VENDOR.md
+// "Downstream patches".
+// ============================================================================
+
+describe("buildHeaders — forbidden request headers", () => {
+  function getOutgoingHeaders(): Record<string, string> {
+    expect(mockFetch).toHaveBeenCalled();
+    const [, opts] = mockFetch.mock.calls[0]!;
+    return (opts as { headers: Record<string, string> }).headers;
+  }
+
+  it("getUpdates POST: outgoing headers MUST NOT contain Content-Length", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ ret: 0, msgs: [] }));
+    await getUpdates({
+      baseUrl: "https://api.example.com",
+      get_updates_buf: "buf",
+      token: "tok",
+    });
+    const headers = getOutgoingHeaders();
+    expect(headers["Content-Length"]).toBeUndefined();
+    expect(headers["content-length"]).toBeUndefined();
+  });
+
+  it("sendMessage POST: outgoing headers MUST NOT contain Content-Length", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await sendMessage({
+      baseUrl: "https://api.example.com/",
+      body: { msg: { content: "hi" } },
+    });
+    const headers = getOutgoingHeaders();
+    expect(headers["Content-Length"]).toBeUndefined();
+    expect(headers["content-length"]).toBeUndefined();
+  });
+
+  it("getConfig POST: outgoing headers MUST NOT contain Content-Length", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({ ret: 0, typing_ticket: "t", reply_ticket_v2: "r" }),
+    );
+    await getConfig({
+      baseUrl: "https://api.example.com/",
+      ilinkUserId: "uid",
+    });
+    const headers = getOutgoingHeaders();
+    expect(headers["Content-Length"]).toBeUndefined();
+    expect(headers["content-length"]).toBeUndefined();
+  });
+
+  it("sendTyping POST: outgoing headers MUST NOT contain Content-Length", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await sendTyping({
+      baseUrl: "https://api.example.com/",
+      body: { typing_ticket: "t", to_user_id: "u", typing: true },
+    });
+    const headers = getOutgoingHeaders();
+    expect(headers["Content-Length"]).toBeUndefined();
+    expect(headers["content-length"]).toBeUndefined();
+  });
+
+  it("Content-Type still set to application/json (fetch-allowed header)", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ ret: 0 }));
+    await sendMessage({
+      baseUrl: "https://api.example.com/",
+      body: { msg: { content: "hi" } },
+    });
+    const headers = getOutgoingHeaders();
+    expect(headers["Content-Type"]).toBe("application/json");
+  });
+});

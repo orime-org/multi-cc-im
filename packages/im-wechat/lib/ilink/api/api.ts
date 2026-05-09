@@ -114,13 +114,18 @@ function buildCommonHeaders(): Record<string, string> {
 }
 
 function buildHeaders(opts: { token?: string; body: string }): Record<string, string> {
+  // Downstream patch (vs Tencent OpenClaw v2.1.7): do NOT set `Content-Length`
+  // here. Per fetch spec it's a forbidden request header that the user agent
+  // computes itself. Node 22 / undici 8 strictly enforce this and reject the
+  // request with `UND_ERR_INVALID_ARG: invalid content-length header` —
+  // upstream regressed silently under newer Node. See VENDOR.md.
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     AuthorizationType: "ilink_bot_token",
-    "Content-Length": String(Buffer.byteLength(opts.body, "utf-8")),
     "X-WECHAT-UIN": randomWechatUin(),
     ...buildCommonHeaders(),
   };
+  void opts.body; // body is still consumed by fetch — argument retained for callsite parity
   if (opts.token?.trim()) {
     headers.Authorization = `Bearer ${opts.token.trim()}`;
   }
