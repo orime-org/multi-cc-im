@@ -15,17 +15,28 @@ describe('runStartCommand — pre-flight failures', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  // The "credentials/wechat.json missing → exit 1" test was retired in
-  // M1 (DD #86 §11.2): start.ts no longer checks IM credentials in this
-  // transitional phase. M2 lark adapter will reintroduce a parallel test
-  // for `credentials/lark.json` missing.
+  it('credentials/lark.json missing → exit 1 with "login lark first" hint', async () => {
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      skipSetupHooks: true,
+      root,
+      // No wezterm setup — but credential check fires first per start.ts order.
+      resolveWezTerm: async () => '/nonexistent/wezterm',
+      log: (l) => lines.push(l),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/lark credentials not found/i);
+    expect(result.stderr).toMatch(/login lark/i);
+    // Banner header logged before credential check failed
+    expect(lines.some((l) => l.includes('multi-cc-im start'))).toBe(true);
+  });
 
   it('wezterm not findable → exit 1 with install hint', async () => {
     // Write valid credentials so the credential check passes
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
@@ -45,7 +56,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
@@ -71,7 +82,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
@@ -87,8 +98,7 @@ describe('runStartCommand — pre-flight failures', () => {
 
     const joined = lines.join('\n');
     expect(joined).toContain(`multi-cc-im start (root: ${root})`);
-    // M1 transitional: no IM credentials check yet (DD #86 §11.2). M2 lark
-    // adapter will reintroduce a `✓ lark credentials at` line.
+    expect(joined).toContain(`✓ lark credentials at`);
     expect(joined).toContain(`✓ wezterm at /usr/local/bin/wezterm`);
     // Per DD #61, runStartCommand no longer creates a SessionRegistry — bridge
     // queries `termAdapter.listPanes()` on each IM event. Pre-flight logs the
@@ -106,7 +116,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
 
@@ -136,7 +146,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
@@ -167,7 +177,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
@@ -198,7 +208,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     await mkdir(join(root, 'state'), { recursive: true });
@@ -226,7 +236,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
     const stateDir = join(root, 'state');
@@ -272,7 +282,7 @@ describe('runStartCommand — auto setup-hooks', () => {
     await mkdir(join(root, 'credentials'), { recursive: true });
     await writeFile(
       join(root, 'credentials', 'lark.json'),
-      JSON.stringify({ token: 'tok-abc' }),
+      JSON.stringify({ appId: 'cli_test', appSecret: 'secret_test', savedAt: '2026-05-09T12:00:00.000Z' }),
     );
     await chmod(join(root, 'credentials', 'lark.json'), 0o600);
   });
@@ -331,5 +341,63 @@ describe('runStartCommand — auto setup-hooks', () => {
     expect(result.stderr).toContain('permission denied');
     // Adapter wiring never happened
     expect(startSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Default-orchestrator branch: when callers DON'T pass `buildOrchestrator`,
+// `runStartCommand` constructs a real orchestrator using `createLarkAdapter`
+// + `createWezTermAdapter` + `createCcCliAdapter`. Tests inject `buildLarkAdapter`
+// so we can verify the lark adapter is wired through without spawning
+// `lark.WSClient` (which would dial open.feishu.cn).
+// ============================================================================
+
+describe('runStartCommand — default orchestrator branch wires createLarkAdapter', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'start-default-'));
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'lark.json'),
+      JSON.stringify({
+        appId: 'cli_test',
+        appSecret: 'secret_test',
+        savedAt: '2026-05-09T12:00:00.000Z',
+      }),
+    );
+    await chmod(join(root, 'credentials', 'lark.json'), 0o600);
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('without buildOrchestrator → real orchestrator constructed; buildLarkAdapter receives credentialStore + log', async () => {
+    const buildLarkAdapter = vi.fn((opts: { log?: (line: string) => void }) => {
+      // Stub adapter that doesn't touch the network. The real one would dial
+      // open.feishu.cn at .start() time.
+      void opts;
+      return {
+        name: 'lark',
+        async start() {},
+        async send() {},
+        async stop() {},
+      };
+    });
+    const result = await runStartCommand({
+      skipSetupHooks: true,
+      root,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildLarkAdapter,
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(buildLarkAdapter).toHaveBeenCalledOnce();
+    // Argument shape sanity: receives a credentialStore + log
+    const passed = buildLarkAdapter.mock.calls[0]![0];
+    expect(passed).toHaveProperty('credentialStore');
+    expect(passed).toHaveProperty('log');
+    await result.shutdown!();
   });
 });
