@@ -8,6 +8,8 @@
 
 **解决完毕，再次问自己：这次的修改是不是真的解决了根本问题？** 还是只是把症状从一个地方搬到了另一个地方 / 把问题往后拖了一步 / 让自己看起来像解决了？答不上来或者答案是后者，停下先跟用户沟通。
 
+**每次完成任务后必须进行所有的必要测试并且必须更新所有相关文档。** 测试 = `pnpm typecheck` + `pnpm test` + 改动了 CLI / 影响 bundle 时还要 `pnpm --filter multi-cc-im build` + 改动会影响用户 dotfile 时跑前后 `cmp ~/.claude/settings.json` 验证未变（[memory: feedback_user_dotfile_backup](.claude/projects/.../memory/feedback_user_dotfile_backup.md)）。文档 = `CLAUDE.md` 状态总表 / 修订记录 + `docs/architecture.md` 受影响节 + `README.md` & `README.zh-CN.md` 操作章节 + `VENDOR.md` 若改 vendor 区域 + 相关 DD 报告。漏一项 = 任务未完成，**不能** 报"done"。
+
 # 项目简介
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
