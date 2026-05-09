@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Dispatcher } from "undici";
 
 import { formatErrorWithCause } from "@multi-cc-im/shared";
 import { apiGetFetch } from "../api/api.js";
@@ -59,17 +60,26 @@ function purgeExpiredLogins(): void {
   }
 }
 
-async function fetchQRCode(apiBaseUrl: string, botType: string): Promise<QRCodeResponse> {
+async function fetchQRCode(
+  apiBaseUrl: string,
+  botType: string,
+  dispatcher?: Dispatcher,
+): Promise<QRCodeResponse> {
   logger.info(`Fetching QR code from: ${apiBaseUrl} bot_type=${botType}`);
   const rawText = await apiGetFetch({
     baseUrl: apiBaseUrl,
     endpoint: `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(botType)}`,
     label: "fetchQRCode",
+    ...(dispatcher ? { dispatcher } : {}),
   });
   return JSON.parse(rawText) as QRCodeResponse;
 }
 
-async function pollQRStatus(apiBaseUrl: string, qrcode: string): Promise<StatusResponse> {
+async function pollQRStatus(
+  apiBaseUrl: string,
+  qrcode: string,
+  dispatcher?: Dispatcher,
+): Promise<StatusResponse> {
   logger.debug(`Long-poll QR status from: ${apiBaseUrl} qrcode=***`);
   try {
     const rawText = await apiGetFetch({
@@ -77,6 +87,7 @@ async function pollQRStatus(apiBaseUrl: string, qrcode: string): Promise<StatusR
       endpoint: `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
       timeoutMs: QR_LONG_POLL_TIMEOUT_MS,
       label: "pollQRStatus",
+      ...(dispatcher ? { dispatcher } : {}),
     });
     logger.debug(`pollQRStatus: body=${rawText.substring(0, 200)}`);
     return JSON.parse(rawText) as StatusResponse;
@@ -114,6 +125,7 @@ export async function startWeixinLoginWithQr(opts: {
   accountId?: string;
   apiBaseUrl: string;
   botType?: string;
+  dispatcher?: Dispatcher;
 }): Promise<WeixinQrStartResult> {
   const sessionKey = opts.accountId || randomUUID();
 
@@ -132,7 +144,7 @@ export async function startWeixinLoginWithQr(opts: {
     const botType = opts.botType || DEFAULT_ILINK_BOT_TYPE;
     logger.info(`Starting Weixin login with bot_type=${botType}`);
 
-    const qrResponse = await fetchQRCode(FIXED_BASE_URL, botType);
+    const qrResponse = await fetchQRCode(FIXED_BASE_URL, botType, opts.dispatcher);
     logger.info(
       `QR code received, qrcode=${redactToken(qrResponse.qrcode)} imgContentLen=${qrResponse.qrcode_img_content?.length ?? 0}`,
     );
@@ -170,6 +182,7 @@ export async function waitForWeixinLogin(opts: {
   sessionKey: string;
   apiBaseUrl: string;
   botType?: string;
+  dispatcher?: Dispatcher;
 }): Promise<WeixinQrWaitResult> {
   let activeLogin = activeLogins.get(opts.sessionKey);
 
@@ -203,7 +216,7 @@ export async function waitForWeixinLogin(opts: {
   while (Date.now() < deadline) {
     try {
       const currentBaseUrl = activeLogin.currentApiBaseUrl ?? FIXED_BASE_URL;
-      const statusResponse = await pollQRStatus(currentBaseUrl, activeLogin.qrcode);
+      const statusResponse = await pollQRStatus(currentBaseUrl, activeLogin.qrcode, opts.dispatcher);
       logger.debug(`pollQRStatus: status=${statusResponse.status} hasBotToken=${Boolean(statusResponse.bot_token)} hasBotId=${Boolean(statusResponse.ilink_bot_id)}`);
       activeLogin.status = statusResponse.status;
 
@@ -239,7 +252,7 @@ export async function waitForWeixinLogin(opts: {
 
           try {
             const botType = opts.botType || DEFAULT_ILINK_BOT_TYPE;
-            const qrResponse = await fetchQRCode(FIXED_BASE_URL, botType);
+            const qrResponse = await fetchQRCode(FIXED_BASE_URL, botType, opts.dispatcher);
             activeLogin.qrcode = qrResponse.qrcode;
             activeLogin.qrcodeUrl = qrResponse.qrcode_img_content;
             activeLogin.startedAt = Date.now();
