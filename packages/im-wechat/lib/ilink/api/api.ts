@@ -2,7 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Dispatcher } from "undici";
+import { fetch, type Dispatcher } from "undici";
+
+// Downstream patch (vs Tencent OpenClaw v2.1.7): use undici's own `fetch`
+// instead of Node's globalThis.fetch. Node bundles a (potentially older)
+// undici internally; passing a Dispatcher built from `undici@8` to that
+// internal fetch fails with `UND_ERR_INVALID_ARG: invalid onRequestStart
+// method` because v8 Agent handlers implement the v8 controller-based
+// dispatch protocol that older internal versions don't recognize. Importing
+// `fetch` from the same `undici` package as `Agent` keeps both sides on the
+// same protocol version. See VENDOR.md.
 
 import { loadConfigRouteTag } from "../auth/accounts.js";
 import { logger } from "../util/logger.js";
@@ -166,7 +175,7 @@ export async function apiGetFetch(params: {
       headers: hdrs,
       ...(controller ? { signal: controller.signal } : {}),
       ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
-    } as RequestInit & { dispatcher?: Dispatcher });
+    });
     if (t !== undefined) clearTimeout(t);
     const rawText = await res.text();
     logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
@@ -270,7 +279,7 @@ async function apiPostFetch(params: {
         body: params.body,
         signal: controller.signal,
         ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
-      } as RequestInit & { dispatcher?: Dispatcher });
+      });
       clearTimeout(t);
       const rawText = await res.text();
       logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);

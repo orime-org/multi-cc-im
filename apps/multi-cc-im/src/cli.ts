@@ -8,16 +8,17 @@ import qrcodeTerminal from 'qrcode-terminal';
 import { runCleanupCommand } from './cleanup.js';
 import { runHookCommand } from './hook.js';
 import { runLoginWechatCommand } from './login.js';
-import { runSetupHooksCommand } from './setup-hooks.js';
 import { runStartCommand } from './start.js';
 
 const HELP_TEXT = `multi-cc-im — wechat ↔ Claude Code TUI bridge
 
 Usage:
-  multi-cc-im start                — start the bridge daemon (long-running)
+  multi-cc-im start                — start the bridge daemon (long-running);
+                                     auto-registers cc hooks in
+                                     ~/.claude/settings.json on first run
+                                     (idempotent merge, preserves other
+                                     tools' hooks)
   multi-cc-im login wechat         — scan QR + save bot_token to credentials
-  multi-cc-im setup-hooks          — register multi-cc-im in ~/.claude/settings.json
-                                     (idempotent merge, preserves other tools' hooks)
   multi-cc-im cleanup [--dry-run]  — manually sweep ~/.multi-cc-im/state/
                                      (paired SessionStart+SessionEnd, orphan Stop
                                      files, legacy state files). Same as the
@@ -60,8 +61,6 @@ async function main(): Promise<number> {
       return await dispatchHook(rest);
     case 'login':
       return await dispatchLogin(rest);
-    case 'setup-hooks':
-      return await dispatchSetupHooks();
     case 'cleanup':
       return await dispatchCleanup(rest);
     case 'start':
@@ -72,12 +71,6 @@ async function main(): Promise<number> {
       );
       return 2;
   }
-}
-
-async function dispatchSetupHooks(): Promise<number> {
-  const result = await runSetupHooksCommand();
-  if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
-  return result.exitCode;
 }
 
 async function dispatchCleanup(args: string[]): Promise<number> {

@@ -30,6 +30,7 @@ import {
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
 import { resolveAppPaths } from './config-paths.js';
+import { runSetupHooksCommand } from './setup-hooks.js';
 import { sweepStaleStateFiles } from './state-sweep.js';
 
 export interface RunStartCommandOpts {
@@ -46,6 +47,24 @@ export interface RunStartCommandOpts {
    * lifecycle / IM long-poll.
    */
   buildOrchestrator?: () => BridgeOrchestrator;
+  /**
+   * Skip the auto-`setup-hooks` step at the top of `start`. Default `false`:
+   * `runStartCommand` runs `runSetupHooksCommand` first so users don't have
+   * to remember a separate command — it's idempotent (no-op when already
+   * up-to-date). Tests set this to `true` to keep their fake state dir from
+   * touching `~/.claude/settings.json`.
+   */
+  skipSetupHooks?: boolean;
+  /**
+   * Override the auto-setup-hooks function. Default: real
+   * `runSetupHooksCommand`. Tests inject a spy to assert the call without
+   * actually rewriting `~/.claude/settings.json`. Ignored when
+   * `skipSetupHooks=true`.
+   */
+  setupHooks?: (opts: { log: (line: string) => void }) => Promise<{
+    exitCode: number;
+    stderr: string;
+  }>;
   /**
    * Logger for pre-flight banner + ready / error lines. Default writes to
    * `process.stderr` (CLAUDE.md "multi-cc-im hook must not write non-protocol
@@ -99,6 +118,24 @@ export async function runStartCommand(
   const log = opts.log ?? defaultLog;
 
   log(`multi-cc-im start (root: ${paths.root})`);
+
+  // ===== 0. Auto-register cc hooks =====
+  // Idempotent — same as `multi-cc-im setup-hooks`. Run unconditionally so
+  // users don't have to remember a separate setup step; if hooks are already
+  // up-to-date this is a no-op (no .bak file, no log noise beyond the
+  // "already up-to-date" line).
+  if (!opts.skipSetupHooks) {
+    const setupFn = opts.setupHooks ?? runSetupHooksCommand;
+    const setupResult = await setupFn({ log });
+    if (setupResult.exitCode !== 0) {
+      return {
+        exitCode: 1,
+        stderr:
+          `multi-cc-im start: setup-hooks failed — cannot proceed.\n` +
+          setupResult.stderr,
+      };
+    }
+  }
 
   // ===== 1. Pre-flight: credentials =====
   const credentialPath = paths.credentialFor('wechat');

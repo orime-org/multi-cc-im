@@ -18,6 +18,7 @@ describe('runStartCommand — pre-flight failures', () => {
   it('credentials/wechat.json missing → exit 1 with "login wechat first" hint', async () => {
     const lines: string[] = [];
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       // No wezterm setup — but credential check fires first per start.ts order.
       resolveWezTerm: async () => '/nonexistent/wezterm',
@@ -39,6 +40,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => {
         throw new Error('wezterm CLI not found. Install via: brew install --cask wezterm');
@@ -62,6 +64,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const startSpy = vi.fn(async () => {});
     const stopSpy = vi.fn(async () => {});
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: startSpy, stop: stopSpy }),
@@ -84,6 +87,7 @@ describe('runStartCommand — pre-flight failures', () => {
 
     const lines: string[] = [];
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -116,6 +120,7 @@ describe('runStartCommand — pre-flight failures', () => {
     await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -155,6 +160,7 @@ describe('runStartCommand — pre-flight failures', () => {
     });
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -182,6 +188,7 @@ describe('runStartCommand — pre-flight failures', () => {
     });
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -212,6 +219,7 @@ describe('runStartCommand — pre-flight failures', () => {
     });
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -243,6 +251,7 @@ describe('runStartCommand — pre-flight failures', () => {
     expect(await existsIMOriginFile(stateDir)).toBe(true);
 
     const result = await runStartCommand({
+      skipSetupHooks: true,
       root,
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
@@ -253,5 +262,83 @@ describe('runStartCommand — pre-flight failures', () => {
     // the iLink server already invalidated.
     expect(await existsIMOriginFile(stateDir)).toBe(false);
     await result.shutdown!();
+  });
+});
+
+// ============================================================================
+// Auto-setup-hooks integration: `start` runs setup-hooks unconditionally
+// (idempotent) so users don't have to remember a separate command.
+// Tests inject a stub `setupHooks` so the assertion is on the *call*, not
+// on `~/.claude/settings.json` mutations (a real run would mutate the
+// developer's home dir — see `feedback_user_dotfile_backup` memory).
+// ============================================================================
+
+describe('runStartCommand — auto setup-hooks', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'start-setup-hooks-'));
+    await mkdir(join(root, 'credentials'), { recursive: true });
+    await writeFile(
+      join(root, 'credentials', 'wechat.json'),
+      JSON.stringify({ token: 'tok-abc' }),
+    );
+    await chmod(join(root, 'credentials', 'wechat.json'), 0o600);
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('default behavior: setupHooks is invoked before adapter wiring', async () => {
+    const setupSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const startSpy = vi.fn(async () => {});
+    const result = await runStartCommand({
+      root,
+      setupHooks: setupSpy,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: startSpy, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(setupSpy).toHaveBeenCalledOnce();
+    // Must run BEFORE orchestrator.start (or at minimum before the spy resolves)
+    expect(startSpy).toHaveBeenCalled();
+    await result.shutdown!();
+  });
+
+  it('skipSetupHooks=true: setupHooks NOT invoked', async () => {
+    const setupSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const result = await runStartCommand({
+      skipSetupHooks: true,
+      root,
+      setupHooks: setupSpy,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(setupSpy).not.toHaveBeenCalled();
+    await result.shutdown!();
+  });
+
+  it('setupHooks returns non-zero → start aborts with exit 1 + stderr surfacing', async () => {
+    const setupSpy = vi.fn(async () => ({
+      exitCode: 1,
+      stderr: 'permission denied writing settings.json',
+    }));
+    const startSpy = vi.fn(async () => {});
+    const result = await runStartCommand({
+      root,
+      setupHooks: setupSpy,
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: startSpy, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/setup-hooks failed/);
+    expect(result.stderr).toContain('permission denied');
+    // Adapter wiring never happened
+    expect(startSpy).not.toHaveBeenCalled();
   });
 });

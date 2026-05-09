@@ -10,9 +10,20 @@ vi.mock("../util/logger.js", () => ({
   },
 }));
 
-// Mock fetch globally
-const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
+// Mock undici's fetch (api.ts uses `import { fetch } from 'undici'` so it
+// can stay on the same dispatcher-protocol version as the Agent it builds —
+// see api.ts header comment + VENDOR.md). Partial mock: override `fetch`,
+// pass everything else through (Agent / Dispatcher are still real exports
+// for the dispatcher.ts callers that share this module instance).
+//
+// `vi.hoisted` is required because `vi.mock` factories are hoisted above
+// non-hoisted top-level code; without it `mockFetch` is in TDZ when the
+// factory runs.
+const { mockFetch } = vi.hoisted(() => ({ mockFetch: vi.fn() }));
+vi.mock("undici", async (importActual) => {
+  const actual = await importActual<typeof import("undici")>();
+  return { ...actual, fetch: mockFetch };
+});
 
 // Mock crypto for deterministic headers
 vi.mock("node:crypto", () => ({
