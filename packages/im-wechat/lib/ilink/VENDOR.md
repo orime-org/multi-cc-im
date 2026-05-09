@@ -50,8 +50,9 @@ To remove the OpenClaw plugin framework runtime dependency and to satisfy multi-
 3. **The `monitor/` subdirectory is not vendored** (the DD locked in a rewrite to an EventEmitter pattern → `packages/im-wechat/src/monitor.ts`).
 4. **`auth/account-index.test.ts` / `auth/account-store.test.ts` deleted** (they test upstream's multi-tenant store, which is replaced by an owner-only single-account implementation → `src/accounts.ts`).
 5. **`auth/pairing.test.ts` mock path adjusted (1 line)**: `vi.mock("openclaw/plugin-sdk", …)` → `vi.mock("openclaw/plugin-sdk/infra-runtime", …)` to match the subpath that `pairing.ts` actually imports (the upstream test could intercept via the barrel re-export from the npm `openclaw` package; our shim is a standalone module and needs the exact subpath).
+6. **`api/api.ts` — drop manually-set `Content-Length` request header**: upstream `buildHeaders` sets `Content-Length: <byteLength>` on every POST. Per the fetch spec it's a forbidden request header that the user agent must compute itself; Node 22 / undici 8 strictly enforce this and reject the request with `UND_ERR_INVALID_ARG: invalid content-length header`. Symptom: `getUpdates` long-poll fails on every iteration, daemon log shows `fetch failed (cause: invalid content-length header [code=UND_ERR_INVALID_ARG])`, IM never receives any reply. Fix: remove the line from `buildHeaders`; `fetch` automatically sets a correct `Content-Length` for string bodies. Tests `buildHeaders — forbidden request headers` (api.test.ts) codify the contract per call site (getUpdates / sendMessage / getConfig / sendTyping).
 
-For the full diff, see `git log packages/im-wechat/lib/ilink/`. When syncing, if upstream changes any of these 5 patch points, those changes need to be merged manually so we keep the strict-TS shape.
+For the full diff, see `git log packages/im-wechat/lib/ilink/`. When syncing, if upstream changes any of these 6 patch points, those changes need to be merged manually so we keep the strict-TS shape and Node-22 fetch compatibility.
 
 ## Sync workflow
 
