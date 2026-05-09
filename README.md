@@ -164,8 +164,8 @@ Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.
 | `@multi-cc-im /list` | List alive cc sessions (tab title + pane id). The bot echoes; nothing dispatched to any cc |
 | `@multi-cc-im /help` | Built-in help text |
 | `@multi-cc-im /current` | Show `current_session` + IMWork status |
-| `@multi-cc-im /start` | **Enable IM mode** (cc replies + tool prompts both forward to WeChat) |
-| `@multi-cc-im /start auto` | **Enable IM mode + auto-approve** — cc tool calls auto-pass without IM round-trip ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)) |
+| `@multi-cc-im /start` | **Enable IM mode** (cc replies forward to WeChat) **+ auto-approve** (default since v1.7 — cc tool calls auto-pass without IM round-trip). Use `/start off` to opt into ask mode |
+| `@multi-cc-im /start off` | **Enable IM mode + ask** — cc tool calls forward to WeChat, you reply `/1` allow / `/2` deny within 10s |
 | `@multi-cc-im /stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
@@ -177,8 +177,8 @@ Before dispatching to cc, the bot sends a visible echo to WeChat for every route
 Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
 
 ```
-@multi-cc-im /start         →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
-@multi-cc-im /start auto    →  IM mode ON, auto-approve (cc tool calls auto-pass, no IM round-trip)
+@multi-cc-im /start         →  IM mode ON, auto-approve (DEFAULT since v1.7 — cc tool calls auto-pass, no IM round-trip)
+@multi-cc-im /start off     →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
 @multi-cc-im /stop          →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
 @multi-cc-im /current       →  show current target + IMWork status (incl. auto-approve flag)
 ```
@@ -186,7 +186,7 @@ Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.m
 - **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote. Auto-approve mode also resets — restart = safe default.
 - When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 @multi-cc-im /start 开启 IM 模式"`. Bridge commands and permission responses still work.
 - When **ON**, the `/start` echo lists currently alive cc sessions and the rules.
-- `/start auto` is for tool-dense workflows (e.g. "analyze this repo") where every PreToolUse round-trip would burn your thumb on `/1`. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). Switch back with `/start` (no `auto`).
+- **v1.7 inverted the default**: bare `/start` now turns auto-approve ON because tool-dense workflows (e.g. "analyze this repo" → cc fires 30+ Bash/Edit) made manual `/1` confirmation unworkable in practice. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). To opt into ask mode (every PreToolUse waits for your `/1`/`/2`): `/start off`. To switch back to auto: `/start`.
 
 This is the master switch. The per-session forwarding behavior (next section) only kicks in when IMWork is on.
 
@@ -215,7 +215,7 @@ The hook decision tree (in order, cheapest check first):
 
 1. **Read-only tool** (`Read` / `Grep` / `Glob` / `NotebookRead`) → auto-allow, no IM forward (cc itself doesn't show TUI menu for these — forwarding would just spam IM).
 2. **IMWork off** → hook silently exits (no JSON output). cc runs its **native permission flow** — your saved `Yes don't ask again` allow rules apply first; only commands without a matching rule trigger the TUI prompt. (Returning `permissionDecision: "ask"` would force a prompt every time and override your allow rules — so we don't.)
-3. **IMWork on + auto-approve enabled** (`/start auto`) → auto-allow, no IM forward, no `/1` ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)).
+3. **IMWork on + auto-approve enabled** (default `/start`, or explicitly opted into via re-issuing `/start`) → auto-allow, no IM forward, no `/1` ([DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md)).
 4. **IMWork on but no IM thread bound for this cc** (you haven't `@<tab>`'d it from WeChat) → silent exit (same as step 2 — defer to cc's native flow + your allow rules).
 5. **Daemon not running** (Ctrl+C'd / crashed / never started) → silent exit (same as step 2) — no point waiting on a 10s timeout when no one's listening ([DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)).
 6. **Otherwise** → forward to WeChat with 10s window.

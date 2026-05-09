@@ -206,7 +206,7 @@ cc wants to call <tool> → cc fires PreToolUse hook
                 （DD #64 & PR #67 修这个 bug）
        E1.5. IMWork.auto = true：                                  ~0ms (already read above)
               emit { permissionDecision: "allow", reason: "auto-approve" }
-              exit  ← 用户 /start auto 切到 trust mode；不打扰 IM
+              exit  ← 默认 (bare /start = auto)；user `/start off` 切回 ask 模式
        E3. !existsIMOriginFile(stateDir)：                         ~0.1ms (stat)
               silent exit  ← 同 E2，defer 给 cc 原生流程
               ← 全局 state/IMOrigin（不带 paneId）；hook 用 existsIMOriginFile(stateDir) helper
