@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { formatErrorWithCause } from "@multi-cc-im/shared";
 import { apiGetFetch } from "../api/api.js";
 import { logger } from "../util/logger.js";
 import { redactToken } from "../util/redact.js";
@@ -85,7 +86,7 @@ async function pollQRStatus(apiBaseUrl: string, qrcode: string): Promise<StatusR
       return { status: "wait" };
     }
     // 网关超时（如 Cloudflare 524）或其他网络错误，视为等待状态继续轮询
-    logger.warn(`pollQRStatus: network/gateway error, will retry: ${String(err)}`);
+    logger.warn(`pollQRStatus: network/gateway error, will retry: ${formatErrorWithCause(err)}`);
     return { status: "wait" };
   }
 }
@@ -153,9 +154,9 @@ export async function startWeixinLoginWithQr(opts: {
       sessionKey,
     };
   } catch (err) {
-    logger.error(`Failed to start Weixin login: ${String(err)}`);
+    logger.error(`Failed to start Weixin login: ${formatErrorWithCause(err)}`);
     return {
-      message: `Failed to start login: ${String(err)}`,
+      message: `Failed to start login: ${formatErrorWithCause(err)}`,
       sessionKey,
     };
   }
@@ -304,11 +305,11 @@ export async function waitForWeixinLogin(opts: {
       }
 
     } catch (err) {
-      logger.error(`Error polling QR status: ${String(err)}`);
+      logger.error(`Error polling QR status: ${formatErrorWithCause(err)}`);
       activeLogins.delete(opts.sessionKey);
       return {
         connected: false,
-        message: `Login failed: ${String(err)}`,
+        message: `Login failed: ${formatErrorWithCause(err)}`,
       };
     }
 
