@@ -53,3 +53,6 @@ export {
 
 // Type guards
 export * from './guards.js';
+
+// Error formatting
+export { formatErrorWithCause } from './format-error.js';
