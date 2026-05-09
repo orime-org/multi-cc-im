@@ -10,6 +10,8 @@
 
 **每次完成任务后必须进行所有的必要测试并且必须更新所有相关文档。** 测试 = `pnpm typecheck` + `pnpm test` + 改动了 CLI / 影响 bundle 时还要 `pnpm --filter multi-cc-im build` + 改动会影响用户 dotfile 时跑前后 `cmp ~/.claude/settings.json` 验证未变（[memory: feedback_user_dotfile_backup](.claude/projects/.../memory/feedback_user_dotfile_backup.md)）。文档 = `CLAUDE.md` 状态总表 / 修订记录 + `docs/architecture.md` 受影响节 + `README.md` & `README.zh-CN.md` 操作章节 + `VENDOR.md` 若改 vendor 区域 + 相关 DD 报告。漏一项 = 任务未完成，**不能** 报"done"。
 
+**所有任务都必须先列 todo 计划，再按计划执行。** 不分 research / 执行 / 测试 / 更新文档 —— **任何**动作之前先把步骤拆出来落到 todo 列表，每完成一项立即标记。todo 是工作的地图，先有地图再走路；没地图就上路 = 边走边发明 scope = 容易漏步骤、容易做着做着偏题、容易事后补不全文档。简单到一两步的事可以直接做（不必为单步任务写 todo），其余一律先写计划。
+
 # 项目简介
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
