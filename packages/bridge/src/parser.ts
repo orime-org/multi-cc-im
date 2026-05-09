@@ -1,30 +1,34 @@
-import { RESERVED_BRIDGE_NAME } from './matcher.js';
-
 /**
- * Parse a wechat message text into one of these routing-relevant shapes:
+ * Parse an IM message text into one of these routing-relevant shapes:
  *
- * - `plain`           — no leading `@`; body forwarded to `current_session`
+ * - `plain`           — no leading `@` or `/`; body either dispatched via AI
+ *                        routing (default) or to `current_session` if AI
+ *                        routing disabled. (Per [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md))
  * - `mention`         — leading `@<name>` (one or more space-separated); body
  *                        to those targets
  * - `broadcast`       — `@all` alone or with body; fan-out to all alive
  *                        sessions
- * - `bridge_command`  — `@multi-cc-im /<command> [args]`; the bridge daemon
- *                        itself handles it (e.g. `/list`, `/help`, `/current`).
- *                        `@multi-cc-im` is a reserved name and never resolves
- *                        to a cc session.
- * - `error`           — malformed (e.g. `@all` mixed with named mentions, or
- *                        `@multi-cc-im` body that isn't a `/`-prefixed slash
- *                        command)
+ * - `bridge_command`  — leading bare `/<command> [args]` (e.g. `/list`,
+ *                        `/start`, `/start off`, `/stop`, `/help`, `/current`).
+ *                        Per DD #73 (AI-routed dispatch): bare-slash syntax
+ *                        replaces the old `@multi-cc-im /<command>` form.
+ *                        **Not backwards-compatible** — old syntax falls
+ *                        through to mention path → matcher rejects (no cc
+ *                        named `multi-cc-im`) → "not found" echo.
+ * - `permission_response` — `@<tab> /1` (allow) or `@<tab> /2` (deny)
+ * - `error`           — malformed (e.g. `@all` mixed with named mentions,
+ *                        or bare `/` with empty command)
  *
  * Mentions are recognized **only at message start**, separated by whitespace.
  * `@<name>` mid-message is treated as plain text (matches IM convention; cf.
  * Discord/Slack mention parsers).
  *
  * The original DD G' (`docs/superpowers/specs/2026-05-04-routing-syntax-dd.md`)
- * had `@list` / `@help` / `@current` as bareword keywords. These were dropped
- * because they collide with cc tab titles set via `/rename` — a user who
- * /rename'd a cc to "list" would shadow the keyword. The unambiguous
- * `@multi-cc-im /<cmd>` form replaces them.
+ * had `@list` / `@help` / `@current` as bareword keywords. Those were dropped
+ * in v1 because they collided with cc tab titles set via `/rename`. v1.8
+ * (DD #73) replaces the old `@multi-cc-im /<cmd>` form with bare `/<cmd>` —
+ * shorter for IM typing and a reserved namespace cc TUI never sees as a
+ * slash command (user must use `@<tab> /<cmd>` to forward to cc TUI).
  */
 
 const ALL_TOKEN = 'all';
@@ -41,6 +45,26 @@ export function parse(rawText: string): ParsedMessage {
   const text = rawText.replace(/^[\s ]+/, '');
 
   if (text.length === 0) return { type: 'plain', body: '' };
+
+  // Bare `/<command>` → daemon command (NEW in v1.8 per DD #73).
+  // Replaces the old `@multi-cc-im /<command>` syntax (no backwards compat —
+  // user types just `/list`, `/start`, `/start off`, `/stop`, etc.).
+  // Bare /X never forwards to cc TUI as a slash command — to forward `/clear`
+  // etc. to cc, use `@<tab> /clear`.
+  if (text.startsWith('/')) {
+    const afterSlash = text.slice(1);
+    const spaceIdx = afterSlash.search(/\s/);
+    const command =
+      spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
+    const args = spaceIdx === -1 ? '' : afterSlash.slice(spaceIdx).trim();
+    if (command.length === 0) {
+      return {
+        type: 'error',
+        message: 'expected /<command> after `/`',
+      };
+    }
+    return { type: 'bridge_command', command, args };
+  }
 
   if (!text.startsWith('@')) {
     return { type: 'plain', body: rawText.trim() === '' ? '' : rawText };
@@ -74,40 +98,12 @@ export function parse(rawText: string): ParsedMessage {
     return { type: 'plain', body: rawText };
   }
 
-  // Bridge command: `@multi-cc-im /<command> [args]`.
-  // The reserved name never matches any cc; if it appears with a `/`-prefixed
-  // slash command body we route to the bridge handlers. Anything else is an
-  // error so users learn the right form.
-  if (mentions.includes(RESERVED_BRIDGE_NAME)) {
-    if (mentions.length !== 1) {
-      return {
-        type: 'error',
-        message: `@${RESERVED_BRIDGE_NAME} is exclusive — cannot combine with other mentions`,
-      };
-    }
-    const trimmedBody = body.trim();
-    if (!trimmedBody.startsWith('/')) {
-      return {
-        type: 'error',
-        message: `@${RESERVED_BRIDGE_NAME} expects a /<command>; e.g. \`@${RESERVED_BRIDGE_NAME} /list\` or \`@${RESERVED_BRIDGE_NAME} /help\``,
-      };
-    }
-    // Split first whitespace: `/list` → command=`list`, args=``.
-    // `/rename auth-fix` → command=`rename`, args=`auth-fix`.
-    const afterSlash = trimmedBody.slice(1);
-    const spaceIdx = afterSlash.search(/\s/);
-    const command =
-      spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
-    const args =
-      spaceIdx === -1 ? '' : afterSlash.slice(spaceIdx).trim();
-    if (command.length === 0) {
-      return {
-        type: 'error',
-        message: `@${RESERVED_BRIDGE_NAME}: empty command after \`/\``,
-      };
-    }
-    return { type: 'bridge_command', command, args };
-  }
+  // [REMOVED in v1.8 per DD #73]: `@multi-cc-im /<command>` bridge command
+  // syntax replaced by bare `/<command>` (handled at top of this function
+  // before mention tokenizing). `multi-cc-im` is still RESERVED_BRIDGE_NAME
+  // in matcher.ts so user-/rename'd cc named "multi-cc-im" never matches.
+  // If user types old-style `@multi-cc-im /list` it falls through here to
+  // the regular mention path → matcher returns "not found" → echo error.
 
   // Permission response: `@<tabname> /1` (allow) or `@<tabname> /2` (deny).
   // Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).

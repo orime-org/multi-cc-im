@@ -183,7 +183,7 @@ export async function runStartCommand(
   // ===== 1d. Reset IMWork + IMOrigin to clean state on every daemon start =====
   // Per [DD: IMWork+IMOrigin](../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
   // §5.3 — daemon start auto-resets IM mode to off, forcing user to re-issue
-  // `@multi-cc-im /start` from IM if they want remote mode again. Safer than
+  // `/start` from IM if they want remote mode again. Safer than
   // honoring stale "user was in IM mode last week" state.
   //
   // Per [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md):
@@ -206,7 +206,7 @@ export async function runStartCommand(
     );
   }
   log(
-    `  ✓ IMWork: OFF (run \`@multi-cc-im /start\` from IM to enable)`,
+    `  ✓ IMWork: OFF (run \`/start\` from IM to enable)`,
   );
 
   // ===== 1e. Write daemon.pid lock file =====

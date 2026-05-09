@@ -98,7 +98,7 @@ describe('router — plain message + sticky current_pane', () => {
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/no current.*@<name>|@multi-cc-im/i);
+    expect(result.echo).toMatch(/no current|@<name>|\/list/i);
   });
 
   it('plain + current set but pane no longer present → unset + error', async () => {
@@ -278,10 +278,10 @@ describe('router — @all broadcast', () => {
   });
 });
 
-describe('router — bridge commands @multi-cc-im /...', () => {
+describe('router — bridge commands (bare /<command>)', () => {
   it('/list → echoes pane inventory', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -292,7 +292,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/list → header is "wezterm tabs" not "可用 cc" (DD #61: lists all panes regardless of cc presence)', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -303,7 +303,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
   it('/list → /rename\'d pane renders [可寻址 @<name>] status; un-renamed renders /rename hint', async () => {
     const state = memState(null);
     const unnamed = s('', 99);
-    const result = await routeOn(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([FRONTEND, unnamed]),
       state,
     });
@@ -313,7 +313,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/list with empty registry → empty-state hint', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /list'), {
+    const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([]),
       state,
     });
@@ -323,7 +323,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/help → echoes routing guide (mentions key concepts)', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /help'), {
+    const result = await routeOn(incoming('/help'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -335,7 +335,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/current with no current → "current = none"', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('/current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -346,7 +346,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/current with set current → "current = frontend"', async () => {
     const state = memState(FRONTEND.paneId);
-    const result = await routeOn(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('/current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -356,7 +356,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/current with stale paneId (pane gone) → unsets + reports', async () => {
     const state = memState(FRONTEND.paneId);
-    const result = await routeOn(incoming('@multi-cc-im /current'), {
+    const result = await routeOn(incoming('/current'), {
       registry: fixedRegistry([API]),
       state,
     });
@@ -367,7 +367,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start when off → imWorkAction enable {auto:true} + inventory (auto is the new default — DD #64 inverted)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -379,7 +379,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start off → imWorkAction enable {auto:false} (opt-in to ask mode)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start off'), {
+    const result = await route(incoming('/start off'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -391,7 +391,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start (default) → echo mentions auto-approve as the active mode', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -404,17 +404,17 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start echo footer points users to /help for full command reference', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
     });
-    expect(result.echo).toContain('@multi-cc-im /help');
+    expect(result.echo).toContain('/help');
   });
 
   it('/help echo lists concrete usage examples (mention + broadcast + bridge commands)', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /help'), {
+    const result = await routeOn(incoming('/help'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -430,7 +430,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start when already on → still emits imWorkAction (lets user re-toggle modes)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
@@ -445,7 +445,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/start off when already-on-with-auto → emits + auto:false (mode switch ask)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start off'), {
+    const result = await route(incoming('/start off'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
@@ -457,7 +457,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/stop when on → imWorkAction disable', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /stop'), {
+    const result = await route(incoming('/stop'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
@@ -468,7 +468,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/stop when already off → still emits (idempotent — orchestrator delete tolerates ENOENT)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /stop'), {
+    const result = await route(incoming('/stop'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -479,7 +479,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/current shows IMWork = ON (auto-approve) when imWorkAuto=true', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /current'), {
+    const result = await route(incoming('/current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
@@ -490,7 +490,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('/current shows IMWork = ON (no auto suffix) when imWorkAuto=false', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /current'), {
+    const result = await route(incoming('/current'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
@@ -502,7 +502,7 @@ describe('router — bridge commands @multi-cc-im /...', () => {
 
   it('unknown bridge command → error pointing to /help', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@multi-cc-im /bogus'), {
+    const result = await routeOn(incoming('/bogus'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -596,7 +596,7 @@ describe('router — IMWork off gate', () => {
 
   it('bridge command /list ALWAYS allowed even when off', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /list'), {
+    const result = await route(incoming('/list'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -606,7 +606,7 @@ describe('router — IMWork off gate', () => {
 
   it('bridge command /start ALWAYS allowed when off (it enables IMWork; default auto:true)', async () => {
     const state = memState(null);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -669,7 +669,7 @@ describe('router — empty / null text passthrough', () => {
 describe('router — /start formatNumericTabWarning + formatDuplicateTabWarning', () => {
   it('numeric-only tab title → warning included in /start echo', async () => {
     const numeric = s('123', 5);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND, numeric]),
       state: memState(null),
       imWorkOn: false,
@@ -680,7 +680,7 @@ describe('router — /start formatNumericTabWarning + formatDuplicateTabWarning'
   });
 
   it('non-numeric tab titles → no numeric warning header', async () => {
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND, API]),
       state: memState(null),
       imWorkOn: false,
@@ -693,7 +693,7 @@ describe('router — /start formatNumericTabWarning + formatDuplicateTabWarning'
   it('duplicate tab titles on different panes → conflict warning', async () => {
     const a = s('frontend', 10);
     const b = s('frontend', 11);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([a, b]),
       state: memState(null),
       imWorkOn: false,
@@ -704,7 +704,7 @@ describe('router — /start formatNumericTabWarning + formatDuplicateTabWarning'
   });
 
   it('all-distinct tab titles → no duplicate warning', async () => {
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND, API]),
       state: memState(null),
       imWorkOn: false,
@@ -714,12 +714,149 @@ describe('router — /start formatNumericTabWarning + formatDuplicateTabWarning'
 
   it('un-renamed pane (empty title) does not trigger duplicate warning when only one such pane', async () => {
     const noName = s('', 99);
-    const result = await route(incoming('@multi-cc-im /start'), {
+    const result = await route(incoming('/start'), {
       registry: fixedRegistry([FRONTEND, noName]),
       state: memState(null),
       imWorkOn: false,
     });
     expect(result.echo).not.toMatch(/同名 cc 冲突/);
+  });
+});
+
+describe('router — AI-routed plain dispatch (DD #73)', () => {
+  it('plain msg + aiRouter picks tab → dispatches to that tab + intent as content + sticky current', async () => {
+    const state = memState(null);
+    const result = await route(incoming('给前端那个写个登录页'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: '写个登录页',
+        reason: '前端关键词',
+      }),
+    });
+    expect(result.dispatches).toEqual([
+      { session: FRONTEND, content: '写个登录页' },
+    ]);
+    expect(state.getCurrent()).toBe(FRONTEND.paneId);
+    expect(result.echo).toContain('frontend');
+    expect(result.echo).toContain('写个登录页');
+  });
+
+  it('plain msg + aiRouter returns target=null → echo "无法识别" + no dispatch', async () => {
+    const state = memState(null);
+    const result = await route(incoming('哎呀今天好烦'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: '模糊',
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/无法识别/);
+    expect(result.echo).toContain('@<tab>');
+  });
+
+  it('plain msg + aiRouter returns intent=null → echo "无法识别" even if target set', async () => {
+    const state = memState(null);
+    const result = await route(incoming('something'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: null,
+        reason: 'partial',
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toMatch(/无法识别/);
+  });
+
+  it('plain msg + aiRouter picks unknown tab → echo with "tab 不存在" + no dispatch', async () => {
+    const state = memState(null);
+    const result = await route(incoming('hello'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'mobile',
+        intent: 'hello',
+        reason: 'mobile picked',
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('mobile');
+    expect(result.echo).toMatch(/不存在|@<tab>/);
+  });
+
+  it('plain msg + aiRouter passes currentTab from sticky state', async () => {
+    const state = memState(API.paneId);
+    let received: string | null | undefined;
+    const result = await route(incoming('继续刚才的'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async (opts) => {
+        received = opts.currentTab;
+        return { target: 'api', intent: '继续', reason: 'pronoun' };
+      },
+    });
+    expect(received).toBe('api');
+    expect(result.dispatches[0]?.session).toBe(API);
+  });
+
+  it('plain msg + zero named panes → "no addressable cc" (no AI call)', async () => {
+    const state = memState(null);
+    let aiCalled = false;
+    const result = await route(incoming('hello'), {
+      registry: fixedRegistry([s('', 99)]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => {
+        aiCalled = true;
+        return { target: null, intent: null, reason: '' };
+      },
+    });
+    expect(aiCalled).toBe(false);
+    expect(result.echo).toMatch(/no addressable cc/i);
+  });
+
+  it('plain msg + IMWork off → IMWork-off gate fires before AI router', async () => {
+    const state = memState(null);
+    let aiCalled = false;
+    const result = await route(incoming('hello'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+      aiRouter: async () => {
+        aiCalled = true;
+        return { target: 'frontend', intent: 'hello', reason: 'r' };
+      },
+    });
+    expect(aiCalled).toBe(false);
+    expect(result.echo).toMatch(/IMWork off/i);
+  });
+
+  it('@<name> mention bypasses aiRouter entirely', async () => {
+    const state = memState(null);
+    let aiCalled = false;
+    const result = await route(incoming('@frontend hello'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => {
+        aiCalled = true;
+        return { target: 'api', intent: 'should-be-ignored', reason: '' };
+      },
+    });
+    expect(aiCalled).toBe(false);
+    expect(result.dispatches[0]?.session).toBe(FRONTEND);
+    expect(result.dispatches[0]?.content).toBe('hello');
   });
 });
 

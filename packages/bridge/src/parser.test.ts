@@ -121,81 +121,91 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
   });
 
   // ==========================================================================
-  // Bridge commands: @multi-cc-im /<command> [args]
+  // Bridge commands: bare `/<command> [args]` (per DD #73 — replaced
+  // @multi-cc-im /<command> syntax, no backwards compat).
+  // The old @multi-cc-im /X form falls through to mention path → matcher
+  // returns "not found" → echo error. Verified in router.test.ts.
   // ==========================================================================
 
-  it('@multi-cc-im /list → bridge_command list', () => {
-    expect(parse('@multi-cc-im /list')).toEqual({
+  it('/list → bridge_command list', () => {
+    expect(parse('/list')).toEqual({
       type: 'bridge_command',
       command: 'list',
       args: '',
     });
   });
 
-  it('@multi-cc-im /help → bridge_command help', () => {
-    expect(parse('@multi-cc-im /help')).toEqual({
+  it('/help → bridge_command help', () => {
+    expect(parse('/help')).toEqual({
       type: 'bridge_command',
       command: 'help',
       args: '',
     });
   });
 
-  it('@multi-cc-im /current → bridge_command current', () => {
-    expect(parse('@multi-cc-im /current')).toEqual({
+  it('/current → bridge_command current', () => {
+    expect(parse('/current')).toEqual({
       type: 'bridge_command',
       command: 'current',
       args: '',
     });
   });
 
-  it('@multi-cc-im /rename auth-fix → bridge_command rename with single-word args', () => {
-    expect(parse('@multi-cc-im /rename auth-fix')).toEqual({
+  it('/start → bridge_command start (no args)', () => {
+    expect(parse('/start')).toEqual({
       type: 'bridge_command',
-      command: 'rename',
-      args: 'auth-fix',
+      command: 'start',
+      args: '',
     });
   });
 
-  it('@multi-cc-im /rename auth fix more args → args is everything after first whitespace', () => {
-    expect(parse('@multi-cc-im /rename auth fix more args')).toEqual({
+  it('/start off → bridge_command start with args=off', () => {
+    expect(parse('/start off')).toEqual({
+      type: 'bridge_command',
+      command: 'start',
+      args: 'off',
+    });
+  });
+
+  it('/stop → bridge_command stop', () => {
+    expect(parse('/stop')).toEqual({
+      type: 'bridge_command',
+      command: 'stop',
+      args: '',
+    });
+  });
+
+  it('/rename auth fix more args → args is everything after first whitespace', () => {
+    expect(parse('/rename auth fix more args')).toEqual({
       type: 'bridge_command',
       command: 'rename',
       args: 'auth fix more args',
     });
   });
 
-  it('@multi-cc-im (no body) → error /expects a /<command>/', () => {
-    expect(parse('@multi-cc-im')).toEqual({
+  it('/ (empty after slash) → error /<command>/', () => {
+    expect(parse('/')).toEqual({
       type: 'error',
-      message: expect.stringMatching(/expects a \/<command>/),
+      message: expect.stringMatching(/expected \/<command>/),
     });
   });
 
-  it('@multi-cc-im hello (body without /) → error /expects a /<command>/', () => {
-    expect(parse('@multi-cc-im hello')).toEqual({
-      type: 'error',
-      message: expect.stringMatching(/expects a \/<command>/),
+  it('leading whitespace before /list still recognized', () => {
+    expect(parse('  /list')).toEqual({
+      type: 'bridge_command',
+      command: 'list',
+      args: '',
     });
   });
 
-  it('@multi-cc-im / (empty after slash) → error /empty command after `/`/', () => {
-    expect(parse('@multi-cc-im /')).toEqual({
-      type: 'error',
-      message: expect.stringMatching(/empty command after `\/`/),
-    });
-  });
-
-  it('@multi-cc-im @api /list → error (multi-cc-im is exclusive)', () => {
-    expect(parse('@multi-cc-im @api /list')).toEqual({
-      type: 'error',
-      message: expect.stringMatching(/exclusive — cannot combine/),
-    });
-  });
-
-  it('@api @multi-cc-im /list → error (multi-cc-im is exclusive even when not first)', () => {
-    expect(parse('@api @multi-cc-im /list')).toEqual({
-      type: 'error',
-      message: expect.stringMatching(/exclusive — cannot combine/),
+  it('OLD @multi-cc-im /list → mention (no backwards compat — falls through to matcher)', () => {
+    // Per DD #73: `@multi-cc-im /X` syntax was dropped. Parser sees this as
+    // a mention with body `/list`; matcher returns no-such-cc → router echoes
+    // "not found". Codifies the deliberate non-compat behavior.
+    expect(parse('@multi-cc-im /list')).toEqual({
+      type: 'mention',
+      mentions: ['multi-cc-im'],
+      body: '/list',
     });
   });
 
@@ -314,10 +324,10 @@ describe('parser — permission_response (@<tab> /1 | /2)', () => {
     });
   });
 
-  it('@multi-cc-im /1 → bridge_command "1" (reserved name takes precedence)', () => {
+  it('bare /1 → bridge_command "1" (parser is layer-pure; router echoes unknown)', () => {
     // `1` is not a defined bridge command, but parser stays at the parse layer.
     // Router's handleBridgeCommand reports the unknown-command error.
-    expect(parse('@multi-cc-im /1')).toEqual({
+    expect(parse('/1')).toEqual({
       type: 'bridge_command',
       command: '1',
       args: '',
