@@ -149,24 +149,27 @@ cc persists the name to its session state (so `claude --resume` restores it) and
 
 ## Routing syntax (user perspective)
 
-Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with two updates from the original DD: (a) the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map, (b) bridge commands are addressed via `@multi-cc-im /<cmd>` instead of bareword `@list` / `@help` / `@current` keywords (which collided with cc tab titles).
+Per [DD: routing syntax G'](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md), with three updates from the original DD: (a) the routing key is now the wezterm tab title (cc `/rename`) rather than a config-file `[friendly_names]` map, (b) bridge commands are addressed via bare `/<cmd>` (v1.4+; replaced the v1.3 `@multi-cc-im /<cmd>` form per [DD #73](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)), (c) plain (no-mention) messages are routed by an AI triage call (per [DD #73](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)) rather than dropping to last-explicit-mention sticky.
 
 | What you send in WeChat | What it does |
 |---|---|
-| `hello` | Routes to `current_session` (last-explicit-mention sticky; with a single cc, automatically = that one) |
-| `@frontend hello` | Routes to the session whose tab title is `frontend`, and sets `current` |
+| `给前端那个写个登录页` | **AI-routed plain message** (DD #73 — v1.4+): daemon spawns `claude --print` to triage which cc tab fits + extract the clean intent; routes to `frontend` with content `"写个登录页"` (cue words stripped). Echo: `→ frontend｜AI: 「写个登录页」`. Falls back to `❌ 无法识别目标` if AI can't decide |
+| `hello` (single cc) | With one named cc, AI typically just routes there; otherwise legacy sticky-current applies when AI routing is disabled |
+| `@frontend hello` | Routes to the session whose tab title is `frontend`, and sets `current`. **Bypasses AI routing** — explicit mention always wins |
 | `@fr hello` | Short prefix (4-level fallback: `=strict` → exact → prefix → glob); ambiguity lists candidates and rejects |
 | `@frontend @api sync` | Multi-target dispatch; **does not change `current`** |
 | `@frontend /clear` | Forwards `/clear` into the cc TUI — cc handles it as its own slash command |
 | `@all stop everything` | Broadcast to every live session |
 | `@frontend /1` | **Permission allow** (only when there's a pending PreToolUse — see below) |
 | `@frontend /2` | **Permission deny** |
-| `@multi-cc-im /list` | List alive cc sessions (tab title + pane id). The bot echoes; nothing dispatched to any cc |
-| `@multi-cc-im /help` | Built-in help text |
-| `@multi-cc-im /current` | Show `current_session` + IMWork status |
-| `@multi-cc-im /start` | **Enable IM mode** (cc replies forward to WeChat) **+ auto-approve** (default since v1.7 — cc tool calls auto-pass without IM round-trip). Use `/start off` to opt into ask mode |
-| `@multi-cc-im /start off` | **Enable IM mode + ask** — cc tool calls forward to WeChat, you reply `/1` allow / `/2` deny within 10s |
-| `@multi-cc-im /stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
+| `/list` | List alive cc sessions (tab title + pane id). The bot echoes; nothing dispatched to any cc |
+| `/help` | Built-in help text |
+| `/current` | Show `current_session` + IMWork status |
+| `/start` | **Enable IM mode** (cc replies forward to WeChat) **+ auto-approve** (default — cc tool calls auto-pass without IM round-trip). Use `/start off` to opt into ask mode |
+| `/start off` | **Enable IM mode + ask** — cc tool calls forward to WeChat, you reply `/1` allow / `/2` deny within 10s |
+| `/stop` | **Disable IM mode** (cc replies stay in TUI, tool prompts shown in cc native menu) |
+
+> **v1.4 syntax change**: bare `/<cmd>` replaced the old `@multi-cc-im /<cmd>` form. The reserved-name path was dropped — there's no longer any way to mistakenly route an IM message to a cc tab named `multi-cc-im`. Old `@multi-cc-im /list` falls through to the regular `@<name>` matcher (which echoes "not found" since `multi-cc-im` is no cc's tab title). To forward `/clear` etc. into a cc TUI, still use `@<tab> /clear`.
 
 Before dispatching to cc, the bot sends a visible echo to WeChat for every routed message (e.g. `→ frontend received`). This is mandated by the CLAUDE.md "Routing must have visible echo" rule.
 
@@ -177,16 +180,16 @@ Before dispatching to cc, the bot sends a visible echo to WeChat for every route
 Per [DD: IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md). multi-cc-im has a global on/off switch that you control from WeChat:
 
 ```
-@multi-cc-im /start         →  IM mode ON, auto-approve (DEFAULT since v1.7 — cc tool calls auto-pass, no IM round-trip)
-@multi-cc-im /start off     →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
-@multi-cc-im /stop          →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
-@multi-cc-im /current       →  show current target + IMWork status (incl. auto-approve flag)
+/start         →  IM mode ON, auto-approve (DEFAULT — cc tool calls auto-pass, no IM round-trip)
+/start off     →  IM mode ON, ask mode (cc tool calls forward to WeChat for /1 /2)
+/stop          →  IM mode OFF (cc replies stay in TUI, tool prompts handled in cc native menu)
+/current       →  show current target + IMWork status (incl. auto-approve flag)
 ```
 
 - **Daemon start always resets to OFF**. You must explicitly `/start` from WeChat each session you go remote. Auto-approve mode also resets — restart = safe default.
-- When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 @multi-cc-im /start 开启 IM 模式"`. Bridge commands and permission responses still work.
+- When **OFF**, IM messages addressed to cc (`@frontend hello` etc.) are rejected with `"❌ IMWork off — 请先发 /start 开启 IM 模式"`. Bridge commands and permission responses still work.
 - When **ON**, the `/start` echo lists currently alive cc sessions and the rules.
-- **v1.7 inverted the default**: bare `/start` now turns auto-approve ON because tool-dense workflows (e.g. "analyze this repo" → cc fires 30+ Bash/Edit) made manual `/1` confirmation unworkable in practice. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). To opt into ask mode (every PreToolUse waits for your `/1`/`/2`): `/start off`. To switch back to auto: `/start`.
+- **Auto-approve is the default**: bare `/start` turns it ON because tool-dense workflows (e.g. "analyze this repo" → cc fires 30+ Bash/Edit) make manual `/1` confirmation unworkable in practice. Per [DD: PreToolUse auto-approve](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md). To opt into ask mode (every PreToolUse waits for your `/1`/`/2`): `/start off`. To switch back to auto: `/start`.
 
 This is the master switch. The per-session forwarding behavior (next section) only kicks in when IMWork is on.
 
@@ -223,7 +226,7 @@ The hook decision tree (in order, cheapest check first):
 So one cc can flip between "cc TUI menu" and "IM round-trip" turn-by-turn:
 
 - You're at the office, type directly in cc TUI → IMWork off → menu in TUI ✓
-- You step out, send `@multi-cc-im /start` then `@frontend run tests` → IMWork on + global `IMOrigin` overwritten with the latest reply ctx → next tool prompt comes to your phone ✓
+- You step out, send `/start` then `@frontend run tests` → IMWork on + global `IMOrigin` overwritten with the latest reply ctx → next tool prompt comes to your phone ✓
 - Every subsequent inbound IM message (bridge command / dispatch / `/1` / `/2`) refreshes `IMOrigin` again, so async cc Stop / PreToolUse forwards always thread back to your most recent IM with a fresh `context_token` — no stale-token ECONNRESET in multi-cc scenarios ([DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md))
 
 **No allowlist / blocklist by design.** If you want to make cc stop asking about a particular command, do it in the cc TUI (option 2 — "Yes, and don't ask again for similar commands in `<cwd>`"). cc TUI writes the rule to project-local `.claude/settings.local.json`. multi-cc-im won't replicate this remotely (would mean the daemon writing user dotfiles based on remote IM input — too risky).
@@ -263,7 +266,7 @@ hooks  │adapter │       chokidar watch state files
 
 1. **Inbound** (WeChat → cc): `IM long-poll → handleInbound entry overwrites global state/IMOrigin (every inbound — dispatch / bridge cmd / /1 /2 — same source as the synchronous echo's replyCtx) → wezterm cli list (live panes) → router.parse → matcher (4-level fallback against tab titles) → orchestrator.dispatch → term.sendText (Step 1) + sleep + sendKeystroke '\r' (Step 2)`. The two-step send is mandatory — single-step `--no-paste $'\r'` injection lets cc TUI interpret keystrokes ([DD: hook+wezterm probe](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)).
 
-2. **Outbound** (cc Stop hook → WeChat): hook entry first checks `process.env.WEZTERM_PANE` — undefined → silent exit. With `<paneId>` in hand, the subprocess checks 3 short-circuit guards (no `IMWork` / no global `IMOrigin` / daemon dead → return void without writing). If all pass, writes `<paneId>_<sid>.Stop.<ts>` → daemon's chokidar picks it up → reads global `state/IMOrigin` (the always-fresh reply ctx, overwritten by every inbound IM message) → IM send. **IMOrigin is NOT deleted** after forward — the same context is reused for the next cc reply or PreToolUse forward until the next inbound IM message overwrites it (or daemon stop / start clears it). The anti-misforward protection (don't accidentally bridge cc TUI typing to WeChat) is now gated entirely by IMWork: send `@multi-cc-im /stop` to disarm.
+2. **Outbound** (cc Stop hook → WeChat): hook entry first checks `process.env.WEZTERM_PANE` — undefined → silent exit. With `<paneId>` in hand, the subprocess checks 3 short-circuit guards (no `IMWork` / no global `IMOrigin` / daemon dead → return void without writing). If all pass, writes `<paneId>_<sid>.Stop.<ts>` → daemon's chokidar picks it up → reads global `state/IMOrigin` (the always-fresh reply ctx, overwritten by every inbound IM message) → IM send. **IMOrigin is NOT deleted** after forward — the same context is reused for the next cc reply or PreToolUse forward until the next inbound IM message overwrites it (or daemon stop / start clears it). The anti-misforward protection (don't accidentally bridge cc TUI typing to WeChat) is now gated entirely by IMWork: send `/stop` to disarm.
 
 3. **Permission gate** (PreToolUse → IM `/1` `/2` → hook subprocess unblock): hook subprocess walks the decision tree above. If it reaches the forward step, it writes `<paneId>_<sid>.PermissionRequest.<id>.json`, polls `<paneId>_<sid>.PermissionResponse.<id>.json` every 200ms (max 10s). Daemon forwards the prompt to IM. User reply → daemon writes the response file. Hook subprocess reads → emits `permissionDecision: allow|deny` to cc → unlinks both files → exits. Daemon-side reaper schedules a backstop unlink at 10s for orphan files (in case the hook subprocess died abnormally).
 
@@ -359,13 +362,13 @@ multi-cc-im routes by **wezterm tab title**, not by directory or session id. If 
 1. In the cc TUI, run `/rename frontend` (the name shows up in the wezterm tab title via OSC).
 2. Send `@frontend hello` again — tab titles are re-polled on every IM event via `wezterm cli list --format json`.
 
-Without `/rename` there is **no** addressable name (no sid-prefix fallback in v1.4 — the routing key is purely the tab title). `@multi-cc-im /list` shows you what's currently addressable.
+Without `/rename` there is **no** addressable name (no sid-prefix fallback — the routing key is purely the tab title). Send `/list` to see what's currently addressable.
 
 ### IM doesn't receive tool permission prompts (`@frontend /1` never gets asked for)
 
 Four common causes (in order of likelihood):
 
-1. **You haven't `/start`'d**. Daemon starts in local mode by default (cc TUI handles approvals). **Fix**: send `@multi-cc-im /start` from WeChat once.
+1. **You haven't `/start`'d**. Daemon starts in local mode by default (cc TUI handles approvals). **Fix**: send `/start` from WeChat once.
 2. **No IM thread bound for that cc**. Even with IMWork on, you must have **chatted with that specific cc from WeChat at least once** in the current turn. If cc autonomously calls a tool without you ever `@<tab>`'ing it, the hook falls back to cc TUI menu. **Fix**: send `@frontend ping` once to bind a thread.
 3. **The tool is read-only**. cc calls Read / Grep / Glob / NotebookRead and similar without needing approval — multi-cc-im also auto-allows these to keep IM uncluttered. Only "destructive" tools (Bash / Edit / Write / WebFetch / etc.) trigger the IM forward.
 4. **You replied past the 10-second window**. Hook already exited with default-allow. Your `/1` is lost (the polling subprocess gone — daemon reaper cleans up the orphan files within 10s).
@@ -452,7 +455,7 @@ Two categories: **top-level** files (one per daemon) and **pane-keyed** files (p
 | File | Schema | Writer | Deleter | Purpose |
 |---|---|---|---|---|
 | `daemon.pid` | JSON `{ pid: number, startedAt: string }` (`startedAt` = `ps -o lstart= -p <pid>` output, used to defend against PID reuse — [DD: daemon liveness](docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md)) | daemon `start` | daemon `stop` (Ctrl+C / graceful); state-sweep if PID dead or lstart mismatch | Lock file: hooks check `isDaemonAlive()` before walking forward path. Also enforces single-instance — second `start` errors out if first daemon's PID + lstart still match |
-| `IMWork` | JSON `{auto:boolean}` (file existence = IM mode ON; `auto:true` = auto-approve mode per [DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md); legacy 0-byte file falls back to `{auto:false}`) | router on `@multi-cc-im /start [auto]` (orchestrator handler) | router on `/stop`; daemon `start` (always reset to OFF); daemon `stop` (Ctrl+C cleanup) | Master IM-mode switch. When **absent**, hooks short-circuit (cc TUI handles approvals locally); when **present**, IM mode is on and `@frontend body` from WeChat dispatches to cc. `auto:true` makes hook PreToolUse fast-allow without IM round-trip |
+| `IMWork` | JSON `{auto:boolean}` (file existence = IM mode ON; `auto:true` = auto-approve mode per [DD #64](docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md); legacy 0-byte file falls back to `{auto:false}`) | router on `/start [off]` (orchestrator handler) | router on `/stop`; daemon `start` (always reset to OFF); daemon `stop` (Ctrl+C cleanup) | Master IM-mode switch. When **absent**, hooks short-circuit (cc TUI handles approvals locally); when **present**, IM mode is on and `@frontend body` from WeChat dispatches to cc. `auto:true` makes hook PreToolUse fast-allow without IM round-trip |
 | `IMOrigin` | JSON discriminated union by `imType` — for wechat: `{ imType: 'wechat', to: string, contextToken?: string }` (telegram / lark variants reserved) | `handleInbound` entry on **every** inbound IM message (bridge cmd / dispatch / permission response — same source as the synchronous echo's `msg.replyCtx`; newest ctx wins, [DD: IMOrigin global](docs/superpowers/specs/2026-05-08-imorigin-global-dd.md)) | daemon `start` (crash safety net + always-fresh on next IM); daemon `stop` (Ctrl+C cleanup); **never** on cc Stop forward / `/stop` (always-fresh lifecycle — mirrors IMWork) | Global IM reply context. Async outbound paths (cc Stop / PreToolUse forward) read this for a fresh `context_token`. Hook stat-checks this file before walking the forward path. Single global key — earlier per-pane caching kept stale tokens after server invalidated them in multi-cc / bridge-command / permission-response scenarios; global + always-overwritten fixes the bug |
 | `wechat-cursor` | text file (single string) | iLink getupdates loop on every advance (`atomicWrite`) | never deleted in normal operation | iLink long-poll cursor. Persists across daemon restart so messages aren't lost during the daemon-down window |
 

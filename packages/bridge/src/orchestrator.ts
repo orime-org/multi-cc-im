@@ -30,6 +30,8 @@ import {
   parsePermissionFilename,
 } from '@multi-cc-im/cli-cc';
 import { readdir } from 'node:fs/promises';
+import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
+import { routeViaAI } from './ai-router.js';
 import type { SessionInfo } from './matcher.js';
 import { route, type RouterDispatch, type RouterState, type PaneRegistry } from './router.js';
 
@@ -79,6 +81,16 @@ export interface CreateOrchestratorOpts {
   ) => void;
   /** INFO-level event sink for routing decisions / forwards. */
   log?: (line: string) => void;
+  /**
+   * AI routing callback for plain (no-mention) IM messages. Per
+   * [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md):
+   * default = the real `routeViaAI` (spawns `claude --print`). CLI passes a
+   * wrapper that bakes in `claudeBinary` / `model` / `timeoutMs`. Tests pass
+   * a deterministic stub. Pass `null` to disable AI routing entirely (router
+   * falls back to legacy sticky-current logic — useful for tests and as a
+   * degraded-mode fallback).
+   */
+  aiRouter?: ((opts: AIRoutingOpts) => Promise<AIRoutingResult>) | null;
 }
 
 export interface BridgeOrchestrator {
@@ -119,6 +131,12 @@ export function createOrchestrator(
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
   const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
+  // null → AI routing explicitly disabled. undefined → use real routeViaAI.
+  // Function → use the provided wrapper (CLI flags / test stub).
+  const aiRouter: ((o: AIRoutingOpts) => Promise<AIRoutingResult>) | undefined =
+    opts.aiRouter === null
+      ? undefined
+      : (opts.aiRouter ?? routeViaAI);
 
   // Reaper timers per (paneId, sid, requestId) tuple.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -190,6 +208,7 @@ export function createOrchestrator(
       state: opts.state,
       imWorkOn,
       imWorkAuto,
+      aiRouter,
     });
 
     // IMWork toggle from /start [auto] /stop

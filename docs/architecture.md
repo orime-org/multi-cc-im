@@ -114,7 +114,7 @@ multi-cc-im/
 ├── state/                                   # daemon 运行时状态 + cc hook ↔ daemon IPC
 │   ├── wechat-cursor                        # iLink getupdates cursor（重启续接）
 │   ├── IMWork                               # JSON {auto:boolean}：存在 = IM 模式 ON
-│   │                                        #   用户 @multi-cc-im /start 创建，/stop 删
+│   │                                        #   用户 /start 创建，/stop 删（v1.4: bare /<cmd> 语法）
 │   │                                        #   daemon 启动自动重置为 OFF；stop 也删
 │   ├── IMOrigin                             # 全局 IMReplyContext JSON（discriminated union {imType,...}）
 │   │                                        #   daemon 写：handleInbound 入口每条入站 IM 都覆盖

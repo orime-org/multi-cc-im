@@ -1,4 +1,5 @@
 import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
+import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
 import { matchSession, type SessionInfo } from './matcher.js';
 import { parse } from './parser.js';
 
@@ -47,6 +48,20 @@ export interface RouterOpts {
    * Ignored when `imWorkOn=false`.
    */
   imWorkAuto?: boolean;
+  /**
+   * AI-routed dispatch callback for plain (no-mention) messages. Per
+   * [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md):
+   * orchestrator wires this to spawn a `claude --print` subprocess that
+   * triages the message → returns `{target, intent, reason}`. If the AI
+   * picks a tab, router routes the cleaned `intent` to that cc + sets
+   * sticky `current` to it.
+   *
+   * **When omitted**: router falls back to the legacy sticky-current logic
+   * (route to last-explicit-mention pane, or single cc if there's only one,
+   * or echo "no current" hint). Useful for tests that don't want to mock cc
+   * spawn, and as a degraded-mode fallback if AI routing is broken.
+   */
+  aiRouter?: (opts: AIRoutingOpts) => Promise<AIRoutingResult>;
 }
 
 export interface RouterDispatch {
@@ -131,7 +146,7 @@ export async function route(
       parsed.type === 'broadcast')
   ) {
     return {
-      echo: '❌ IMWork off — 请先发 `@multi-cc-im /start` 开启 IM 模式',
+      echo: '❌ IMWork off — 请先发 `/start` 开启 IM 模式',
       dispatches: [],
     };
   }
@@ -157,7 +172,13 @@ export async function route(
       return handleMention(parsed.mentions, parsed.body, sessions, opts.state);
 
     case 'plain':
-      return handlePlain(parsed.body, sessions, opts.state);
+      // Per [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md):
+      // when an aiRouter callback is wired (production default), all plain
+      // messages go through it. Without an aiRouter (tests / degraded
+      // fallback), use the legacy sticky-current logic.
+      return opts.aiRouter
+        ? handlePlainWithAI(parsed.body, sessions, opts.state, opts.aiRouter)
+        : handlePlain(parsed.body, sessions, opts.state);
 
     case 'permission_response':
       return handlePermissionResponse(parsed.tabName, parsed.decision, sessions);
@@ -241,8 +262,64 @@ function handlePlain(
   }
 
   return {
-    echo: '❌ no current session — send `@<name>` first or `@multi-cc-im /list`',
+    echo: '❌ no current session — send `@<name>` first or `/list`',
     dispatches: [],
+  };
+}
+
+// ============================================================================
+// Plain (no @<name>) with AI routing
+// ============================================================================
+
+async function handlePlainWithAI(
+  body: string,
+  sessions: readonly SessionInfo[],
+  state: RouterState,
+  aiRouter: (opts: AIRoutingOpts) => Promise<AIRoutingResult>,
+): Promise<RouterResult> {
+  const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
+  if (namedSessions.length === 0) {
+    return {
+      echo:
+        '❌ no addressable cc — start cc in a wezterm tab and run `/rename <name>` inside it first',
+      dispatches: [],
+    };
+  }
+
+  const currentPaneId = state.getCurrent();
+  const currentTab =
+    currentPaneId !== null
+      ? namedSessions.find((s) => s.paneId === currentPaneId)?.tabTitle ?? null
+      : null;
+
+  const result = await aiRouter({
+    userMsg: body,
+    tabs: namedSessions.map((s) => s.tabTitle),
+    currentTab,
+  });
+
+  if (result.target === null || result.intent === null) {
+    return {
+      echo: '❌ 无法识别目标，请用 @<tab>',
+      dispatches: [],
+    };
+  }
+
+  // Find the pane matching the AI-picked target tab title.
+  const target = namedSessions.find((s) => s.tabTitle === result.target);
+  if (!target) {
+    return {
+      echo: `❌ AI 路由到 \`${result.target}\` 但 tab 不存在，请用 @<tab>`,
+      dispatches: [],
+    };
+  }
+
+  // Sticky current — same as explicit single-mention. User can verify intent
+  // via the echo and override next message with `@<tab>` if AI mis-classified.
+  state.setCurrent(target.paneId);
+  return {
+    echo: `→ ${displayName(target)}｜AI: 「${result.intent}」`,
+    dispatches: [{ session: target, content: result.intent }],
   };
 }
 
@@ -339,7 +416,8 @@ function handleBroadcast(
 }
 
 // ============================================================================
-// Bridge commands: @multi-cc-im /<command> [args]
+// Bridge commands: bare `/<command> [args]` (per DD #73 — replaced
+// `@multi-cc-im /<command>` syntax, no backwards compat)
 // ============================================================================
 
 function handleBridgeCommand(
@@ -369,11 +447,11 @@ function handleBridgeCommand(
           '  @all stop everything       → 广播给所有 /rename\'d cc',
           '  @frontend /1   /  /2       → 权限允许 / 拒绝（仅当有 pending PreToolUse）',
           '',
-          'Bridge 命令（@multi-cc-im /...）：',
+          'Bridge 命令（直接 /<cmd>）：',
           '  /list                      → 列当前 wezterm tabs（含可寻址状态）',
           '  /help                      → 本帮助',
           '  /current                   → 显示 current_session + IMWork 状态',
-          '  /start                     → 开启 IM 模式（cc 回复 + 工具审批转发到微信）',
+          '  /start                     → 开启 IM 模式（默认 auto-approve；加 `off` 切 ask 模式）',
           '  /stop                      → 关闭 IM 模式（cc 回复留 cc TUI，工具审批走 cc 原生菜单）',
           '',
           'Tip: 进 cc TUI 跑 /rename <name> 设 @<name> 寻址（real-time，cc /resume 也带）；',
@@ -438,7 +516,7 @@ function handleBridgeCommand(
           autoTipLine,
           '  - 终端 cc TUI 直接打字不会 forward 到 IM',
           '',
-          '完整命令说明：发 @multi-cc-im /help',
+          '完整命令说明：发 /help',
         ].join('\n'),
         dispatches: [],
         imWorkAction: { kind: 'enable', auto: wantAuto },
@@ -458,7 +536,7 @@ function handleBridgeCommand(
 
     default:
       return {
-        echo: `❌ unknown bridge command: /${command}\n  Try @multi-cc-im /help`,
+        echo: `❌ unknown bridge command: /${command}\n  Try /help`,
         dispatches: [],
       };
   }

@@ -2,18 +2,19 @@
 
 `multi-cc-im` —— 个人本地 bridge：通过腾讯 iLink Bot API 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到微信，实现"在公司用控制台 + 外面用微信"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
-> **状态**：v1.3 实施完成（2026-05-09）—— 7 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge + openclaw shim）+ 1 app（apps/multi-cc-im CLI binary）全到位，58 测试文件 / 903 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / tg+飞书 IM adapter / analytics package。
-> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#46，6 packages 到位）→ 2026-05-07 v1.1（permission forward PR #51-#53 + voice/image 通路实施）→ 2026-05-08 v1.2（IMWork + IMOrigin + read-only 白名单 + reaper PR #55+）→ 2026-05-09 v1.3（daemon liveness 检测：daemon.pid lock + 双开检测 + Ctrl+C 清理 + hook 4 层 short-circuit decision tree）。
+> **状态**：v1.4 实施完成（2026-05-09）—— 7 packages（shared / storage-files / im-wechat / term-wezterm / cli-cc / bridge + openclaw shim）+ 1 app（apps/multi-cc-im CLI binary）全到位，58 测试文件 / 915 单测全过 / 全局 ≥80% 覆盖。架构 → [`docs/architecture.md`](docs/architecture.md)；DD → [`docs/superpowers/specs/`](docs/superpowers/specs/)；用户上手 → [`README.md`](README.md) Quick Start；开发命令 → [`docs/dev.md`](docs/dev.md)。Follow-up：真实环境 smoke / tg+飞书 IM adapter / analytics package。
+> **修订**：2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）→ 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）→ 2026-05-05 v1.0（实施完成 PR #4-#46，6 packages 到位）→ 2026-05-07 v1.1（permission forward PR #51-#53 + voice/image 通路实施）→ 2026-05-08 v1.2（IMWork + IMOrigin + read-only 白名单 + reaper PR #55+）→ 2026-05-09 v1.3（daemon liveness 检测：daemon.pid lock + 双开检测 + Ctrl+C 清理 + hook 4 层 short-circuit decision tree）→ 2026-05-09 v1.4（AI 路由 plain IM 消息：daemon 每条 plain msg 起一个 `claude --print` 子进程做 triage + intent 提取；bare `/<cmd>` 替换 `@multi-cc-im /<cmd>` daemon 命令语法，无 backwards compat）。
 
 # 核心约束（项目第一原则）
 
 任何架构决策必须先过这两条。违反即重新设计。
 
 1. **不破坏现有 cc 进程**
-   cc 继续以 TUI 形式跑在用户 WezTerm tab 里。bridge **不** spawn cc、**不** 接管 stdin/stdout、**不** 包一层伪 TUI。
+   cc 继续以 TUI 形式跑在用户 WezTerm tab 里。bridge **不** spawn 用户的 cc 实例、**不** 接管 stdin/stdout、**不** 包一层伪 TUI。
    - 出站：依赖 cc 原生 hook
    - 入站：依赖 `wezterm cli` 子命令
    - 用户随时可直接 attach 那个 tab 跟 cc 互动，bridge 不在中间挡
+   - **唯一例外**：daemon 自己起一次性 `claude --print` 子进程做 IM 路由 triage（DD #73）。该子进程独立 session、headless、`--disable-slash-commands`、`--setting-sources user`、不复用任何用户 transcript / cwd / 状态，跑完即退；不沾任何用户的 wezterm tab 或 cc TUI 进程。
 
 2. **用现有 SDK 与扩展点，不造轮子**
    - 微信协议：用社区已有实现（v0.3 已锁定 vendored `Tencent/openclaw-weixin` v2.1.7）；禁止 from scratch 除非 DD 证明所有候选都不可用
@@ -63,7 +64,8 @@ DD 文档保存到 `docs/superpowers/specs/<topic>-dd.md`，跟设计 doc 一起
 | 出站 / 入站 / Idle 唤醒 / Session 标识 / jsonl schema / pane-id | ✓ | [DD: hook+wezterm 实测](docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md) |
 | ACL（owner-only） | ✓ | 协议层自带过滤 |
 | 多机（仅一台） | ✓ | 协议层硬约束（getupdates cursor 全局共享） |
-| 路由语法 | ✓ | **G' 组合**：`@<name>` tmux 4 级 fallback（id / `=exact` / exact / 短前缀 / glob，歧义报错列候选）+ 空格分多目标（`@a @b ...`）+ `@all` 广播 + last-explicit-mention 粘性默认（带 visible echo）+ `@list / @help / @current` 控制命令；session 死自动 unset current；[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) |
+| 路由语法 | ✓ | **G' 组合**：`@<name>` tmux 4 级 fallback（id / `=exact` / exact / 短前缀 / glob，歧义报错列候选）+ 空格分多目标（`@a @b ...`）+ `@all` 广播 + last-explicit-mention 粘性默认（带 visible echo）+ **bare `/<cmd>` 控制命令**（v1.4 起：`/list /help /current /start [off] /stop`；替换老 `@multi-cc-im /<cmd>` 语法，**无 backwards compat**；用户输入 `@<tab> /<cmd>` 仍正常 forward 给 cc TUI）；session 死自动 unset current；[DD: 路由语法](docs/superpowers/specs/2026-05-04-routing-syntax-dd.md) + [DD #73: AI 路由](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md) |
+| AI 路由 plain IM msg | ✓ | **每条 plain msg → daemon 起 `claude --print` 子进程做 triage**：headless、`--model claude-haiku-4-5`、`--disable-slash-commands`、`--setting-sources user`、`--permission-mode bypassPermissions`、15s timeout、跑完即退、不沾用户 cc TUI 进程；输出 JSON `{target, intent, reason}`，daemon 拿 target 路由 + intent 当 cc prompt + echo 给 IM 端可见；任何错误（cc 不在 PATH / 网络 / 解析失败）→ 静默降级为 `❌ 无法识别目标，请用 @<tab>`，不阻断 daemon。**不**用 Anthropic API SDK（用户已有 cc Pro/Max 订阅，再付 API key 是反人类）；**不**长进程化（cc TUI 不为 daemon stdin/stdout 设计，per-msg spawn 简单可靠）。[DD: AI 路由 IM dispatch](docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md) |
 | 价格表来源 | ✓ DD 完成 | vendor LiteLLM Claude 子集 + `scripts/sync-prices.sh` 周期同步 + `config.toml [pricing]` user override；[DD: 价格表来源](docs/superpowers/specs/2026-04-30-pricing-table-dd.md)。analytics package v2 实施时按此设计落地（v1 未实施 — Follow-up 列表）|
 | 语音（iLink `voice_text`） | ✓ | im-wechat 适配器从 VOICE item 提取 `voice_text` 注入 `IncomingMessage.text`；无 `voice_text` 时降级为 voice attachment |
 | 图片/文件（AES-128-ECB 解密） | ✓ | im-wechat 用 `aeskey` 解密 + 落 `~/.multi-cc-im/inbox/wechat/<sid>/` 后以 `attachment.localPath` 形式暴露给 cc Read |

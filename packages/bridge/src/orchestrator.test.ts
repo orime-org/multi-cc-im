@@ -236,6 +236,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     expect(im.handler).toBeDefined();
@@ -253,6 +254,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await orch.stop();
@@ -268,6 +270,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     expect(await existsIMWorkFile(testStateDir)).toBe(true);
     await orch.start();
@@ -289,6 +292,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     expect(await readDaemonPidFile(testStateDir)).not.toBeNull();
@@ -304,6 +308,7 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await expect(orch.start()).rejects.toThrow(/already started/);
@@ -326,6 +331,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
@@ -349,6 +355,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@fr hello'));
@@ -367,6 +374,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend @api sync now'));
@@ -387,6 +395,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     const msg: IncomingMessage = { ...incoming(''), text: null };
@@ -415,6 +424,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
@@ -431,6 +441,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -460,7 +471,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     await orch.stop();
   });
 
-  it('inbound bridge command (@multi-cc-im /list) ALSO writes IMOrigin — every inbound covers stale token (DD: IMOrigin global)', async () => {
+  it('inbound bridge command (/list) ALSO writes IMOrigin — every inbound covers stale token (DD: IMOrigin global)', async () => {
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: testStateDir,
@@ -469,6 +480,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -490,7 +502,7 @@ describe('createOrchestrator — inbound (wechat → cc)', () => {
     // a fresh token (tok-B). Pre-fix bug: dispatch-only write left IMOrigin
     // at tok-A (stale). Post-fix: every inbound overwrites.
     await im.handler!.onMessage(
-      incoming('@multi-cc-im /list', {
+      incoming('/list', {
         imType: 'wechat',
         to: 'wxid_owner',
         contextToken: 'tok-B',
@@ -535,6 +547,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -572,6 +585,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -595,6 +609,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
@@ -620,6 +635,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -658,6 +674,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -693,6 +710,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
@@ -720,6 +738,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -768,6 +787,7 @@ describe('createOrchestrator — outbound (cc Stop → wechat)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -795,6 +815,7 @@ describe('createOrchestrator — error handling', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       onError: (err) => errors.push(err),
     });
     await orch.start();
@@ -816,6 +837,7 @@ describe('createOrchestrator — error handling', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       onError: (err) => errors.push(err),
     });
     await orch.start();
@@ -838,6 +860,7 @@ describe('createOrchestrator — error handling', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       onError: (err) => errors.push(err),
     });
     await orch.start();
@@ -864,6 +887,7 @@ describe('createOrchestrator — log sink', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -885,6 +909,7 @@ describe('createOrchestrator — log sink', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -913,6 +938,7 @@ describe('createOrchestrator — log sink', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -936,6 +962,7 @@ describe('createOrchestrator — log sink', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -968,6 +995,7 @@ describe('createOrchestrator — IM permission gate', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -1006,6 +1034,7 @@ describe('createOrchestrator — IM permission gate', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -1049,6 +1078,7 @@ describe('createOrchestrator — IM permission gate', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend /1'));
@@ -1094,6 +1124,7 @@ describe('createOrchestrator — IM permission gate', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend /2'));
@@ -1119,6 +1150,7 @@ describe('createOrchestrator — IM permission gate', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     await im.handler!.onMessage(incoming('@frontend /1'));
@@ -1140,7 +1172,7 @@ describe('createOrchestrator — IMWork toggle', () => {
     // NB: do NOT pre-write IMWork — these tests verify the toggle.
   });
 
-  it('@multi-cc-im /start when off → writes IMWork + echo includes "ON"', async () => {
+  it('/start when off → writes IMWork + echo includes "ON"', async () => {
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
@@ -1149,11 +1181,12 @@ describe('createOrchestrator — IMWork toggle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
 
-    await im.handler!.onMessage(incoming('@multi-cc-im /start'));
+    await im.handler!.onMessage(incoming('/start'));
 
     expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
     const echo = im.sent.map((s) => s.content).join('\n');
@@ -1165,7 +1198,7 @@ describe('createOrchestrator — IMWork toggle', () => {
     await orch.stop();
   });
 
-  it('@multi-cc-im /stop when on → deletes IMWork + echo includes "OFF"', async () => {
+  it('/stop when on → deletes IMWork + echo includes "OFF"', async () => {
     await writeIMWorkFile(toggleStateDir);
     const im = makeMockIM();
     const orch = createOrchestrator({
@@ -1175,11 +1208,12 @@ describe('createOrchestrator — IMWork toggle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
     expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
 
-    await im.handler!.onMessage(incoming('@multi-cc-im /stop'));
+    await im.handler!.onMessage(incoming('/stop'));
 
     expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
     const echo = im.sent.map((s) => s.content).join('\n');
@@ -1197,6 +1231,7 @@ describe('createOrchestrator — IMWork toggle', () => {
       cliAdapter: makeMockCLI(),
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
 
@@ -1224,6 +1259,7 @@ describe('createOrchestrator — IMWork toggle', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -1293,6 +1329,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       reaperDelayMs: REAPER_WINDOW_MS,
     });
     await orch.start();
@@ -1340,6 +1377,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       reaperDelayMs: REAPER_WINDOW_MS,
       onError: (err, ctx) => errors.push({ err, ctx }),
     });
@@ -1389,6 +1427,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
+      aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
       reaperDelayMs: REAPER_WINDOW_MS,
     });
     await orch.start();
@@ -1402,5 +1441,125 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     await orch.stop();
     await delay(POST_REAPER_PROBE_MS);
     expect(existsSync(reqPath)).toBe(true);
+  });
+});
+
+// ============================================================================
+// AI-routed plain dispatch (DD #73): when aiRouter is wired, plain (no-mention)
+// IM messages are triaged via the spawned cc subprocess. Tests pass a
+// deterministic stub instead of the real `routeViaAI` so we don't fork a real
+// `claude` process during the unit test run.
+// ============================================================================
+
+describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
+  let aiTestStateDir: string;
+  beforeEach(async () => {
+    aiTestStateDir = mkdtempSync(join(tmpdir(), 'orch-ai-test-'));
+    await writeIMWorkFile(aiTestStateDir, { auto: true });
+  });
+
+  it('plain msg with stub aiRouter → dispatches to picked tab + intent as content', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
+    const orch = createOrchestrator({
+      stateDir: aiTestStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: '写个登录页',
+        reason: 'r',
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      incoming('给前端那个写个登录页', {
+        imType: 'wechat',
+        to: 'wxid_owner',
+        contextToken: 'ctx-ai-1',
+      }),
+    );
+    expect(term.sendTextCalls).toEqual([
+      { paneId: FRONTEND_PANE, content: '写个登录页' },
+    ]);
+    const echo = im.sent.map((s) => s.content).join('\n');
+    expect(echo).toContain('frontend');
+    expect(echo).toContain('写个登录页');
+    await orch.stop();
+  });
+
+  it('plain msg with aiRouter returning target=null → echo "无法识别" + no dispatch', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
+    const orch = createOrchestrator({
+      stateDir: aiTestStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('哎呀今天好烦'));
+    expect(term.sendTextCalls).toEqual([]);
+    const echo = im.sent.map((s) => s.content).join('\n');
+    expect(echo).toMatch(/无法识别/);
+    await orch.stop();
+  });
+
+  it('plain msg + aiRouter=null → falls back to legacy sticky logic (no spawn)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const state = memState();
+    state.setCurrent(FRONTEND_PANE);
+    const orch = createOrchestrator({
+      stateDir: aiTestStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: cli,
+      state,
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hello'));
+    // Legacy path: dispatched to current pane verbatim.
+    expect(term.sendTextCalls).toEqual([
+      { paneId: FRONTEND_PANE, content: 'hello' },
+    ]);
+    await orch.stop();
+  });
+
+  it('aiRouter callback receives currentTab from sticky state', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
+    const state = memState();
+    state.setCurrent(API_PANE);
+    let received: string | null | undefined;
+    const orch = createOrchestrator({
+      stateDir: aiTestStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: cli,
+      state,
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async (opts) => {
+        received = opts.currentTab;
+        return { target: 'api', intent: '继续', reason: 'pronoun' };
+      },
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('继续刚才的'));
+    expect(received).toBe('api');
+    expect(term.sendTextCalls[0]?.paneId).toBe(API_PANE);
+    await orch.stop();
   });
 });

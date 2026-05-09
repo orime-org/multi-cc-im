@@ -23,3 +23,11 @@ export type {
   BridgeOrchestrator,
   CreateOrchestratorOpts,
 } from './orchestrator.js';
+
+export {
+  routeViaAI,
+  renderRoutingPrompt,
+  buildClaudeArgs,
+  parseRoutingOutput,
+} from './ai-router.js';
+export type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
