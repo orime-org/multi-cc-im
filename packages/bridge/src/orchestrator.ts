@@ -34,6 +34,7 @@ import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
 import { routeViaAI } from './ai-router.js';
 import type { SessionInfo } from './matcher.js';
 import { route, type RouterDispatch, type RouterState, type PaneRegistry } from './router.js';
+import { truncate } from './text.js';
 
 /**
  * DD-locked Step 1 → Step 2 paste-render delay (ms). [hook+wezterm DD W1](../../../docs/superpowers/specs/2026-04-27-cc-hook-wezterm-probe.md)
@@ -585,11 +586,6 @@ function summarizeToolInput(
     return toolInput.url;
   }
   return truncate(JSON.stringify(toolInput), 120);
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
 }
 
 // Type re-export so callers can pull bridge orchestrator's view of paneId.

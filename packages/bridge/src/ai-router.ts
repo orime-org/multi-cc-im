@@ -227,11 +227,23 @@ export async function routeViaAI(
   });
   const args = buildClaudeArgs({ model, prompt });
 
+  // Strip WEZTERM_PANE before spawning cc. The hook receiver
+  // (`packages/cli-cc/src/hook-receiver.ts:127`) gates on
+  // `process.env.WEZTERM_PANE` to decide whether to write Stop files; if
+  // the spawned cc inherits the daemon's WEZTERM_PANE, its Stop hook
+  // writes a file that the daemon then forwards back to IM, leaking the
+  // routing JSON envelope. Removing the var makes the hook silently exit
+  // without writing anything, which is the correct behavior for a
+  // headless triage subprocess.
+  const childEnv = { ...process.env };
+  delete childEnv.WEZTERM_PANE;
+
   let stdout: string;
   try {
     const result = await execFileAsync(claudeBinary, args, {
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024, // 1MB plenty for cc envelope
+      env: childEnv,
     });
     stdout = result.stdout;
   } catch (err) {

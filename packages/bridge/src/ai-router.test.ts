@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -311,5 +311,57 @@ describe('ai-router — routeViaAI integration (stub binary)', () => {
     });
     expect(out.target).toBeNull();
     expect(out.intent).toBeNull();
+  });
+
+  // Regression — daemon used to inherit WEZTERM_PANE into the spawned cc
+  // subprocess, which made cc's Stop hook receiver believe it was running
+  // in a wezterm tab and write a `<paneId>_<sid>.Stop.<ts>` file. The daemon
+  // then forwarded that file to IM, leaking the routing JSON envelope back
+  // to the user. We now strip WEZTERM_PANE from the spawned env so the hook
+  // receiver's first gate (`defaultResolvePaneId() === undefined`) silently
+  // exits without touching disk.
+  function writeStubDumpingEnv(
+    stdout: string,
+  ): { binary: string; envDumpPath: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-envdump-'));
+    const envDumpPath = join(dir, 'env-dump.txt');
+    const path = join(dir, 'claude-stub');
+    writeFileSync(
+      path,
+      `#!/bin/sh
+printf 'WEZTERM_PANE=%s\\n' "\${WEZTERM_PANE:-<unset>}" > "${envDumpPath}"
+cat <<'EOF'
+${stdout}
+EOF
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    chmodSync(path, 0o755);
+    return { binary: path, envDumpPath };
+  }
+
+  it('strips WEZTERM_PANE from the spawned cc env (prevents stop-hook misforward of routing JSON)', async () => {
+    const { binary, envDumpPath } = writeStubDumpingEnv(
+      JSON.stringify({
+        result: '{"target":"frontend","intent":"x","reason":"r"}',
+      }),
+    );
+    const prev = process.env.WEZTERM_PANE;
+    process.env.WEZTERM_PANE = '99999';
+    try {
+      const out = await routeViaAI({
+        userMsg: 'x',
+        tabs: ['frontend'],
+        currentTab: null,
+        claudeBinary: binary,
+      });
+      expect(out.target).toBe('frontend');
+    } finally {
+      if (prev === undefined) delete process.env.WEZTERM_PANE;
+      else process.env.WEZTERM_PANE = prev;
+    }
+    const dumped = readFileSync(envDumpPath, 'utf8').trim();
+    expect(dumped).toBe('WEZTERM_PANE=<unset>');
   });
 });
