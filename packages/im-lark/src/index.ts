@@ -7,7 +7,13 @@
 // **M7 (pending)**: orchestrator wiring in apps/multi-cc-im/src/start.ts.
 // **M8 (pending)**: docs polish.
 
-export { loginLark, type LoginLarkOpts } from './login.js';
+export {
+  loginLark,
+  validateLarkCredentials,
+  type LoginLarkOpts,
+  type ValidateLarkCredentialsOpts,
+  type LarkLoginClientFactory,
+} from './login.js';
 export { LarkCredentialsSchema, type LarkCredentials } from './credentials.js';
 export {
   createLarkAdapter,
@@ -15,3 +21,8 @@ export {
   type LarkClientShape,
   type LarkWSClientShape,
 } from './adapter.js';
+export {
+  larkSetupSchema,
+  buildLarkSetupSchema,
+  type BuildLarkSetupSchemaOpts,
+} from './setup.js';
