@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import { formatErrorWithCause, type PaneId } from '@multi-cc-im/shared';
 import {
   createOrchestrator,
@@ -13,7 +14,17 @@ import {
   readDaemonPidFile,
   writeDaemonPidFile,
 } from '@multi-cc-im/cli-cc';
-import { createConfigStore } from '@multi-cc-im/storage-files';
+import {
+  createLarkAdapter,
+  LarkCredentialsSchema,
+  type CreateLarkAdapterOpts,
+  type LarkCredentials,
+} from '@multi-cc-im/im-lark';
+import type { IMAdapter } from '@multi-cc-im/shared';
+import {
+  createConfigStore,
+  createCredentialStore,
+} from '@multi-cc-im/storage-files';
 import {
   createWezTermAdapter,
   listAllTabs,
@@ -64,6 +75,15 @@ export interface RunStartCommandOpts {
    * stdout/stderr.
    */
   log?: (line: string) => void;
+  /**
+   * Override the lark adapter factory. Default: real `createLarkAdapter`
+   * (see `@multi-cc-im/im-lark`). Tests inject a stub so unit tests don't
+   * have to mock the entire `@larksuiteoapi/node-sdk` surface or hit the
+   * real Feishu open API. Used by the default-orchestrator branch only;
+   * callers that pass `buildOrchestrator` short-circuit before this is
+   * touched.
+   */
+  buildLarkAdapter?: (opts: CreateLarkAdapterOpts) => IMAdapter;
 }
 
 export interface StartCommandResult {
@@ -82,22 +102,19 @@ export interface StartCommandResult {
  *
  * 1. **Pre-flight**:
  *    - Resolve `~/.multi-cc-im/...` paths
+ *    - Verify `credentials/lark.json` exists (else error "run login lark first")
  *    - Resolve & cache wezterm absolute path (config.toml `[external_paths].wezterm`)
- *    - **No IM adapter is wired yet** — see "M1 transitional state" below.
+ *    - Double-start guard via `state/daemon.pid` (DD: daemon liveness)
+ *    - State-dir sweep + IMWork/IMOrigin reset + daemon.pid write
  * 2. **Build adapters**:
  *    - `ConfigStore` (TOML user config)
+ *    - `CredentialStore<LarkCredentials>` (`credentials/lark.json`)
+ *    - `LarkAdapter` (im-lark IMAdapter — `lark.WSClient` long-connection
+ *      inbound + `client.im.v1.message.create` outbound, per DD #86)
  *    - `WezTermAdapter & TermListPanes` (term-wezterm)
  *    - `CcCliAdapter` (cli-cc file-watching CLIAdapter)
- *    - `BridgeOrchestrator` (orchestrator currently requires `imAdapter` —
- *      tests pass `buildOrchestrator` to stub; production raises a
- *      "no IM adapter configured" error until M2 lark adapter lands)
+ *    - `BridgeOrchestrator` (wires the 3 adapters + state through router)
  * 3. **Start** orchestrator + return shutdown handle.
- *
- * **M1 transitional state** (DD #86 §11.4):
- * The wechat adapter has been removed; the lark adapter (M2-M8) is not
- * yet implemented. Without `opts.buildOrchestrator`, daemon refuses to
- * start with a clear error. Tests inject `buildOrchestrator` so they can
- * still exercise pre-flight branches.
  *
  * Tests stub `resolveWezTerm` + `buildOrchestrator` to exercise the pre-flight
  * branches without spawning real OS processes.
@@ -130,9 +147,20 @@ export async function runStartCommand(
     }
   }
 
-  // ===== 1. (no IM credentials check in M1) =====
-  // wechat removed (DD #86 §11.2). lark M2 will reintroduce credentials
-  // check against `credentials/lark.json`.
+  // ===== 1. Pre-flight: lark credentials =====
+  const credentialPath = paths.credentialFor('lark');
+  try {
+    await stat(credentialPath);
+  } catch {
+    return {
+      exitCode: 1,
+      stderr:
+        `multi-cc-im start: lark credentials not found at ${credentialPath}\n` +
+        `  Run \`multi-cc-im login lark --app-id <id> --app-secret <secret>\`\n` +
+        `  first (or set LARK_APP_ID / LARK_APP_SECRET env vars).`,
+    };
+  }
+  log(`  ✓ lark credentials at ${credentialPath}`);
 
   // ===== 1b. Pre-flight: wezterm path resolution =====
   const configStore = createConfigStore({ filePath: paths.configToml });
@@ -257,6 +285,11 @@ export async function runStartCommand(
   }
 
   // ===== 2. Build adapters =====
+  const credentialStore = createCredentialStore<LarkCredentials>({
+    filePath: credentialPath,
+    schema: LarkCredentialsSchema,
+  });
+
   // In-memory sticky `current_pane` — last-explicit-mention pointer.
   // Does NOT persist across daemon restart (the user re-binds by sending
   // `@<name> <body>` from IM after restart).
@@ -267,10 +300,6 @@ export async function runStartCommand(
       currentPaneId = id;
     },
   };
-  // routerState is consumed by the orchestrator built below; M1 leaves
-  // the construction to `opts.buildOrchestrator` (tests) — production
-  // M1 raises a clear "no IM adapter configured" error and exits.
-  void routerState;
 
   // No session registry anymore (DD #61). Bridge router queries
   // `termAdapter.listPanes()` on each IM event for live tab data.
@@ -282,37 +311,40 @@ export async function runStartCommand(
     );
   }
 
-  const _termAdapter = createWezTermAdapter({
+  const imAdapter = (opts.buildLarkAdapter ?? createLarkAdapter)({
+    credentialStore,
+    log,
+  });
+  const termAdapter = createWezTermAdapter({
     wezterm: { path: wezterm },
   });
-  const _cliAdapter = createCcCliAdapter({
+  const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,
   });
-  // M1 transitional: term + cli adapters are constructed but not yet
-  // wired into the orchestrator (no IM adapter available). M2 lark
-  // implementation will wire all three.
-  void _termAdapter;
-  void _cliAdapter;
 
   // ===== 3. Build + start orchestrator =====
-  // M1 transitional state: no IM adapter available. Tests inject
-  // `buildOrchestrator` directly to exercise the rest of the start flow;
-  // production exits with a clear error until M2 lark adapter lands. The
-  // default `createOrchestrator` call site will be re-introduced in M7
-  // when `apps/multi-cc-im/src/start.ts` wires `createLarkAdapter` per
-  // DD #86 §11.4 M2-M8.
-  if (!opts.buildOrchestrator) {
-    return {
-      exitCode: 1,
-      stderr:
-        `multi-cc-im start: no IM adapter configured.\n` +
-        `  M1-M2 done (wechat purge + lark login); M3-M8 (orchestrator\n` +
-        `  wiring) still in progress. See DD #86 §11.4 implementation\n` +
-        `  milestones for status:\n` +
-        `  docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md\n`,
-    };
-  }
-  const orchestrator = opts.buildOrchestrator();
+  const orchestrator = opts.buildOrchestrator
+    ? opts.buildOrchestrator()
+    : createOrchestrator({
+        imAdapter,
+        termAdapter,
+        cliAdapter,
+        stateDir: paths.stateDir,
+        state: routerState,
+        log,
+        onError: (err, ctx) => {
+          const msg = formatErrorWithCause(err);
+          const tag =
+            ctx.paneId !== undefined
+              ? `pane=${ctx.paneId}`
+              : ctx.sessionId
+                ? `sid=${ctx.sessionId.slice(0, 8)}`
+                : '';
+          log(
+            `  ⚠️  orchestrator [${ctx.phase}${tag ? ' ' + tag : ''}]: ${msg}`,
+          );
+        },
+      });
 
   await orchestrator.start();
   log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
