@@ -50,6 +50,12 @@ export {
   ExternalPathsSchema,
 } from './adapter/storage.js';
 
+// Adapter setup wizard interface (W2 — DD §9.D5 hybrid pattern)
+export type {
+  AdapterSetupSchema,
+  SetupField,
+} from './adapter/setup.js';
+
 // Type guards
 export * from './guards.js';
 
