@@ -2,6 +2,14 @@ import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
 import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
 import { matchSession, type SessionInfo } from './matcher.js';
 import { parse } from './parser.js';
+import { truncate } from './text.js';
+
+/**
+ * Maximum visible characters for IM message excerpts and AI-routed intent
+ * previews shown in echo lines. Long enough to be recognizable, short
+ * enough not to dominate the IM UI when the daemon replies.
+ */
+const ECHO_EXCERPT_MAX = 20;
 
 /**
  * Lookup interface for currently visible panes. Bridge orchestrator
@@ -300,7 +308,7 @@ async function handlePlainWithAI(
 
   if (result.target === null || result.intent === null) {
     return {
-      echo: '❌ 无法识别目标，请用 @<tab>',
+      echo: `❌ 「${truncate(body, ECHO_EXCERPT_MAX)}」 无法识别目标，请用 @<tab>`,
       dispatches: [],
     };
   }
@@ -318,7 +326,7 @@ async function handlePlainWithAI(
   // via the echo and override next message with `@<tab>` if AI mis-classified.
   state.setCurrent(target.paneId);
   return {
-    echo: `→ ${displayName(target)}｜AI: 「${result.intent}」`,
+    echo: `target: ${displayName(target)}\ncontent: ${truncate(result.intent, ECHO_EXCERPT_MAX)}`,
     dispatches: [{ session: target, content: result.intent }],
   };
 }

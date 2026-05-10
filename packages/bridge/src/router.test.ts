@@ -874,3 +874,86 @@ describe('router — parser error passthrough', () => {
     expect(result.echo).toMatch(/^❌/);
   });
 });
+
+// ============================================================================
+// Echo formatting — readable two-line format for AI-routed plain dispatch
+// + raw IM excerpt on AI routing failure echo
+// ============================================================================
+
+describe('router — AI-routed echo format', () => {
+  it('successful AI route renders X format: "target: <tab>" + "content: <intent>"', async () => {
+    const state = memState(null);
+    const result = await route(incoming('给前端那个写个登录页'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: '写个登录页',
+        reason: '前端关键词',
+      }),
+    });
+    expect(result.echo).toBe('target: frontend\ncontent: 写个登录页');
+  });
+
+  it('successful AI route truncates long intent to 20 chars + ellipsis', async () => {
+    const state = memState(null);
+    const longIntent = '这是一个超过二十个字符长度的意图描述用来验证截断行为';
+    expect(longIntent.length).toBeGreaterThan(20);
+    const result = await route(incoming('随便发个长消息'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: longIntent,
+        reason: 'r',
+      }),
+    });
+    const lines = result.echo.split('\n');
+    expect(lines[0]).toBe('target: frontend');
+    expect(lines[1]).toBe(`content: ${longIntent.slice(0, 19)}…`);
+    expect(lines[1]!.length).toBe('content: '.length + 20);
+  });
+
+  it('successful AI route does NOT truncate short intent', async () => {
+    const state = memState(null);
+    const result = await route(incoming('hi'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'hi',
+        reason: 'r',
+      }),
+    });
+    expect(result.echo).toBe('target: frontend\ncontent: hi');
+  });
+
+  it('AI routing failure echo includes raw IM excerpt (≤20 chars passthrough)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('哎呀今天好烦'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.echo).toBe('❌ 「哎呀今天好烦」 无法识别目标，请用 @<tab>');
+  });
+
+  it('AI routing failure echo truncates long raw IM message to 20 chars + ellipsis', async () => {
+    const state = memState(null);
+    const longMsg = '这是一条非常非常长的用户消息内容超过了二十个字符的限制需要被截断';
+    expect(longMsg.length).toBeGreaterThan(20);
+    const result = await route(incoming(longMsg), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.echo).toBe(
+      `❌ 「${longMsg.slice(0, 19)}…」 无法识别目标，请用 @<tab>`,
+    );
+  });
+});
