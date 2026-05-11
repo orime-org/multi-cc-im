@@ -13,7 +13,7 @@
 
 `multi-cc-im` —— 个人本地 bridge：通过飞书 (Lark) IM 把跑在 **WezTerm tab 里的多个 Claude Code session** 暴露到手机，实现"在公司用控制台 + 外面用 IM"双客户端 + `@session` 路由 + cc 用量分析 + 多 IM/term/CLI 可扩展。
 
-> **状态**：v1.6 DD 锁定（2026-05-10）—— v1.5 lark 主线 M1（wechat purge）/ M2（lark login）/ M3+M4（lark adapter）/ M7（daemon orchestration）完成（DD #86 §11.4），加 PR #94 hotfix（AI router 子进程 env leak / 可读 echo）。M5 interactive cards 仍 pending（待真账号 smoke 决定 cards vs 文字 fallback）；M8 docs polish pending。新增 interactive start/setup wizard DD 锁定（[2026-05-10](superpowers/specs/2026-05-10-interactive-start-wizard-dd.md)）— 单 `start [<adapter>]` + 内嵌 wizard / `@clack/prompts` + `terminal-link` / 字段-typed AWS-style mask / hybrid schema-driven adapter setup interface；W1-W8 实施 pending。当前 packages：shared / storage-files / im-lark / term-wezterm / cli-cc / bridge。架构 → [`architecture.md`](architecture.md)；DD → [`superpowers/specs/`](superpowers/specs/)；用户上手 → [`../README.md`](../README.md) Quick Start；开发命令 → [`dev.md`](dev.md)。Follow-up：M5 / M8 / W1-W8 / Lark intl WSClient 真账号 smoke / 后续 tg IM adapter / analytics package。
+> **状态**：v1.6 全实施完成（2026-05-11）—— DD #86 §11.4 M1（wechat purge）/ M2（lark login）/ M3+M4（lark adapter）/ M7（daemon orchestration）/ M8（docs polish）完成 + PR #94 hotfix（AI router env leak / 可读 echo）+ interactive start/setup wizard DD W1-W8 全部实施完成：单 `multi-cc-im start [<adapter>]` 命令、`@clack/prompts` 渲染、`terminal-link` OSC 8 hyperlinks 配置指南、AWS-style mask、schema-driven adapter setup 接口、`multi-cc-im login <adapter>` 非交互 shortcut 走同一 persist 路径。M5 interactive cards 仍 pending（待真账号 smoke 决定 cards vs 文字 fallback）。当前 packages：shared / storage-files / im-lark / term-wezterm / cli-cc / bridge。架构 → [`architecture.md`](architecture.md)；DD → [`superpowers/specs/`](superpowers/specs/)；用户上手 → [`../README.md`](../README.md) Quick Start；开发命令 → [`dev.md`](dev.md)。Follow-up：M5 interactive cards / Lark intl WSClient 真账号 smoke / 后续 tg IM adapter / analytics package。
 
 ### 修订记录
 
@@ -27,6 +27,7 @@
 - 2026-05-09 v1.5（IM adapter 切换：wechat 整包删除（含 vendor OpenClaw）+ openclaw shim 删除 + IMReplyContext `'wechat'` variant 删除 + lark adapter 接 `@larksuiteoapi/node-sdk` WSClient 长连接（DD #86）。M1 wechat purge / M2 lark login / M3 lark adapter 完成；M5 + M7-M8 进行中）
 - 2026-05-10 v1.5.1（PR #93 M7 daemon orchestration 完成 + PR #94 hotfix：AI router 子进程 `WEZTERM_PANE` env leak → 子进程 stop hook 不再误 forward 路由 JSON 给 IM；plain AI 路由成功 echo 改两行 X 格式 (`target: <tab>\ncontent: <intent摘录>`) + intent 截前 20 字；分诊失败 echo 加 raw IM 摘录）
 - 2026-05-10 v1.6（[interactive start/setup wizard DD](superpowers/specs/2026-05-10-interactive-start-wizard-dd.md) 锁定：单 `start [<adapter>]` 命令；@clack/prompts v1.3.0 prompt 库；inline ASCII + ANSI hyperlink 配置指南；字段-typed AWS-style mask（secret 字段 `'*'*16 + last_4`，非 secret 全显）；hybrid schema-driven adapter setup interface + adapter `validate(values)` callback；W1-W8 实施 milestones）
+- 2026-05-11 v1.6 全实施完成（PR #96 W1 deps / #97 W2 shared schema interface / #98 W3 lark setupSchema + validateLarkCredentials 抽出 / #99 W4 generic wizard + AWS-style mask / #100 W5 selector + start.ts rewire / #101 W6 inline guide + OSC 8 hyperlinks + docs/setup-feishu.md / #102 W7 login shortcut unify through schema persist; DD #86 §11.4 M8 docs polish 同 PR 收尾）
 
 ---
 

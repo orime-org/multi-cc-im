@@ -2,7 +2,7 @@
 
 > CLAUDE.md 的硬约束补充。本文记录架构图、包依赖、目录结构、数据存储 schema、外部 CLI 工具路径策略。任何与 CLAUDE.md「核心约束」「关键规范」冲突的实现 = 违规，回 CLAUDE.md 处置。
 
-> **⚠️ v1.5 transitional state（2026-05-09）**：本文大部分图 / 表 / 包列表描述的是 **v1.4 wechat 时代** 的实施 + **M2-M8 lark adapter 完成后**的目标形态混合。M1 wechat purge（DD #86 §11.2）已删 `packages/im-wechat/` + `packages/openclaw/`，但 `packages/im-lark/` 还没建。下文出现 `im-wechat` / `iLink` / `openclaw` 字样仅供历史参考；当前实际 packages 是 `shared / storage-files / term-wezterm / cli-cc / bridge`（M2-M8 完成后会加 `im-lark`）。M2 完成后本文重写。
+> **历史遗留警告（2026-05-11）**：本文部分章节是 v1.4 wechat 时代留下来的，文字里仍可能出现 `im-wechat` / `iLink` / `openclaw` 字样 —— **仅作历史参考**。当前 packages 实际是 `shared / storage-files / im-lark / term-wezterm / cli-cc / bridge`：wechat 整包已在 DD #86 M1 删除，飞书 (Lark) adapter 在 DD #86 M2-M7 + interactive setup wizard DD (W1-W8) 全部实施完成。当前状态总表 + 修订记录见 [`conventions.md`](conventions.md)。本文核心架构（cc hook / wezterm cli / IM adapter / 文件 IPC）仍然有效，IM 适配器从 wechat 换成 lark 是平移替换。整版重写排在后续 follow-up。
 
 ## 技术栈
 

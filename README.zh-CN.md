@@ -4,8 +4,6 @@
 
 通过飞书 (Lark) IM 把跑在 WezTerm tab 里的多个 Claude Code (cc) session 暴露到手机。`@<tab-name>` 寻址；不带 `@` 的纯消息由 AI 路由到最匹配的 cc tab。包含 IM 端工具审批通路 (`/1` 允许 / `/2` 拒绝)，可扩展更多 IM / 终端 / CLI。
 
-> **⚠️ v1.5 transitional state（2026-05-09 — M1 实施中）**：旧版微信 (WeChat) adapter 已在 M1 删除（[DD #86 §11.2](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)），原因是上游 `undici` 反复升级 instability（PR #76 / #78 / #82）。飞书 (Lark/Feishu) 替代 (M2-M8) **尚未实施**。`main` 上跑 `multi-cc-im start` 会以 `"no IM adapter configured"` 退出。下文（登录 / 命令 / 文件路径）描述的是 **M2-M8 全部完成后的目标形态**，目前并未全部接通。状态跟踪请看 [DD #86 §11.4 implementation milestones](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)。
-
 ---
 
 # Part 1 — 直接使用
@@ -36,23 +34,32 @@ pnpm --filter multi-cc-im build
 ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 ```
 
-## 初始化（一次性）
-
-### 1. 飞书登录
-
-```bash
-./bin/multi-cc-im login lark
-```
-
-终端打印二维码，手机飞书扫码。Token 存到 `~/.multi-cc-im/credentials/lark.json`（mode 0600）。
-
-cc hook 由 `start`（下一节）自动注册，不需要单独跑命令。首次 `start` 会先写时间戳 `.bak.<iso>` 备份 `~/.claude/settings.json`，再幂等合并 `PreToolUse` + `Stop` 两条 hook entries。其他工具的 hook 保留不动。
-
 ## 启动
 
 ```bash
 ./bin/multi-cc-im start
 ```
+
+就这一条命令。首次跑发现 `~/.multi-cc-im/credentials/lark.json` 不存在 → daemon 自动进交互式 setup wizard（用 [`docs/setup-feishu.md`](docs/setup-feishu.md) 作为指引）：
+
+1. 上下箭头选 IM adapter（目前只有 `lark`；光标默认聚焦在已配置过的那个）
+2. 阅读内嵌配置指南 — 含可点击链接（终端支持 OSC 8 时），指向飞书开放平台对应页面：建自建应用 → 启用机器人 → 事件订阅选 WebSocket → 抄 `App ID` + `App Secret`
+3. 填 `App ID`（明文）和 `App Secret`（mask 输入）。wizard 调 Feishu `auth.v3.tenantAccessToken.internal` 端点真实验证后才持久化
+4. 同进程续跑 daemon
+
+跳过菜单直接选 adapter：`./bin/multi-cc-im start lark`。
+
+非交互场景（CI / dotfile 同步 / 重新配凭据）：
+
+```bash
+./bin/multi-cc-im login lark --app-id cli_xxxxxxxxxxxx --app-secret xxxxxxxxxxxxxxxx
+# 或用环境变量：
+LARK_APP_ID=cli_xxx LARK_APP_SECRET=xxx ./bin/multi-cc-im login lark
+```
+
+`login` 走的是跟 wizard 同一条 validate + persist 路径 — 盘上 JSON 结构跟 wizard 写的完全一致。`login` 成功之后再跑 `multi-cc-im start` 会跳过 wizard。
+
+cc hook 由 `start` 自动注册，不需要单独跑命令。首次 `start` 会先写时间戳 `.bak.<iso>` 备份 `~/.claude/settings.json`，再幂等合并 `PreToolUse` + `Stop` 两条 hook entries。其他工具的 hook 保留不动。
 
 daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `state/IMWork`、`state/IMOrigin`、`state/daemon.pid`。
 
@@ -115,16 +122,14 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 
 | 路径 | 用途 |
 |---|---|
-| `~/.multi-cc-im/config.toml` | daemon 配置（首次登录后生成）|
-| `~/.multi-cc-im/credentials/lark.json` | `app_id + app_secret` + 登录态（mode 0600）|
-| `~/.multi-cc-im/state/lark-cursor` | IM long-poll cursor（重启续接）|
+| `~/.multi-cc-im/config.toml` | daemon 配置（外部 CLI 路径如 `wezterm` 在运行时缓存到此）|
+| `~/.multi-cc-im/credentials/lark.json` | `{ appId, appSecret, savedAt }`（mode 0600）|
 | `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM 模式开关（文件存在 = ON）|
 | `~/.multi-cc-im/state/IMOrigin` | 最新 IM 回复上下文（每条入站覆盖）|
 | `~/.multi-cc-im/state/daemon.pid` | daemon 活性锁 |
 | `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc 回复事件（daemon 消费）|
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | in-flight 工具审批请求 |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | 审批结果 |
-| `~/.multi-cc-im/inbox/lark/<sid>/` | 解密后的入站图片 / 文件（cc 用 `Read` 读取）|
 
 `MULTI_CC_IM_HOME` 环境变量可覆盖根目录。
 
@@ -132,14 +137,17 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 
 | 命令 | 说明 |
 |---|---|
-| `multi-cc-im start` | 启动 bridge daemon（前台长跑）；首次自动注册 cc hook 到 `~/.claude/settings.json`（幂等合并）|
-| `multi-cc-im login lark` | 扫码登录 + 保存 `app_id + app_secret` |
+| `multi-cc-im start` | 启动 daemon（前台长跑）。无参数 → adapter 选择菜单；选定 adapter 未配置则进 wizard。首次自动注册 cc hook（幂等合并）|
+| `multi-cc-im start <adapter>` | 跳过菜单直接选指定 adapter（如 `start lark`）。凭据缺失也会进 wizard |
+| `multi-cc-im login <adapter> [--<field> <value>...]` | 非交互凭据配置。field flag 从 adapter schema 派生（lark：`--app-id` `--app-secret`）；同时支持环境变量 `<ADAPTER>_<FIELD>`（如 `LARK_APP_ID`）。走的是跟 wizard 同一条 validate + persist 路径 |
 | `multi-cc-im cleanup [--dry-run]` | 清理过期 state 文件；daemon 跑着也安全 |
 | `multi-cc-im hook <event>` | cc 内部 hook 入口（由 `~/.claude/settings.json` 调用）|
 | `multi-cc-im --help` / `-h` | 打印 help |
 | `multi-cc-im --version` / `-v` | 打印版本 |
 
 退出码：`0` 成功，`1` 运行时失败，`2` 用法错误。
+
+无 TTY 兜底：`multi-cc-im start` 无参数情况需要 TTY（要弹菜单）。headless 调用方必须显式指定 adapter — `multi-cc-im start lark`。凭据缺失场景同理（wizard 需要 TTY）：headless 应先跑 `multi-cc-im login lark --app-id ... --app-secret ...`。
 
 ## 故障排查
 
@@ -166,14 +174,17 @@ rm ~/.multi-cc-im/state/daemon.pid
 ### Daemon 跑着但 IM 收不到消息
 
 ```bash
-# 1. cursor 在推进吗？
-ls -la ~/.multi-cc-im/state/lark-cursor
+# 1. WSClient 连上没？daemon 启动 stderr 应该有
+#    "[lark] WS connected" + "ws client ready"。没看到说明长连接没建上，
+#    一般是凭据 / 事件订阅配置问题。重新跑 setup 走真实 Feishu 校验：
+./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>
 
-# 2. app_id + app_secret 还有效吗？
-./bin/multi-cc-im login lark   # 必要时重登
-
-# 3. cc hook 真的有触发吗？
+# 2. cc hook 真的有触发吗？cc 完成 reply 时应该有 Stop 文件出现：
 ls -la ~/.multi-cc-im/state/*.Stop.*
+
+# 3. 飞书应用发布了没？权限 + WebSocket 事件订阅
+#    必须在飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布
+#    才生效。详见 docs/setup-feishu.md。
 ```
 
 ### `@frontend` 报 "not found"
@@ -231,7 +242,7 @@ multi-cc-im/
 ├── packages/
 │   ├── shared/              — 跨包类型 + zod schema
 │   ├── storage-files/       — TOML + JSON 文件存储（config / 凭据 / cursor / queue）
-│   ├── im-lark/             — Lark/Feishu 适配器（M2-M8 进行中；npm depend `@larksuiteoapi/node-sdk`）
+│   ├── im-lark/             — Lark/Feishu 适配器（npm depend `@larksuiteoapi/node-sdk`）
 │   ├── term-wezterm/        — wezterm CLI 适配器
 │   ├── cli-cc/              — Claude Code hook 适配器
 │   └── bridge/              — 路由器 + orchestrator + AI 分诊
@@ -264,16 +275,18 @@ multi-cc-im/
 
 参考 `CLAUDE.md` 和 [`docs/dev.md`](docs/dev.md)：先写会失败的测试 codify 目标行为 → 最少代码让它通过 → 重构 + ≥80% 覆盖。当前设计下测试无论如何写不通 → 停下重做 DD，**不许**在错假设上打补丁。
 
-## 加新 IM 适配器（Telegram / 飞书 / 等）
+## 加新 IM 适配器（Telegram / Slack / 等）
 
-1. 在 `packages/im-<name>/` 镜像 `packages/im-lark/` 的目录结构（待 M2 完成）。
+1. 在 `packages/im-<name>/` 镜像 `packages/im-lark/` 的目录结构。
 2. 实现 `@multi-cc-im/shared` 的 `IMAdapter` 接口：
    - `start(handler: IMHandler): Promise<void>`
    - `send(text: string, replyCtx: IMReplyContext): Promise<void>`
    - `stop(): Promise<void>`
 3. 在 `IMReplyContext` 加一个 discriminated-union 变体（`imType: 'telegram' | 'lark' | ...`）。
-4. 在 `apps/multi-cc-im/src/start.ts` 按配置开关把它接进 orchestrator。
-5. 凭据落 `~/.multi-cc-im/credentials/<im>.json`（mode 0600）。**不许**调 OS keychain — 见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)。
+4. 导出 `setupSchema: AdapterSetupSchema`（per-field `{ key, label, hint, secret, schema }` + 可选 `validate(values)`），让 W4 wizard 不依赖 adapter-specific 代码就能驱动配置流程。参考 `larkSetupSchema` 的形状。
+5. 在 `apps/multi-cc-im/src/adapters.ts` 的 `adapters` 数组里加一行 entry：`id` / `setupSchema` / `persist(values, paths)` / `buildAdapterRuntime({paths, log})`。`multi-cc-im start <id>`、`multi-cc-im login <id> --<field> <value>`、wizard 的 adapter 选择菜单这些会自动加上对应 adapter，无需改 CLI。
+6. 凭据落 `~/.multi-cc-im/credentials/<im>.json`（mode 0600）。**不许**调 OS keychain — 见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)。
+7. 可选：写 `docs/setup-<im>.md` 步骤指南，registry entry 里把 `guideDocPath` 指过去。wizard 启动时会用 `terminal-link` 渲染含 OSC 8 hyperlink 的指南（W6）。
 
 ## 加新终端适配器（tmux / kitty / 等）
 

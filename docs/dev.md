@@ -1,6 +1,6 @@
 # 开发命令 · TDD 节奏 · 调试
 
-> **⚠️ v1.5 transitional state（2026-05-09）**：本文大部分调试 / 故障排查段是 v1.4 wechat 时代的真实经验。M1 wechat purge（DD #86 §11.2）已删 wechat 路径；M2-M8 lark adapter 完成后本文会更新。当前 daemon 不可运行（无 IM adapter），直到 M2 落地。
+> **历史遗留警告（2026-05-11）**：本文部分调试 / 故障排查段是 v1.4 wechat 时代的真实经验。当前飞书 (Lark) adapter 已实施（DD #86 M2-M7 + interactive wizard DD W1-W8），daemon 可正常运行 —— 用户上手命令以 [`../README.md`](../README.md) Quick Start 为准。本文 wechat 时代字样仅作历史参考；通用的 TDD 节奏 / 单测调试经验仍然有效。
 
 > 本文是 v1 实施后的真实命令清单。新人 onboard 可对着跑。
 
