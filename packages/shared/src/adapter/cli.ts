@@ -16,7 +16,7 @@ interface BaseHookPayload {
  * Read / WebFetch / etc.). Used by multi-cc-im as the **permission gate**
  * per [DD: permission forward](../../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md):
  * hook subprocess writes `<paneId>_<sid>.PermissionRequest.<id>.json`,
- * daemon forwards to IM, IM user replies `@<tabname> /1` (allow) / `/2`
+ * daemon forwards to IM, IM user replies `#<tabname> /1` (allow) / `/2`
  * (deny), daemon writes `<paneId>_<sid>.PermissionResponse.<id>.json`,
  * hook subprocess reads it + writes stdout
  * `{permissionDecision:"allow"|"deny"}` + exits.

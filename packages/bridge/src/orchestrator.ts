@@ -120,7 +120,7 @@ export interface BridgeOrchestrator {
  *   selects which adapter `send()` to call (multi-IM-future-proof).
  *
  * **IMWork (global manual switch)**:
- *   `<stateDir>/IMWork` 0-byte tombstone. User toggles via `@multi-cc-im /start`
+ *   `<stateDir>/IMWork` 0-byte tombstone. User toggles via bare `/start`
  *   (write file) and `/stop` (delete file). When off, daemon refuses IM-to-cc
  *   dispatches (router-level gate) and refuses cc-to-IM forwards (handleStop
  *   gate). daemon start auto-resets to off.

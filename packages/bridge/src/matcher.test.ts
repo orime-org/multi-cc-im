@@ -123,7 +123,7 @@ describe('matchSession — tmux-style 4-level fallback over tabTitle', () => {
   });
 
   describe('reserved bridge name', () => {
-    it('@multi-cc-im never resolves to a session', () => {
+    it('#multi-cc-im never resolves to a session', () => {
       const a = s(RESERVED_BRIDGE_NAME);
       expect(matchSession(RESERVED_BRIDGE_NAME, [a])).toEqual({
         type: 'none',
