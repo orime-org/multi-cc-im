@@ -270,14 +270,14 @@ All five rows resolved. DD is **LOCKED**. The implementation milestone tracker i
 
 | ID | Scope | Status |
 |---|---|---|
-| **W1** | Add `@clack/prompts` v1.3.0 + `terminal-link` v5 + `open` v11 to root deps; verify ESM bundling under tsup | pending |
-| **W2** | Define schema-driven adapter setup interface in `@multi-cc-im/shared` (per D5): `AdapterSetupSchema` (zod) with per-field metadata `{ key, label, hint, secret, validate? }` + optional adapter-level `validate(values)` callback | pending |
-| **W3** | `packages/im-lark/`: implement schema (app_id non-secret, app_secret secret) + adapter-level validate (calls existing `loginLark` validation) | pending |
-| **W4** | New `packages/wizard/` (or `apps/multi-cc-im/src/wizard/`): generic schema-driven setup wizard rendering @clack/prompts; AWS-style mask for secret fields (D4-3) | pending |
-| **W5** | `apps/multi-cc-im/src/start.ts`: pre-flight credentials check (M7 already in place) replaced by D1 flow — adapter menu (no-arg) / adapter parse (arg) → check creds → branch [run daemon \| enter wizard then run daemon \| return] | pending |
-| **W6** | Inline configuration guide for `lark` (per D3-5): markdown-source-of-truth at `docs/setup-feishu.md`, terminal renders with `terminal-link` for clickable URLs, falls back to plain-text on unsupported terminals | pending |
-| **W7** | Replace existing `multi-cc-im login lark` subcommand: keep as a non-interactive shortcut for scripted automation (`--app-id` / `--app-secret` flags), but route through the same schema-driven write so format stays one-shot consistent | pending |
-| **W8** | Tests + docs: unit tests on schema-driven wizard (mocked clack IO), integration test for non-TTY path (exits with hint), README EN+CN setup section rewritten, conventions.md status row updated | pending |
+| **W1** | Add `@clack/prompts` v1.3.0 + `terminal-link` v5 + `open` v11 to root deps; verify ESM bundling under tsup | ✅ done (PR #96) |
+| **W2** | Define schema-driven adapter setup interface in `@multi-cc-im/shared` (per D5): `AdapterSetupSchema` (zod) with per-field metadata `{ key, label, hint, secret, validate? }` + optional adapter-level `validate(values)` callback | ✅ done (PR #97) |
+| **W3** | `packages/im-lark/`: implement schema (app_id non-secret, app_secret secret) + adapter-level validate (extracted `validateLarkCredentials` pure validator) | ✅ done (PR #98) |
+| **W4** | `apps/multi-cc-im/src/wizard/`: generic schema-driven setup wizard rendering @clack/prompts; AWS-style mask for secret fields (D4-3) | ✅ done (PR #99) |
+| **W5** | `apps/multi-cc-im/src/start.ts`: pre-flight credentials check replaced by D1 flow — adapter menu (no-arg) / adapter parse (arg) → check creds → branch [run daemon \| enter wizard then run daemon \| return]; new `adapters.ts` registry + `adapter-selector.ts` | ✅ done (PR #100) |
+| **W6** | Inline configuration guide for `lark` (per D3-5): `docs/setup-feishu.md` as markdown source-of-truth, `wizard/guide.ts` renderer with `terminal-link` OSC 8 hyperlinks + plain-text fallback | ✅ done (PR #101) |
+| **W7** | `multi-cc-im login <adapter>` subcommand rewritten to route through the same schema-driven validate + persist path the wizard uses; adapter-generic flag parsing (`--<kebab-key>` + `<ADAPTER>_<SCREAMING_KEY>` env); `loginLark` wrapper deleted | ✅ done (PR #102) |
+| **W8** | Tests + docs: unit tests on schema-driven wizard already covered in W4 (mocked clack IO, 15 tests); non-TTY integration via selector tests (3 guard tests in W5); README EN+CN setup sections rewritten for the new single-command flow; conventions.md status row updated; DD #86 §11.4 M8 collapsed into this PR's README rewrite | ✅ done (this PR) |
 
 ---
 
@@ -286,3 +286,4 @@ All five rows resolved. DD is **LOCKED**. The implementation milestone tracker i
 - **2026-05-10 (a)** — initial draft. D1 already locked from in-conversation user pick. D2 awaiting background due-diligence agent. D3 / D4 / D5 candidates and recommendations populated based on AWS CLI source, npm + GitHub data, and our existing adapter shape.
 - **2026-05-10 (b)** — D2 due-diligence agent returned. Matrix populated for all 6 candidates (cells reference GitHub commits / npm metadata / source files). Primary pick `@clack/prompts` v1.3.0 with backup `@inquirer/prompts` v8.4.2. DD ready for user step-5 decision per dimension.
 - **2026-05-10 (c)** — User accepted all four recommendations (D2/D3/D4/D5) verbatim. DD status moved to **LOCKED**; §10.1 lists W1–W8 implementation milestones.
+- **2026-05-11** — W1–W8 implementation complete across PRs #96–#103. W8 (this PR) collapses DD #86 §11.4 M8 docs polish into the wizard-flow README rewrite; the two milestones cover overlapping ground (post-lark docs cleanup) and are easier to ship together.

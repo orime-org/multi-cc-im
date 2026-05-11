@@ -4,8 +4,6 @@
 
 Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app, addressed by `@<tab-name>`. Plain (no-mention) messages are AI-routed to the most relevant cc tab. Includes IM-side tool permission gate (`/1` allow / `/2` deny) and a pluggable architecture for additional IMs / terminals / CLIs.
 
-> **⚠️ v1.5 transitional state (2026-05-09 — M1 in progress)**: the legacy WeChat adapter has been **removed** in M1 ([DD #86 §11.2](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md)) due to repeated upstream `undici` instability (PRs #76 / #78 / #82). The Lark/Feishu replacement (M2-M8) is **not yet implemented**. Running `multi-cc-im start` on `main` exits with `"no IM adapter configured"`. Sections below (login / commands / file paths) describe the **target shape after M2-M8 land**; they are not all wired yet. Track [DD #86 §11.4 implementation milestones](docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md) for status.
-
 ---
 
 # Part 1 — Direct use
@@ -36,23 +34,32 @@ Optional: symlink to `PATH`:
 ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
 ```
 
-## Setup (one-time)
-
-### 1. Login to Lark
-
-```bash
-./bin/multi-cc-im login lark
-```
-
-A QR code prints to the terminal. Scan it with your phone Lark. Token saved to `~/.multi-cc-im/credentials/lark.json` (mode 0600).
-
-cc hooks are auto-registered by `start` (next section) — no separate setup step. The first `start` writes a timestamped `.bak.<iso>` backup of `~/.claude/settings.json` before merging the `PreToolUse` and `Stop` hook entries. Existing hooks from other tools are preserved.
-
 ## Run
 
 ```bash
 ./bin/multi-cc-im start
 ```
+
+That's it. On first run the daemon detects no `~/.multi-cc-im/credentials/lark.json` and walks you through an interactive setup wizard backed by [`docs/setup-feishu.md`](docs/setup-feishu.md):
+
+1. Pick an IM adapter from the arrow-key menu (only `lark` today; cursor defaults to whichever one already has saved credentials).
+2. Read the inline configuration guide — it links to the Feishu Open Platform pages where you create the self-built app, enable bot capability, set event subscription to WebSocket, and copy the `App ID` + `App Secret`.
+3. Enter `App ID` (visible) and `App Secret` (masked input). The wizard validates them against Feishu's `auth.v3.tenantAccessToken.internal` endpoint live before persisting.
+4. Daemon continues into normal run mode in the same process.
+
+To skip the menu and go straight to a specific adapter: `./bin/multi-cc-im start lark`.
+
+For non-interactive / scripted setup (CI / dotfile sync / re-running setup):
+
+```bash
+./bin/multi-cc-im login lark --app-id cli_xxxxxxxxxxxx --app-secret xxxxxxxxxxxxxxxx
+# or via env vars:
+LARK_APP_ID=cli_xxx LARK_APP_SECRET=xxx ./bin/multi-cc-im login lark
+```
+
+`login` runs the same validate + persist path the wizard uses — the on-disk JSON is identical regardless of entry point. After it succeeds, `multi-cc-im start` skips the wizard.
+
+cc hooks are auto-registered by `start` — no separate setup step. The first `start` writes a timestamped `.bak.<iso>` backup of `~/.claude/settings.json` before merging the `PreToolUse` and `Stop` hook entries. Existing hooks from other tools are preserved.
 
 Daemon runs in the foreground. Stderr carries log output. Ctrl+C stops the daemon and clears `state/IMWork`, `state/IMOrigin`, `state/daemon.pid`.
 
@@ -115,16 +122,14 @@ Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) are auto-allowed wit
 
 | Path | Purpose |
 |---|---|
-| `~/.multi-cc-im/config.toml` | Daemon config (created on first login) |
-| `~/.multi-cc-im/credentials/lark.json` | `app_id + app_secret` + login state (mode 0600) |
-| `~/.multi-cc-im/state/lark-cursor` | iLink getupdates cursor (resume across restarts) |
+| `~/.multi-cc-im/config.toml` | Daemon config (external paths like `wezterm`, cached at runtime) |
+| `~/.multi-cc-im/credentials/lark.json` | `{ appId, appSecret, savedAt }` (mode 0600) |
 | `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM mode toggle (file existence = ON) |
 | `~/.multi-cc-im/state/IMOrigin` | Latest IM reply context (overwritten on every inbound) |
 | `~/.multi-cc-im/state/daemon.pid` | Daemon liveness lock |
 | `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc reply event (consumed by daemon) |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | In-flight tool approval |
 | `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | Approval result |
-| `~/.multi-cc-im/inbox/lark/<sid>/` | Decrypted inbound images / files for cc to `Read` |
 
 Override the root with `MULTI_CC_IM_HOME` env.
 
@@ -132,14 +137,17 @@ Override the root with `MULTI_CC_IM_HOME` env.
 
 | Command | Description |
 |---|---|
-| `multi-cc-im start` | Start the bridge daemon (long-running, foreground); auto-registers cc hooks in `~/.claude/settings.json` on first run (idempotent merge) |
-| `multi-cc-im login lark` | Scan QR + save `app_id + app_secret` |
-| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running |
-| `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`) |
-| `multi-cc-im --help` / `-h` | Print help |
-| `multi-cc-im --version` / `-v` | Print version |
+| `multi-cc-im start` | Start the daemon (long-running, foreground). No-arg renders an adapter-selection menu; falls through to the wizard if the chosen adapter isn't configured yet. Auto-registers cc hooks on first run (idempotent merge). |
+| `multi-cc-im start <adapter>` | Skip the menu and start with the named adapter (e.g. `start lark`). Falls through to the wizard if its credentials are missing. |
+| `multi-cc-im login <adapter> [--<field> <value>...]` | Non-interactive credential setup. Field flags are derived from the adapter's schema (e.g. lark: `--app-id` `--app-secret`); env vars `<ADAPTER>_<FIELD>` (e.g. `LARK_APP_ID`) are also recognized. Routes through the same validate + persist path as the wizard. |
+| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running. |
+| `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`). |
+| `multi-cc-im --help` / `-h` | Print help. |
+| `multi-cc-im --version` / `-v` | Print version. |
 
 Exit codes: `0` success, `1` runtime failure, `2` usage error.
+
+Headless guards: `multi-cc-im start` (no arg) needs a TTY for the adapter menu. Headless callers must specify the adapter — `multi-cc-im start lark`. Same applies if creds are missing: the wizard needs a TTY; headless callers should run `multi-cc-im login lark --app-id ... --app-secret ...` first.
 
 ## Troubleshooting
 
@@ -167,14 +175,18 @@ rm ~/.multi-cc-im/state/daemon.pid
 ### Daemon runs but Lark doesn't receive my messages
 
 ```bash
-# 1. Cursor advancing?
-ls -la ~/.multi-cc-im/state/lark-cursor
+# 1. WSClient connected? Look for "[lark] WS connected" + "ws client ready"
+#    in the daemon's stderr log when it started up. If missing, the long-
+#    connection didn't establish — usually a credential / event-subscription
+#    config issue. Re-run setup to validate against Feishu live:
+./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>
 
-# 2. app_id + app_secret still valid?
-./bin/multi-cc-im login lark   # re-login if needed
-
-# 3. cc hook actually firing?
+# 2. cc hook actually firing? Stop files should appear when cc finishes a reply:
 ls -la ~/.multi-cc-im/state/*.Stop.*
+
+# 3. Feishu app published? Permissions + WebSocket event subscription
+#    won't take effect until you publish a version in 飞书开放平台 →
+#    版本管理与发布 → 创建版本 → 提交发布. See docs/setup-feishu.md.
 ```
 
 ### `@frontend` says "not found"
@@ -232,7 +244,7 @@ multi-cc-im/
 ├── packages/
 │   ├── shared/              — Cross-package types + zod schemas
 │   ├── storage-files/       — TOML + JSON file stores (config, credentials, cursor, queues)
-│   ├── im-lark/             — Lark/Feishu adapter (M2-M8 in progress; npm depend `@larksuiteoapi/node-sdk`)
+│   ├── im-lark/             — Lark/Feishu adapter (npm depend `@larksuiteoapi/node-sdk`)
 │   ├── term-wezterm/        — wezterm CLI adapter
 │   ├── cli-cc/              — Claude Code hook adapter
 │   └── bridge/              — Router + orchestrator + AI-routed dispatch
@@ -267,14 +279,16 @@ Per `CLAUDE.md` and [`docs/dev.md`](docs/dev.md): write a failing test that codi
 
 ## Adding a new IM adapter (Telegram / Slack / etc.)
 
-1. Create `packages/im-<name>/` mirroring `packages/im-lark/` layout (once M2 lands).
+1. Create `packages/im-<name>/` mirroring `packages/im-lark/` layout.
 2. Implement the `IMAdapter` interface from `@multi-cc-im/shared`:
    - `start(handler: IMHandler): Promise<void>`
    - `send(text: string, replyCtx: IMReplyContext): Promise<void>`
    - `stop(): Promise<void>`
 3. Define an `IMReplyContext` discriminated-union variant with `imType: 'telegram' | 'lark' | ...`.
-4. Wire it into `apps/multi-cc-im/src/start.ts` based on a config flag.
-5. Add credential storage under `~/.multi-cc-im/credentials/<im>.json` (mode 0600). **Do not** call OS keychain — see [DD: credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md).
+4. Export a `setupSchema: AdapterSetupSchema` (per-field `{ key, label, hint, secret, schema }` + optional `validate(values)`) so the W4 wizard can drive setup without adapter-specific code. See `larkSetupSchema` for the reference shape.
+5. Add a new entry to `adapters` in `apps/multi-cc-im/src/adapters.ts` with `id` / `setupSchema` / `persist(values, paths)` / `buildAdapterRuntime({paths, log})`. The CLI inherits `multi-cc-im start <id>` + `multi-cc-im login <id> --<field> <value>` + the wizard's adapter menu for free.
+6. Add credential storage under `~/.multi-cc-im/credentials/<im>.json` (mode 0600). **Do not** call OS keychain — see [DD: credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md).
+7. Optional: ship a `docs/setup-<im>.md` walkthrough and point `guideDocPath` at it in the registry entry. The wizard renders it with clickable OSC 8 hyperlinks on supporting terminals (W6).
 
 ## Adding a new terminal adapter (tmux / kitty / etc.)
 
