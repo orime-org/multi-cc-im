@@ -104,6 +104,10 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       appSecret: creds.appSecret,
       domain: lark.Domain.Feishu,
       disableTokenCache: false,
+      // Suppress SDK's `[info]: [ 'client ready' ]` / similar boilerplate;
+      // our own `[lark]`-prefixed callback logs cover the lifecycle states
+      // a user cares about. Errors and warnings still surface.
+      loggerLevel: lark.LoggerLevel.warn,
     }) as unknown as LarkClientShape;
   }
 
@@ -121,6 +125,13 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       appSecret: creds.appSecret,
       domain: lark.Domain.Feishu,
       autoReconnect: true,
+      // Drops the multi-line `[info]: [ '[ws]', 'receive events or callbacks
+      // through persistent connection only available in self-build &
+      // Feishu app, Configured in: Developer Console(开发者后台) -> ...' ]`
+      // hint plus other `reconnect` / `ws client ready` info-level chatter.
+      // The corresponding lifecycle states are covered by our typed
+      // `callbacks` (onReady / onError / onReconnecting / onReconnected).
+      loggerLevel: lark.LoggerLevel.warn,
       ...callbacks,
     });
   }
@@ -216,18 +227,47 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
         },
       });
 
+      // Wrap onReady in a promise so `start()` doesn't resolve until the
+      // WebSocket handshake actually succeeds. The SDK's `WSClient.start()`
+      // returns after kicking off the connect, NOT after the handshake —
+      // confirmed via live log timing (orchestrator's "ready" line fired
+      // ~1 s before `[lark] WS connected`). Without this gate, the daemon
+      // logs "orchestrator started" while it still can't receive inbound
+      // messages; users see their first IM message disappear and have to
+      // retry. Per user smoke 2026-05-11.
+      //
+      // No timeout: SDK auto-reconnects indefinitely on transient network
+      // failures. If the network is truly down, the `[lark] WS
+      // reconnecting...` log keeps the user informed; they can Ctrl+C to
+      // back out. Failing fast with a timeout was rejected in favor of
+      // honest status reporting.
+      let resolveReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+
       const callbacks = {
-        onReady: () => log('[lark] WS connected'),
+        onReady: () => {
+          log('[lark] WS connected');
+          resolveReady();
+        },
         onError: (err: Error) => {
           log(`[lark] WS error: ${formatErrorWithCause(err)}`);
           if (handler.onError) void handler.onError(err);
         },
-        onReconnecting: () => log('[lark] WS reconnecting...'),
-        onReconnected: () => log('[lark] WS reconnected'),
+        onReconnecting: () =>
+          log(
+            '[lark] WS reconnecting (Feishu network glitch, SDK retrying)...',
+          ),
+        onReconnected: () => log('[lark] WS reconnected — bridge ready'),
       };
 
+      log('[lark] connecting to Feishu WS...');
       wsClient = (opts.buildWSClient ?? buildDefaultWSClient)(creds, callbacks);
       await wsClient.start({ eventDispatcher: dispatcher });
+      // SDK's start() may have returned before the actual handshake. Block
+      // until onReady fires so callers can trust "started = bridge ready".
+      await ready;
     },
 
     async send(content: string, replyCtx: IMReplyContext): Promise<void> {
