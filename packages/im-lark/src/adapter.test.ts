@@ -85,7 +85,13 @@ describe('createLarkAdapter', () => {
   describe('start()', () => {
     it('loads credentials → builds Client + WSClient → registers handler → calls WSClient.start', async () => {
       const dispatcher = makeStubDispatcher();
-      const wsStart = vi.fn(async () => {});
+      // Capture the callbacks the adapter passes to buildWSClient so the
+      // stub `start` can trigger onReady — adapter.start() now awaits
+      // onReady so the SDK's start() resolution alone won't unblock it.
+      let cbs!: { onReady: () => void; onError: (err: Error) => void; onReconnecting: () => void; onReconnected: () => void };
+      const wsStart = vi.fn(async () => {
+        cbs.onReady();
+      });
       const wsClose = vi.fn(() => {});
       const wsClient: LarkWSClientShape = { start: wsStart, close: wsClose };
       const client: LarkClientShape = {
@@ -97,7 +103,10 @@ describe('createLarkAdapter', () => {
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
         buildClient: () => client,
-        buildWSClient: () => wsClient,
+        buildWSClient: (_creds, captured) => {
+          cbs = captured;
+          return wsClient;
+        },
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -121,7 +130,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -138,7 +152,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(handler);
@@ -178,7 +197,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(handler);
@@ -217,7 +241,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(handler);
@@ -240,7 +269,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -265,7 +299,12 @@ describe('createLarkAdapter', () => {
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
         buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -298,7 +337,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: () => {} }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -323,7 +367,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: wsClose }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: wsClose,
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -339,7 +388,12 @@ describe('createLarkAdapter', () => {
         buildClient: () => ({
           im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
         }),
-        buildWSClient: () => ({ start: async () => {}, close: wsClose }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: wsClose,
+        }),
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
@@ -355,6 +409,111 @@ describe('createLarkAdapter', () => {
         credentialStore: makeStore(VALID_CREDS),
       });
       expect(adapter.name).toBe('lark');
+    });
+  });
+
+  // ============================================================================
+  // Cold-start race fix — adapter.start() now awaits onReady before
+  // resolving so callers (orchestrator + start.ts) can trust that
+  // "started" means "bridge is actually ready for inbound IM messages".
+  // Per user smoke 2026-05-11 (first `/start` sent during the SDK's
+  // initial WS handshake was lost; user had to re-send).
+  // ============================================================================
+
+  describe('start() — WS readiness gating', () => {
+    it('does NOT resolve until onReady fires (cold-start race fix)', async () => {
+      const dispatcher = makeStubDispatcher();
+      let cbs!: { onReady: () => void; onError: (err: Error) => void; onReconnecting: () => void; onReconnected: () => void };
+      // wsClient.start() resolves synchronously but does NOT trigger
+      // onReady — simulates the SDK kicking off the WS handshake but
+      // the actual connect taking longer.
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, captured) => {
+          cbs = captured;
+          return { start: async () => {}, close: () => {} };
+        },
+        buildDispatcher: () => dispatcher,
+      });
+
+      let resolved = false;
+      const startPromise = adapter.start(makeHandler()).then(() => {
+        resolved = true;
+      });
+
+      // Yield a few microtask ticks — SDK's start() has resolved, but
+      // onReady hasn't fired yet. adapter.start() must still be pending.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(resolved).toBe(false);
+
+      // Now fire onReady — adapter.start() should resolve.
+      cbs.onReady();
+      await startPromise;
+      expect(resolved).toBe(true);
+    });
+
+    it('logs `[lark] connecting to Feishu WS...` at start so the user sees the wait state', async () => {
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        log: (line) => logs.push(line),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+      expect(logs).toContain('[lark] connecting to Feishu WS...');
+      expect(logs).toContain('[lark] WS connected');
+      // Ordering: connecting log fires before connected log.
+      const connectingIdx = logs.indexOf('[lark] connecting to Feishu WS...');
+      const connectedIdx = logs.indexOf('[lark] WS connected');
+      expect(connectingIdx).toBeLessThan(connectedIdx);
+    });
+
+    it('onReconnecting callback emits a user-readable log explaining the wait', async () => {
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      let cbs!: { onReady: () => void; onError: (err: Error) => void; onReconnecting: () => void; onReconnected: () => void };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        log: (line) => logs.push(line),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, captured) => {
+          cbs = captured;
+          return {
+            start: async () => {
+              cbs.onReady();
+            },
+            close: () => {},
+          };
+        },
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      // Simulate the SDK losing the WS and starting to reconnect.
+      cbs.onReconnecting();
+      cbs.onReconnected();
+
+      const joined = logs.join('\n');
+      expect(joined).toMatch(
+        /\[lark\] WS reconnecting \(Feishu network glitch, SDK retrying\)/,
+      );
+      expect(joined).toContain('[lark] WS reconnected — bridge ready');
     });
   });
 });
