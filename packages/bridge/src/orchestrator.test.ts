@@ -916,7 +916,7 @@ describe('createOrchestrator — log sink', () => {
       sendKeystrokeDelayMs: 0,
       // Stub aiRouter that always returns null so the plain-with-AI
       // failure echo fires (3-line: error + 可用 + 或用 @<tab>).
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
       log: (l) => lines.push(l),
     });
     await orch.start();
@@ -964,6 +964,7 @@ describe('createOrchestrator — log sink', () => {
         target: 'frontend',
         intent: 'do x',
         reason: 'literal name match',
+        permissionResponse: null,
       }),
       log: (l) => lines.push(l),
     });
@@ -992,6 +993,7 @@ describe('createOrchestrator — log sink', () => {
         target: null,
         intent: null,
         reason: 'I bailed on topic mention',
+        permissionResponse: null,
       }),
       log: (l) => lines.push(l),
     });
@@ -1582,6 +1584,7 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
         target: 'frontend',
         intent: '写个登录页',
         reason: 'r',
+        permissionResponse: null,
       }),
     });
     await orch.start();
@@ -1612,7 +1615,7 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
       cliAdapter: cli,
       state: memState(),
       sendKeystrokeDelayMs: 0,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     await orch.start();
     await im.handler!.onMessage(incoming('哎呀今天好烦'));
@@ -1662,7 +1665,7 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
       sendKeystrokeDelayMs: 0,
       aiRouter: async (opts) => {
         received = opts.currentTab;
-        return { target: 'api', intent: '继续', reason: 'pronoun' };
+        return { target: 'api', intent: '继续', reason: 'pronoun', permissionResponse: null };
       },
     });
     await orch.start();

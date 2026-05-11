@@ -154,6 +154,117 @@ describe('ai-router — renderRoutingPrompt', () => {
     });
     expect(out).not.toMatch(/cwd/i);
   });
+
+  // P2 — natural-language permission reply (DD 2026-05-11)
+  describe('pendingRequests integration', () => {
+    it('omits the PENDING block when pendingRequests is undefined (backward compat)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'hi',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      expect(out).not.toMatch(/PENDING TOOL PERMISSION/i);
+      expect(out).not.toMatch(/permissionResponse/);
+    });
+
+    it('omits the PENDING block when pendingRequests is empty', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'hi',
+        tabs: ['frontend'],
+        currentTab: null,
+        pendingRequests: [],
+      });
+      expect(out).not.toMatch(/PENDING TOOL PERMISSION/i);
+      expect(out).not.toMatch(/permissionResponse/);
+    });
+
+    it('renders one pending request with tab name + tool + input keys', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'multi-cc-im 那个我同意',
+        tabs: ['multi-cc-im', 'node'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf node_modules' },
+          },
+        ],
+      });
+      expect(out).toMatch(/PENDING TOOL PERMISSION/i);
+      // Tab name + tool name + key input fragment all visible:
+      expect(out).toContain('multi-cc-im');
+      expect(out).toContain('Bash');
+      expect(out).toContain('rm -rf node_modules');
+    });
+
+    it('renders multiple pending requests as separate bullets', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'node 的拒绝',
+        tabs: ['multi-cc-im', 'node'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf node_modules' },
+          },
+          {
+            tabName: 'node',
+            toolName: 'Edit',
+            toolInput: { file_path: '/etc/hosts' },
+          },
+        ],
+      });
+      expect(out).toContain('multi-cc-im');
+      expect(out).toContain('node');
+      expect(out).toContain('Bash');
+      expect(out).toContain('Edit');
+      expect(out).toContain('/etc/hosts');
+    });
+
+    it('includes the D5-3 asymmetric trust rule (allow requires a content match-signal)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: '同意',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf node_modules' },
+          },
+        ],
+      });
+      // The rule is named:
+      expect(out).toMatch(/asymmetric|match[-\s]signal/i);
+      // The downgrade direction is spelled out:
+      expect(out).toMatch(/downgrade.*deny|allow.*→.*deny|degrade.*to.*deny/i);
+      // The three signal types are mentioned:
+      expect(out).toMatch(/tool name/i);
+      expect(out).toMatch(/argument|substring/i);
+      expect(out).toMatch(/paraphrase/i);
+      // Deny is safe without a match-signal:
+      expect(out).toMatch(/deny.*safe|deny does NOT require/i);
+    });
+
+    it('extends the OUTPUT spec with a permissionResponse field', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'multi-cc-im 同意',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf node_modules' },
+          },
+        ],
+      });
+      expect(out).toContain('"permissionResponse"');
+      expect(out).toMatch(/"decision":\s*"allow"\s*\|\s*"deny"/);
+    });
+  });
 });
 
 // ============================================================================
@@ -218,6 +329,7 @@ describe('ai-router — parseRoutingOutput', () => {
       target: 'frontend',
       intent: '做登录页',
       reason: '前端',
+      permissionResponse: null,
     });
   });
 
@@ -304,6 +416,94 @@ describe('ai-router — parseRoutingOutput', () => {
     );
     expect(out.target).toBeNull();
   });
+
+  // P2 — natural-language permission reply (DD 2026-05-11)
+  describe('permissionResponse extraction', () => {
+    it('absent → permissionResponse is null', () => {
+      const out = parseRoutingOutput(
+        envelope('{"target":"frontend","intent":"x","reason":"r"}'),
+      );
+      expect(out.permissionResponse).toBeNull();
+    });
+
+    it('valid allow → preserved', () => {
+      const inner = JSON.stringify({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'multi-cc-im',
+          decision: 'allow',
+          reason: '用户同意 rm node_modules',
+        },
+      });
+      const out = parseRoutingOutput(envelope(inner));
+      expect(out.permissionResponse).toEqual({
+        target: 'multi-cc-im',
+        decision: 'allow',
+        reason: '用户同意 rm node_modules',
+      });
+    });
+
+    it('valid deny → preserved', () => {
+      const inner = JSON.stringify({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'node',
+          decision: 'deny',
+          reason: '用户拒绝',
+        },
+      });
+      const out = parseRoutingOutput(envelope(inner));
+      expect(out.permissionResponse).toEqual({
+        target: 'node',
+        decision: 'deny',
+        reason: '用户拒绝',
+      });
+    });
+
+    it('missing target → permissionResponse is null (incomplete)', () => {
+      const inner = JSON.stringify({
+        target: null,
+        intent: null,
+        reason: 'r',
+        permissionResponse: {
+          decision: 'allow',
+          reason: 'r',
+        },
+      });
+      const out = parseRoutingOutput(envelope(inner));
+      expect(out.permissionResponse).toBeNull();
+    });
+
+    it('invalid decision value → permissionResponse is null', () => {
+      const inner = JSON.stringify({
+        target: null,
+        intent: null,
+        reason: 'r',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'maybe',
+          reason: 'r',
+        },
+      });
+      const out = parseRoutingOutput(envelope(inner));
+      expect(out.permissionResponse).toBeNull();
+    });
+
+    it('non-object permissionResponse → null', () => {
+      const inner = JSON.stringify({
+        target: null,
+        intent: null,
+        reason: 'r',
+        permissionResponse: 'allow',
+      });
+      const out = parseRoutingOutput(envelope(inner));
+      expect(out.permissionResponse).toBeNull();
+    });
+  });
 });
 
 // ============================================================================
@@ -335,7 +535,12 @@ describe('ai-router — routeViaAI integration (stub binary)', () => {
       currentTab: null,
       claudeBinary: stub,
     });
-    expect(out).toEqual({ target: 'frontend', intent: 'hi', reason: 'r' });
+    expect(out).toEqual({
+      target: 'frontend',
+      intent: 'hi',
+      reason: 'r',
+      permissionResponse: null,
+    });
   });
 
   it('binary missing → null result with ENOENT reason', async () => {
@@ -401,6 +606,44 @@ exit 0
     chmodSync(path, 0o755);
     return { binary: path, envDumpPath };
   }
+
+  // P2 — natural-language permission reply (DD 2026-05-11)
+  it('forwards pendingRequests into prompt and returns AI permissionResponse', async () => {
+    const stub = writeStub(
+      JSON.stringify({
+        result: JSON.stringify({
+          target: null,
+          intent: null,
+          reason: 'permission reply',
+          permissionResponse: {
+            target: 'multi-cc-im',
+            decision: 'allow',
+            reason: '用户同意 rm node_modules',
+          },
+        }),
+      }),
+    );
+    const out = await routeViaAI({
+      userMsg: 'multi-cc-im 那个 rm 的我同意',
+      tabs: ['multi-cc-im', 'node'],
+      currentTab: null,
+      claudeBinary: stub,
+      pendingRequests: [
+        {
+          tabName: 'multi-cc-im',
+          toolName: 'Bash',
+          toolInput: { command: 'rm -rf node_modules' },
+        },
+      ],
+    });
+    expect(out.target).toBeNull();
+    expect(out.intent).toBeNull();
+    expect(out.permissionResponse).toEqual({
+      target: 'multi-cc-im',
+      decision: 'allow',
+      reason: '用户同意 rm node_modules',
+    });
+  });
 
   it('strips WEZTERM_PANE from the spawned cc env (prevents stop-hook misforward of routing JSON)', async () => {
     const { binary, envDumpPath } = writeStubDumpingEnv(
