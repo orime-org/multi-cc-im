@@ -4,9 +4,14 @@
 // handles the extension rewrite. v2 will tsup-bundle to .js, at which point
 // this file could regain a `#!/usr/bin/env node` shebang directly.
 
+import { adapters, findAdapter } from './adapters.js';
 import { runCleanupCommand } from './cleanup.js';
 import { runHookCommand } from './hook.js';
-import { runLoginLarkCommand } from './login.js';
+import {
+  fieldKeyToEnvVar,
+  fieldKeyToFlag,
+  runLoginCommand,
+} from './login.js';
 import { runStartCommand } from './start.js';
 
 const HELP_TEXT = `multi-cc-im — IM ↔ Claude Code TUI bridge
@@ -83,41 +88,67 @@ async function main(): Promise<number> {
 
 async function dispatchLogin(args: string[]): Promise<number> {
   const [im, ...rest] = args;
-  if (im !== 'lark') {
+  const knownIds = adapters.map((a) => a.id).join(', ');
+
+  if (im === undefined) {
     process.stderr.write(
-      `multi-cc-im login: unsupported IM '${im ?? '(none)'}' — only 'lark' is supported in M2.\n` +
-        `  See DD #86 §11.4 for the milestone status.\n`,
+      `multi-cc-im login: adapter required\n` +
+        `Usage: multi-cc-im login <adapter> [--<field> <value>]\n` +
+        `  Available adapters: ${knownIds}\n`,
     );
     return 2;
   }
 
-  // Parse `--app-id <id>` and `--app-secret <secret>` from the remaining
-  // args. Falls back to LARK_APP_ID / LARK_APP_SECRET env when absent.
-  let appId = process.env.LARK_APP_ID ?? '';
-  let appSecret = process.env.LARK_APP_SECRET ?? '';
+  const entry = findAdapter(im);
+  if (!entry) {
+    process.stderr.write(
+      `multi-cc-im login: unknown adapter '${im}'\n` +
+        `  Available: ${knownIds}\n`,
+    );
+    return 2;
+  }
+
+  // Build flag + env-var lookup tables from the adapter's schema fields.
+  // Convention (W7): camelCase key → --kebab-case flag + ADAPTERID_SCREAMING
+  // env var. Adding a new adapter inherits CLI flag/env support automatically.
+  const flagToKey = new Map<string, string>();
+  const envToKey = new Map<string, string>();
+  for (const field of entry.setupSchema.fields) {
+    flagToKey.set(`--${fieldKeyToFlag(field.key)}`, field.key);
+    envToKey.set(fieldKeyToEnvVar(entry.id, field.key), field.key);
+  }
+
+  // Seed values from env, override with CLI flags.
+  const values: Record<string, unknown> = {};
+  for (const [envName, key] of envToKey) {
+    const v = process.env[envName];
+    if (v !== undefined) values[key] = v;
+  }
   for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i];
-    if (arg === '--app-id' && i + 1 < rest.length) {
-      appId = rest[i + 1]!;
-      i++;
-    } else if (arg === '--app-secret' && i + 1 < rest.length) {
-      appSecret = rest[i + 1]!;
+    const arg = rest[i]!;
+    const key = flagToKey.get(arg);
+    if (key !== undefined && i + 1 < rest.length) {
+      values[key] = rest[i + 1]!;
       i++;
     } else {
+      const flagsUsage = [...flagToKey.keys()]
+        .map((f) => `[${f} <value>]`)
+        .join(' ');
+      const envsUsage = [...envToKey.keys()].join(' / ');
       process.stderr.write(
-        `multi-cc-im login lark: unknown arg '${arg}'\n` +
-          `Usage: multi-cc-im login lark [--app-id <id>] [--app-secret <secret>]\n` +
-          `       (or set LARK_APP_ID / LARK_APP_SECRET env vars).\n`,
+        `multi-cc-im login ${im}: unknown arg '${arg}'\n` +
+          `Usage: multi-cc-im login ${im} ${flagsUsage}\n` +
+          `       (or set env vars: ${envsUsage})\n`,
       );
       return 2;
     }
   }
 
-  const result = await runLoginLarkCommand({ appId, appSecret });
+  const result = await runLoginCommand({ adapter: im, values });
   if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
-  if (result.exitCode === 0 && result.credentials) {
+  if (result.exitCode === 0) {
     process.stdout.write(
-      `✓ lark login successful — credentials saved to ~/.multi-cc-im/credentials/lark.json\n`,
+      `✓ ${im} login successful — credentials saved to ~/.multi-cc-im/credentials/${im}.json\n`,
     );
   }
   return result.exitCode;

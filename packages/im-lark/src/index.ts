@@ -8,9 +8,7 @@
 // **M8 (pending)**: docs polish.
 
 export {
-  loginLark,
   validateLarkCredentials,
-  type LoginLarkOpts,
   type ValidateLarkCredentialsOpts,
   type LarkLoginClientFactory,
 } from './login.js';
