@@ -1043,6 +1043,67 @@ describe('router — AI-routed echo format', () => {
     expect(result.echo).toContain('无法识别目标');
   });
 
+  it('aiTrace: every plain-AI route surfaces target / intent / reason for orchestrator logging', async () => {
+    // Per user smoke 2026-05-11 ("需要把 CC 分诊错误打出来"): RouterResult
+    // now carries an aiTrace so orchestrator stderr can show the AI's
+    // decision for prompt-iteration visibility.
+    const state = memState(null);
+
+    // Happy path — AI picks a tab.
+    const ok = await route(incoming('hello there'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'hello there',
+        reason: 'literal name match',
+      }),
+    });
+    expect(ok.aiTrace).toEqual({
+      target: 'frontend',
+      intent: 'hello there',
+      reason: 'literal name match',
+      fallback: null,
+    });
+
+    // Substring fallback — AI returned null but message contains tab.
+    const fb = await route(incoming('frontend 已经合并'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'I bailed on the topic-mention case',
+      }),
+    });
+    expect(fb.aiTrace).toEqual({
+      target: null,
+      intent: null,
+      reason: 'I bailed on the topic-mention case',
+      fallback: 'substring',
+    });
+
+    // Total failure — no AI pick, no substring match.
+    const miss = await route(incoming('哎呀今天好烦'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'no signal in message',
+      }),
+    });
+    expect(miss.aiTrace).toEqual({
+      target: null,
+      intent: null,
+      reason: 'no signal in message',
+      fallback: null,
+    });
+  });
+
   it('AI picks unknown tab → echo includes both the picked-but-missing name AND the actual available list', async () => {
     const state = memState(null);
     const result = await route(incoming('hello'), {

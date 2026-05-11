@@ -111,6 +111,34 @@ export interface RouterResult {
   imWorkAction?:
     | { kind: 'enable'; auto: boolean }
     | { kind: 'disable' };
+  /**
+   * Trace of the AI router's decision for plain (no-mention) messages.
+   * Populated whenever `handlePlainWithAI` consulted the AI router —
+   * regardless of whether the AI picked a target, fell back to
+   * substring match, or failed entirely. Orchestrator logs this so
+   * the user can iterate on the prompt without rebuilding the daemon.
+   *
+   * Per user smoke 2026-05-11: "需要把 CC 分诊错误打出来，理论上分诊不
+   * 应该失败" — surface the AI's reason text in stderr so prompt
+   * regressions are visible.
+   *
+   * Undefined when the message didn't go through `handlePlainWithAI`
+   * (e.g. it was a `@<tab>` mention, bridge command, etc.).
+   */
+  aiTrace?: {
+    /** What the AI picked as the target tab title, or null if it bailed. */
+    target: string | null;
+    /** What the AI extracted as the cleaned task description, or null. */
+    intent: string | null;
+    /** The AI's <15-word debugging note for its decision. */
+    reason: string | null;
+    /**
+     * Set when the daemon's substring fallback kicked in because the AI
+     * returned null. Helpful for spotting prompt-coverage gaps the
+     * fallback is papering over.
+     */
+    fallback?: 'substring' | null;
+  };
 }
 
 /**
@@ -306,6 +334,15 @@ async function handlePlainWithAI(
     currentTab,
   });
 
+  // Capture AI decision for the orchestrator to log. Per user smoke
+  // 2026-05-11 — "理论上分诊不应该失败"; surfacing the reason in stderr
+  // lets the user iterate on the prompt without rebuilding.
+  const baseTrace = {
+    target: result.target,
+    intent: result.intent,
+    reason: result.reason,
+  };
+
   const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
 
   if (result.target === null || result.intent === null) {
@@ -326,6 +363,7 @@ async function handlePlainWithAI(
       return {
         echo: `target: ${displayName(fallback)}\ncontent: ${truncate(body, ECHO_EXCERPT_MAX)}`,
         dispatches: [{ session: fallback, content: body }],
+        aiTrace: { ...baseTrace, fallback: 'substring' },
       };
     }
     return {
@@ -334,6 +372,7 @@ async function handlePlainWithAI(
         `   可用：${availableTabs}\n` +
         `   或用 @<tab> 显式指定`,
       dispatches: [],
+      aiTrace: { ...baseTrace, fallback: null },
     };
   }
 
@@ -346,6 +385,7 @@ async function handlePlainWithAI(
         `   可用：${availableTabs}\n` +
         `   或用 @<tab> 显式指定`,
       dispatches: [],
+      aiTrace: { ...baseTrace, fallback: null },
     };
   }
 
@@ -355,6 +395,7 @@ async function handlePlainWithAI(
   return {
     echo: `target: ${displayName(target)}\ncontent: ${truncate(result.intent, ECHO_EXCERPT_MAX)}`,
     dispatches: [{ session: target, content: result.intent }],
+    aiTrace: { ...baseTrace, fallback: null },
   };
 }
 
