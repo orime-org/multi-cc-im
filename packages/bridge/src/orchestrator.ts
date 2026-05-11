@@ -243,6 +243,20 @@ export function createOrchestrator(
     // Empty result (image-only / no text)
     if (result.echo === '' && result.dispatches.length === 0) return;
 
+    // Log the AI router's decision (when consulted) so the user can
+    // iterate on the routing prompt without rebuilding the daemon.
+    // Per user smoke 2026-05-11: "需要把 CC 分诊错误打出来,理论上分诊
+    // 不应该失败" — surfacing the reason exposes prompt-coverage gaps
+    // and confirms when the substring fallback paper'd over an AI
+    // miss vs when the AI actually got it right.
+    if (result.aiTrace) {
+      const t = result.aiTrace;
+      const fallbackTag = t.fallback ? ` fallback=${t.fallback}` : '';
+      log(
+        `[AI router] target=${t.target ?? 'none'} intent="${truncate(t.intent ?? '', 60)}" reason="${truncate(t.reason ?? '', 60)}"${fallbackTag}`,
+      );
+    }
+
     if (result.dispatches.length > 0) {
       const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
       log(`[IM → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);

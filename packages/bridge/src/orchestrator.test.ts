@@ -946,6 +946,67 @@ describe('createOrchestrator — log sink', () => {
     await orch.stop();
   });
 
+  it('[AI router] trace line is logged whenever the AI router was consulted (for prompt iteration)', async () => {
+    // Per user smoke 2026-05-11 ("需要把 CC 分诊错误打出来"): every plain
+    // message that goes through the AI router now logs the model's
+    // decision in stderr so the user can iterate on the prompt without
+    // rebuilding the daemon.
+    const im = makeMockIM();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'do x',
+        reason: 'literal name match',
+      }),
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('frontend please do x'));
+
+    const traceLine = lines.find((l) => l.startsWith('[AI router]'));
+    expect(traceLine).toBeDefined();
+    expect(traceLine).toContain('target=frontend');
+    expect(traceLine).toContain('intent="do x"');
+    expect(traceLine).toContain('reason="literal name match"');
+    await orch.stop();
+  });
+
+  it('[AI router] trace line includes fallback=substring when the deterministic match kicked in', async () => {
+    const im = makeMockIM();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'I bailed on topic mention',
+      }),
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    // Message contains tab name → substring fallback should fire.
+    await im.handler!.onMessage(incoming('frontend 已经合并了'));
+
+    const traceLine = lines.find((l) => l.startsWith('[AI router]'));
+    expect(traceLine).toBeDefined();
+    expect(traceLine).toContain('target=none');
+    expect(traceLine).toContain('reason="I bailed on topic mention"');
+    expect(traceLine).toContain('fallback=substring');
+    await orch.stop();
+  });
+
   it('cc Stop emits [cc → IM] line with truncated reply', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();

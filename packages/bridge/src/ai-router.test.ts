@@ -42,13 +42,13 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toMatch(/current.*\n.*none/);
   });
 
-  it('zero tabs → "(无活的 tab)" placeholder (still emits prompt — caller filters first)', () => {
+  it('zero tabs → "(no active tabs)" placeholder (still emits prompt — caller filters first)', () => {
     const out = renderRoutingPrompt({
       userMsg: 'hi',
       tabs: [],
       currentTab: null,
     });
-    expect(out).toContain('(无活的 tab)');
+    expect(out).toContain('(no active tabs)');
   });
 
   it('userMsg interpolated verbatim (not escaped — cc handles its own quoting)', () => {
@@ -76,40 +76,38 @@ describe('ai-router — renderRoutingPrompt', () => {
     // input transcribed "IM" as "CRM") and "就是跟 multi-cc-IM说..." (case
     // + whitespace variant), both got "❌ 无法识别目标" because the old
     // prompt let the model fall back to "none" on any deviation. The fix
-    // is to teach the model to tolerate these variants explicitly.
+    // teaches the model to tolerate these variants explicitly.
     const out = renderRoutingPrompt({
       userMsg: '跟multi-ccCRM说，那个测试没过',
       tabs: ['multi-cc-im'],
       currentTab: null,
     });
-    // Each guidance dimension covered:
-    expect(out).toContain('大小写不敏感');
-    expect(out).toContain('空格 / 连字符');
-    expect(out).toMatch(/语音.{0,3}错字/);
-    // And explicit guidance NOT to bail out on minor variants — both the
-    // "don't fall back" cue and the "none" token must appear in the
-    // matching-rules block so the model sees them as a pair.
-    expect(out).toContain('别因为');
-    expect(out).toContain('退回');
-    expect(out).toContain('"none"');
+    // Each guidance dimension covered (English prompt per user smoke
+    // 2026-05-11 — LLMs handle structured rules better in English):
+    expect(out).toMatch(/case[-\s]insensitive/i);
+    expect(out).toMatch(/whitespace|hyphens|underscores/);
+    expect(out).toMatch(/speech[-\s]to[-\s]text/i);
+    // And explicit guidance NOT to bail out on minor variants.
+    expect(out).toMatch(/do not bail|do not fall back|defaulting to "none" is a routing failure/i);
   });
 
   it('topic-mention coverage: prompt teaches the model that tab name appearing as TOPIC also counts as a route signal', async () => {
     // Real-account smoke 2026-05-11: user sent "是那个multi-cc-im 已经合并"
     // — the message's subject is "multi-cc-im" (topic word, not a routing
-    // cue word), and the user has a tab named "multi-cc-im". The previous
-    // prompt phrasing ("消息 mention 了某个 tab 名") let the model bail
-    // because "mention" implied directed routing. The new prompt makes
-    // topic-as-route explicit with an inline example.
+    // cue word), and the user has a tab named "multi-cc-im". The prompt
+    // now makes topic-as-route explicit with inline examples in both
+    // English and Chinese.
     const out = renderRoutingPrompt({
       userMsg: '是那个multi-cc-im 已经合并',
       tabs: ['multi-cc-im', 'node'],
       currentTab: null,
     });
     // Topic vs route distinction called out explicitly:
-    expect(out).toContain('话题词');
-    expect(out).toContain('路由词');
-    // Inline example specifically for the user's reported case:
+    expect(out).toMatch(/topic|subject/i);
+    expect(out).toMatch(/route word|routing cue/i);
+    // Inline example specifically for the user's reported case (Chinese
+    // example preserved alongside English so the model sees a concrete
+    // CN input → CN tab match):
     expect(out).toContain('multi-cc-im 已经合并');
   });
 
