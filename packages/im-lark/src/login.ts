@@ -1,6 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk';
-import { formatErrorWithCause, type CredentialStore } from '@multi-cc-im/shared';
-import type { LarkCredentials } from './credentials.js';
+import { formatErrorWithCause } from '@multi-cc-im/shared';
 
 /**
  * SDK client shape used by both the pure validator and the full login.
@@ -54,20 +53,15 @@ export interface ValidateLarkCredentialsOpts {
   buildClient?: LarkLoginClientFactory;
 }
 
-export interface LoginLarkOpts extends ValidateLarkCredentialsOpts {
-  /** Where to persist the validated credentials. */
-  credentialStore: CredentialStore<LarkCredentials>;
-}
-
 /**
  * Pure validation — ask Feishu whether `appId` + `appSecret` are real
  * credentials, throwing on failure. Does **not** persist anything; the
  * caller decides whether/where to write the credential file.
  *
- * Used by both `loginLark` (which adds persistence on top) and the
- * setup-wizard schema's adapter-level `validate(values)` callback (W3),
- * which only needs verification — the wizard handles persistence
- * centrally based on the schema's `id`.
+ * This is the function used by the setup-wizard schema's adapter-level
+ * `validate(values)` callback (W3+W7), which only needs verification —
+ * persistence is handled by `AdapterRegistryEntry.persist` based on the
+ * schema's `id`.
  *
  * Validation strategy: request a `tenant_access_token` via
  * `auth.v3.tenantAccessToken.internal`. Feishu returns `code === 0` on
@@ -111,32 +105,3 @@ export async function validateLarkCredentials(
   }
 }
 
-/**
- * Validate `app_id` + `app_secret` against Feishu's open API and persist
- * them to the credential store on success. Equivalent to
- * `validateLarkCredentials` followed by `credentialStore.save()`.
- *
- * The returned `tenant_access_token` is **not** persisted — it has a 2 h
- * TTL and the SDK refreshes it internally on every adapter start. Only
- * the long-lived `appId` + `appSecret` pair are persisted.
- *
- * @throws Same as `validateLarkCredentials`, plus credential store
- *  `save()` failures (e.g. EACCES on the credential file).
- *
- * Per [DD #86 §11.4 M2](../../../docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md).
- */
-export async function loginLark(opts: LoginLarkOpts): Promise<LarkCredentials> {
-  await validateLarkCredentials({
-    appId: opts.appId,
-    appSecret: opts.appSecret,
-    buildClient: opts.buildClient,
-  });
-
-  const credentials: LarkCredentials = {
-    appId: opts.appId,
-    appSecret: opts.appSecret,
-    savedAt: new Date().toISOString(),
-  };
-  await opts.credentialStore.save(credentials);
-  return credentials;
-}
