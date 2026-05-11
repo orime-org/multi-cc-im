@@ -8,6 +8,7 @@ import {
   type IncomingMessage,
 } from '@multi-cc-im/shared';
 import type { LarkCredentials } from './credentials.js';
+import { stripMarkdown } from './markdown.js';
 
 /**
  * Minimal shape of the Feishu/Lark SDK `Client` we actually use for sending.
@@ -280,12 +281,18 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
         );
       }
 
+      // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
+      // parse markdown, so cc's `**bold**` / `# heading` / fenced code
+      // would render literally. `stripMarkdown` simplifies the syntax
+      // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
+      // 2026-05-11.
+      const stripped = stripMarkdown(content);
       const response = await client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
           receive_id: replyCtx.chatId,
           msg_type: 'text',
-          content: JSON.stringify({ text: content }),
+          content: JSON.stringify({ text: stripped }),
         },
       });
 
