@@ -71,6 +71,29 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toContain('"reason"');
   });
 
+  it('routing rules tell the model to be LENIENT on tab-name matching (case / whitespace / hyphens / voice-typo)', async () => {
+    // Real-account smoke 2026-05-11: user said "跟multi-ccCRM说..." (voice
+    // input transcribed "IM" as "CRM") and "就是跟 multi-cc-IM说..." (case
+    // + whitespace variant), both got "❌ 无法识别目标" because the old
+    // prompt let the model fall back to "none" on any deviation. The fix
+    // is to teach the model to tolerate these variants explicitly.
+    const out = renderRoutingPrompt({
+      userMsg: '跟multi-ccCRM说，那个测试没过',
+      tabs: ['multi-cc-im'],
+      currentTab: null,
+    });
+    // Each guidance dimension covered:
+    expect(out).toContain('大小写不敏感');
+    expect(out).toContain('空格 / 连字符');
+    expect(out).toMatch(/语音.{0,3}错字/);
+    // And explicit guidance NOT to bail out on minor variants — both the
+    // "don't fall back" cue and the "none" token must appear in the
+    // matching-rules block so the model sees them as a pair.
+    expect(out).toContain('别因为');
+    expect(out).toContain('退回');
+    expect(out).toContain('"none"');
+  });
+
   it('does NOT mention cc slash commands (avoids polluting spawned cc)', () => {
     // Per DD #73 §6.3: prompt must not name `/rename` or any cc TUI slash
     // command — the spawned cc agent itself knows about those, and naming

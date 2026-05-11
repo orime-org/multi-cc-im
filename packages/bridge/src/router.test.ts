@@ -931,7 +931,7 @@ describe('router — AI-routed echo format', () => {
     expect(result.echo).toBe('target: frontend\ncontent: hi');
   });
 
-  it('AI routing failure echo includes raw IM excerpt (≤20 chars passthrough)', async () => {
+  it('AI routing failure echo includes raw IM excerpt (≤20 chars passthrough) + tab list', async () => {
     const state = memState(null);
     const result = await route(incoming('哎呀今天好烦'), {
       registry: fixedRegistry([FRONTEND, API]),
@@ -939,7 +939,11 @@ describe('router — AI-routed echo format', () => {
       imWorkOn: true,
       aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
     });
-    expect(result.echo).toBe('❌ 「哎呀今天好烦」 无法识别目标，请用 @<tab>');
+    expect(result.echo).toBe(
+      '❌ 「哎呀今天好烦」 无法识别目标\n' +
+        '   可用：@frontend, @api\n' +
+        '   或用 @<tab> 显式指定',
+    );
   });
 
   it('AI routing failure echo truncates long raw IM message to 20 chars + ellipsis', async () => {
@@ -952,8 +956,37 @@ describe('router — AI-routed echo format', () => {
       imWorkOn: true,
       aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
     });
-    expect(result.echo).toBe(
-      `❌ 「${longMsg.slice(0, 19)}…」 无法识别目标，请用 @<tab>`,
-    );
+    expect(result.echo).toContain(`❌ 「${longMsg.slice(0, 19)}…」 无法识别目标`);
+    expect(result.echo).toContain('可用：@frontend');
+    expect(result.echo).toContain('或用 @<tab> 显式指定');
+  });
+
+  it('AI routing failure echo lists every named tab in order so user sees full inventory', async () => {
+    const state = memState(null);
+    const result = await route(incoming('随便发的'), {
+      registry: fixedRegistry([FRONTEND, API, FRAME]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    // Tabs preserved in registry order (frontend → api → frame).
+    expect(result.echo).toContain('可用：@frontend, @api, @frame');
+  });
+
+  it('AI picks unknown tab → echo includes both the picked-but-missing name AND the actual available list', async () => {
+    const state = memState(null);
+    const result = await route(incoming('hello'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({
+        target: 'mobile',
+        intent: 'hello',
+        reason: 'mobile picked',
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('AI 路由到 `mobile` 但 tab 不存在');
+    expect(result.echo).toContain('可用：@frontend, @api');
   });
 });
