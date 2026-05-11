@@ -251,7 +251,7 @@ export async function listStopFiles(opts: PerPaneIO): Promise<string[]> {
 
 // ============================================================================
 // Permission Request / Response: hook-subprocess ↔ daemon IPC for
-// `@<tab> /1` (allow) / `/2` (deny) IM 审批.
+// `#<tab> /1` (allow) / `/2` (deny) IM 审批.
 //
 // Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)
 // + DD #61 (pane-keyed). Lifecycle:

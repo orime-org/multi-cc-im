@@ -64,7 +64,7 @@ export interface AIPermissionResponse {
 }
 
 export interface AIRoutingOpts {
-  /** The IM message body (already with `@<tab>` prefix stripped if any — but caller should only invoke this for plain no-mention messages). */
+  /** The IM message body (already with `#<tab>` prefix stripped if any — but caller should only invoke this for plain no-mention messages). */
   userMsg: string;
   /** Currently visible cc tab titles (filter out empty / un-/rename'd tabs before passing). */
   tabs: readonly string[];
@@ -161,7 +161,7 @@ tab title.
 Active Claude Code tabs:
 ${tabList}
 
-current (the last tab the user explicitly @-mentioned; may or may not
+current (the last tab the user explicitly #-mentioned; may or may not
 be related to the current message):
 ${currentLine}
 
@@ -185,7 +185,7 @@ Rule 1 — IF A TAB NAME APPEARS IN THE MESSAGE → PICK THAT TAB.
   count, no exceptions:
 
     (a) As a route word:    "tell multi-cc-im to ..."
-                            "@frontend please ..."
+                            "#frontend please ..."
                             "跟 multi-cc-im 说xxx"
 
     (b) As a topic / subject word:
@@ -218,7 +218,7 @@ Rule 2 — PRONOUN CONTINUES PREVIOUS CONTEXT → PICK current.
 
   When the user uses a pronoun like "it" / "that" / "those" / "它" /
   "这个" / "那个" without naming a tab, route to \`current\` (when
-  non-null). The previous tab the user @-mentioned is the most likely
+  non-null). The previous tab the user #-mentioned is the most likely
   referent.
 
 Rule 3 — TRULY UNROUTABLE → "none".
@@ -476,7 +476,7 @@ function parsePermissionResponse(raw: unknown): AIPermissionResponse | null {
 /**
  * Spawn `claude --print` to triage the IM message. Returns null target/intent
  * if the AI couldn't decide or anything went wrong (caller echoes
- * `❌ 无法识别` and asks user to fall back to `@<tab>`).
+ * `❌ 无法识别` and asks user to fall back to `#<tab>`).
  *
  * Errors NEVER propagate up — every failure mode (timeout / non-zero exit /
  * malformed JSON / cc binary missing) returns a null result. The caller

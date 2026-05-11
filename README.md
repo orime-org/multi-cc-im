@@ -2,7 +2,7 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `@<tab>` only when you want to be explicit.
+Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `#<tab>` only when you want to be explicit.
 
 ---
 
@@ -38,7 +38,7 @@ The daemon runs in the foreground. Ctrl+C stops it. Only one daemon per machine 
 
 ## Name your cc tabs
 
-Inside any cc TUI, run `/rename frontend`. The wezterm tab title becomes `frontend`, and IM can address it as `@frontend`. Tabs with no `/rename` show up in `/list` but are **not addressable**.
+Inside any cc TUI, run `/rename frontend`. The wezterm tab title becomes `frontend`, and IM can address it as `#frontend`. Tabs with no `/rename` show up in `/list` but are **not addressable**.
 
 > Avoid pure-numeric tab titles (they collide with wezterm pane IDs). `/start` echoes a warning if any are present.
 
@@ -50,7 +50,7 @@ Inside any cc TUI, run `/rename frontend`. The wezterm tab title becomes `fronte
 give the frontend one a login page
 ```
 
-No `@` needed. The daemon asks cc itself to triage: cc picks the most relevant tab, strips routing cue words (`give the frontend one` / `给前端` / etc.), and forwards the cleaned task. You'll see an echo:
+No `#` needed. The daemon asks cc itself to triage: cc picks the most relevant tab, strips routing cue words (`give the frontend one` / `给前端` / etc.), and forwards the cleaned task. You'll see an echo:
 
 ```
 target: frontend
@@ -61,22 +61,22 @@ Tolerates speech-to-text typos, case / hyphen / whitespace variants, and mixed-l
 
 > Each plain message costs one short cc API call — counts against your cc subscription / Pro / Max usage.
 
-### Name the tab explicitly with `@`
+### Name the tab explicitly with `#`
 
 ```
-@frontend hello              # send to the frontend tab; becomes the sticky default
-@frontend @api sync          # multi-target dispatch (doesn't change the default)
-@all stop everything         # broadcast to every named cc
+#frontend hello              # send to the frontend tab; becomes the sticky default
+#frontend #api sync          # multi-target dispatch (doesn't change the default)
+#all stop everything         # broadcast to every named cc
 ```
 
-Fuzzy matching is supported (`@front` → `frontend` if unique). Ambiguous prefixes list candidates and ask you to disambiguate.
+Fuzzy matching is supported (`#front` → `frontend` if unique). Ambiguous prefixes list candidates and ask you to disambiguate.
 
 ### Control a cc from IM
 
 ```
-@frontend /clear             # forwards /clear as cc's own slash command
-@frontend /1                 # allow a pending tool call (ask mode only)
-@frontend /2                 # deny it
+#frontend /clear             # forwards /clear as cc's own slash command
+#frontend /1                 # allow a pending tool call (ask mode only)
+#frontend /2                 # deny it
 ```
 
 ### Control the daemon
@@ -101,8 +101,8 @@ When `/start off` is active, every cc tool call asks you first:
   Bash(rm -rf node_modules)
 
 ⏳ Reply within 10s, else auto-allow:
-  @frontend /1   = allow
-  @frontend /2   = deny
+  #frontend /1   = allow
+  #frontend /2   = deny
 ```
 
 You can also reply in natural language and cc decides which pending prompt you meant:
@@ -176,7 +176,7 @@ Check, in order:
 1. Re-run setup so credentials are validated live: `./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>`.
 2. Did you publish the Feishu app? Permissions + event subscription only take effect after 飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布. See [`docs/setup-feishu.md`](docs/setup-feishu.md).
 
-### `@frontend` says "not found"
+### `#frontend` says "not found"
 
 - Inside the cc TUI, run `/rename frontend`.
 - Send `/list` from IM to see which tabs are addressable.

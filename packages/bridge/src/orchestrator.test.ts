@@ -345,7 +345,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
     await orch.stop();
   });
 
-  it('@<ambiguous> mention → router error echo only, no dispatch', async () => {
+  it('#<ambiguous> mention → router error echo only, no dispatch', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO, FRAME_INFO]);
     const orch = createOrchestrator({
@@ -358,13 +358,13 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@fr hello'));
+    await im.handler!.onMessage(incoming('#fr hello'));
     expect(term.sendTextCalls).toEqual([]);
     expect(im.sent[0]?.content).toMatch(/ambiguous/i);
     await orch.stop();
   });
 
-  it('multi-target @a @b → both panes get two-step send', async () => {
+  it('multi-target #a #b → both panes get two-step send', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
     const orch = createOrchestrator({
@@ -377,7 +377,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend @api sync now'));
+    await im.handler!.onMessage(incoming('#frontend #api sync now'));
     expect(term.sendTextCalls).toHaveLength(2);
     expect(term.sendKeystrokeCalls).toHaveLength(2);
     const panes = term.sendTextCalls.map((c) => c.paneId).sort();
@@ -446,7 +446,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
     await orch.start();
 
     await im.handler!.onMessage(
-      incoming('@frontend first', {
+      incoming('#frontend first', {
         imType: 'lark',
         openId: 'ou_owner',
         chatId: 'oc_chat_tok-A',
@@ -455,7 +455,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
     expect(await existsIMOriginFile(testStateDir)).toBe(true);
 
     await im.handler!.onMessage(
-      incoming('@frontend second', {
+      incoming('#frontend second', {
         imType: 'lark',
         openId: 'ou_owner',
         chatId: 'oc_chat_tok-B',
@@ -486,7 +486,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
 
     // First a real dispatch to seed IMOrigin = tok-A.
     await im.handler!.onMessage(
-      incoming('@frontend hello', {
+      incoming('#frontend hello', {
         imType: 'lark',
         openId: 'ou_owner',
         chatId: 'oc_chat_tok-A',
@@ -516,7 +516,7 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
 
     // Now a permission response — also a non-dispatch path; same story.
     await im.handler!.onMessage(
-      incoming('@frontend /1', {
+      incoming('#frontend /1', {
         imType: 'lark',
         openId: 'ou_owner',
         chatId: 'oc_chat_tok-C',
@@ -743,7 +743,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     await orch.start();
 
     await im.handler!.onMessage(
-      incoming('@frontend @api hi', {
+      incoming('#frontend #api hi', {
         imType: 'lark',
         openId: 'ou_owner',
         chatId: 'oc_chat_ctx-multi',
@@ -899,7 +899,7 @@ describe('createOrchestrator — log sink', () => {
   });
 
   it('multi-line echo unfolds in daemon stderr (matches IM-side rendering)', async () => {
-    // Per user smoke 2026-05-11: the failure echo with `可用：@tab1, @tab2`
+    // Per user smoke 2026-05-11: the failure echo with `可用：#tab1, #tab2`
     // was being truncated by `truncate(result.echo, 80)` in the daemon
     // log, making the local terminal view incomplete vs what the IM
     // actually shows. Fix unfolds the echo line by line so daemon stderr
@@ -915,7 +915,7 @@ describe('createOrchestrator — log sink', () => {
       state: memState(),
       sendKeystrokeDelayMs: 0,
       // Stub aiRouter that always returns null so the plain-with-AI
-      // failure echo fires (3-line: error + 可用 + 或用 @<tab>).
+      // failure echo fires (3-line: error + 可用 + 或用 #<tab>).
       aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
       log: (l) => lines.push(l),
     });
@@ -933,16 +933,16 @@ describe('createOrchestrator — log sink', () => {
     expect(lines[headerIdx]).not.toContain('哎呀');
     // The 3 indented lines after the header carry the echo:
     //   line 0: ❌ 「哎呀今天好烦」 无法识别目标
-    //   line 1:    可用：@frontend
-    //   line 2:    或用 @<tab> 显式指定
+    //   line 1:    可用：#frontend
+    //   line 2:    或用 #<tab> 显式指定
     const indented = lines
       .slice(headerIdx + 1)
       .filter((l) => l.startsWith('  '));
     expect(indented.length).toBeGreaterThanOrEqual(3);
     const joined = indented.join('\n');
     expect(joined).toContain('无法识别目标');
-    expect(joined).toContain('可用：@frontend');
-    expect(joined).toContain('或用 @<tab> 显式指定');
+    expect(joined).toContain('可用：#frontend');
+    expect(joined).toContain('或用 #<tab> 显式指定');
     await orch.stop();
   });
 
@@ -1111,7 +1111,7 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.start();
 
     // Bind IMOrigin via inbound dispatch
-    await im.handler!.onMessage(incoming('@frontend please run a tool'));
+    await im.handler!.onMessage(incoming('#frontend please run a tool'));
     im.sent.length = 0;
 
     await cli.handler!.onPreToolUse(
@@ -1128,8 +1128,8 @@ describe('createOrchestrator — IM permission gate', () => {
     expect(body).toContain('frontend');
     expect(body).toContain('Bash');
     expect(body).toContain('rm -rf /important');
-    expect(body).toContain('@frontend /1');
-    expect(body).toContain('@frontend /2');
+    expect(body).toContain('#frontend /1');
+    expect(body).toContain('#frontend /2');
     expect(body).toMatch(/10/);
     await orch.stop();
   });
@@ -1162,7 +1162,7 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.stop();
   });
 
-  it('inbound `@frontend /1` → writes PermissionResponse with allow', async () => {
+  it('inbound `#frontend /1` → writes PermissionResponse with allow', async () => {
     // requestId must be hex to match parsePermissionFilename regex.
     const requestId = 'aabb9999';
     const reqPath = permissionRequestPath({
@@ -1192,7 +1192,7 @@ describe('createOrchestrator — IM permission gate', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend /1'));
+    await im.handler!.onMessage(incoming('#frontend /1'));
 
     const respPath = permissionResponsePath({
       stateDir: permStateDir,
@@ -1209,7 +1209,7 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.stop();
   });
 
-  it('inbound `@frontend /2` → writes PermissionResponse with deny', async () => {
+  it('inbound `#frontend /2` → writes PermissionResponse with deny', async () => {
     const requestId = 'ccdd8888';
     const reqPath = permissionRequestPath({
       stateDir: permStateDir,
@@ -1238,7 +1238,7 @@ describe('createOrchestrator — IM permission gate', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend /2'));
+    await im.handler!.onMessage(incoming('#frontend /2'));
 
     const resp = await readPermissionResponseFile(
       permissionResponsePath({
@@ -1252,7 +1252,7 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.stop();
   });
 
-  it('inbound `@frontend /1` with no pending Request → IM echoes "no pending"', async () => {
+  it('inbound `#frontend /1` with no pending Request → IM echoes "no pending"', async () => {
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: permStateDir,
@@ -1264,7 +1264,7 @@ describe('createOrchestrator — IM permission gate', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend /1'));
+    await im.handler!.onMessage(incoming('#frontend /1'));
 
     const allSent = im.sent.map((s) => s.content).join('\n');
     expect(allSent).toMatch(/没在等审批|no pending|无效/);
@@ -1346,7 +1346,7 @@ describe('createOrchestrator — IMWork toggle', () => {
     });
     await orch.start();
 
-    await im.handler!.onMessage(incoming('@frontend hello'));
+    await im.handler!.onMessage(incoming('#frontend hello'));
 
     // IMWork off → router rejects dispatch (no sendText to cc)
     expect(term.sendTextCalls).toEqual([]);
@@ -1892,7 +1892,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
     await orch.stop();
   });
 
-  it('rigid-syntax `@frontend /1` path unchanged (no AI reason → default "IM user replied /1")', async () => {
+  it('rigid-syntax `#frontend /1` path unchanged (no AI reason → default "IM user replied /1")', async () => {
     const requestId = '22228888';
     await writePending({
       paneId: FRONTEND_PANE,
@@ -1911,7 +1911,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
       aiRouter: null, // route via parser, not AI
     });
     await orch.start();
-    await im.handler!.onMessage(incoming('@frontend /1'));
+    await im.handler!.onMessage(incoming('#frontend /1'));
 
     const resp = await readPermissionResponseFile(
       permissionResponsePath({

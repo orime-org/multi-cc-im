@@ -106,7 +106,7 @@ DD 锁定方案 → TDD 红 → TDD 绿 → TDD 蓝 → commit → CI
 |---|---|---|---|
 | 单元测试 | 60-70% | vitest | 函数 / 类 / utility |
 | 集成测试 | 20-30% | vitest + 真 fs (mkdtemp 沙盒) | adapter ↔ adapter / chokidar ↔ state files / orchestrator e2e |
-| E2E 测试 | <10% | （v1 后再加） | 关键用户流（@session 路由 / permission gate / cc Stop forward） |
+| E2E 测试 | <10% | （v1 后再加） | 关键用户流（#session 路由 / permission gate / cc Stop forward） |
 
 > 80% 是**最低**门槛。关键路径（路由 / send-text 注入两步法 / hook stdin 解析 / iLink 长轮询 cursor / permission gate poll/timeout）应当 100%。
 
@@ -183,7 +183,7 @@ ls ~/.multi-cc-im/state/
 
 ## 微信端 routing echo 看不见
 
-每条入站消息都应该有 visible echo（CLAUDE.md "routing visible echo required" 硬规则）。如果你 `@frontend hello` 发了但微信没收到 `→ frontend received` 类反馈：
+每条入站消息都应该有 visible echo（CLAUDE.md "routing visible echo required" 硬规则）。如果你 `#frontend hello` 发了但微信没收到 `→ frontend received` 类反馈：
 
 1. 看 daemon log 有没有 `[wechat → frontend]` 行
 2. 看 `wezterm cli list --format json` —— 有没有叫 `frontend` 的 tab？
@@ -191,8 +191,8 @@ ls ~/.multi-cc-im/state/
 
 ## permission gate 用不了
 
-`@frontend /1` 没生效有几种可能：
+`#frontend /1` 没生效有几种可能：
 
-1. **没绑过 wechat origin**：你最近**没**从微信发过给 `frontend`，所以 `pendingReplyCtxBySession` 里没存 replyCtx → daemon 拿到 PreToolUse 后 log "no wechat origin"，hook 30s timeout default-allow。**解法**：先发个 `@frontend ping` 绑一下。
-2. **多个 cc 同时跑工具**：cc 对同一 session 串行 PreToolUse，但**多 session 并发**时 `/1` 必须带 tab name 区分（`@frontend /1` 不是裸 `/1`）
+1. **没绑过 wechat origin**：你最近**没**从微信发过给 `frontend`，所以 `pendingReplyCtxBySession` 里没存 replyCtx → daemon 拿到 PreToolUse 后 log "no wechat origin"，hook 30s timeout default-allow。**解法**：先发个 `#frontend ping` 绑一下。
+2. **多个 cc 同时跑工具**：cc 对同一 session 串行 PreToolUse，但**多 session 并发**时 `/1` 必须带 tab name 区分（`#frontend /1` 不是裸 `/1`）
 3. **超过 30s**：默认放行了，hook 已退出，再发 `/1` 没 polling 进程读取（state-sweep 会把孤儿 Response 文件清掉）
