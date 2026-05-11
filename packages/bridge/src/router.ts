@@ -1,8 +1,30 @@
 import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
-import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
+import type {
+  AIPermissionResponse,
+  AIRoutingOpts,
+  AIRoutingResult,
+  PendingRequestForPrompt,
+} from './ai-router.js';
 import { matchSession, type SessionInfo } from './matcher.js';
 import { parse } from './parser.js';
 import { truncate } from './text.js';
+
+/**
+ * One pending PreToolUse approval as the router receives it from the daemon
+ * via DI. Mirrors `@multi-cc-im/cli-cc`'s `PendingPermissionRequest` shape
+ * (kept local so this package doesn't pin to the cli-cc type and tests
+ * stay framework-free).
+ *
+ * Per [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P3.
+ */
+export interface RouterPendingRequest {
+  paneId: PaneId;
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  createdAt: number;
+}
 
 /**
  * Maximum visible characters for IM message excerpts and AI-routed intent
@@ -70,6 +92,23 @@ export interface RouterOpts {
    * spawn, and as a degraded-mode fallback if AI routing is broken.
    */
   aiRouter?: (opts: AIRoutingOpts) => Promise<AIRoutingResult>;
+  /**
+   * Pending PreToolUse approvals at the moment of routing. The router
+   * forwards this list (after mapping `paneId` → tab title) to `aiRouter`
+   * so the AI can decide whether the plain IM message is a natural-
+   * language permission reply ("multi-cc-im 那个我同意") rather than a
+   * routing request.
+   *
+   * Bridge orchestrator wires this to `listPendingPermissionRequests`
+   * from `@multi-cc-im/cli-cc` (P1). Per
+   * [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P3.
+   *
+   * **When omitted**: router skips the lookup entirely and `aiRouter` is
+   * called WITHOUT `pendingRequests` — i.e. the prompt's PENDING block
+   * never renders and AI behaves as before P2. Backward-compatible for
+   * existing tests that don't care about the permission flow.
+   */
+  listPendingPermissionRequests?: () => Promise<readonly RouterPendingRequest[]>;
 }
 
 export interface RouterDispatch {
@@ -79,14 +118,24 @@ export interface RouterDispatch {
 }
 
 /**
- * Permission response derived from `@<tabname> /1` (allow) or `/2` (deny)
- * IM messages. Per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md).
+ * Permission response derived from one of two IM paths:
+ *   1. Rigid syntax `@<tabname> /1` (allow) / `/2` (deny)
+ *      — per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)
+ *   2. AI-matched natural-language reply ("multi-cc-im 那个我同意")
+ *      — per [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P3
+ *
  * Orchestrator picks this up after `route()`, locates the session's pending
  * PermissionRequest file, and writes a matching PermissionResponse.
+ *
+ * `reason` is populated only on the AI path (the AI's short paraphrase of
+ * the user's reply, flows into cc as `permissionDecisionReason`). The
+ * rigid-syntax path leaves it `undefined`; orchestrator uses a default
+ * string.
  */
 export interface RouterPermissionResponse {
   session: SessionInfo;
   decision: 'allow' | 'deny';
+  reason?: string;
 }
 
 export interface RouterResult {
@@ -138,6 +187,13 @@ export interface RouterResult {
      * fallback is papering over.
      */
     fallback?: 'substring' | null;
+    /**
+     * Set when the AI matched the IM message to a pending PreToolUse
+     * (DD §9.1 P3). When populated, the router emitted a
+     * `RouterPermissionResponse` instead of a routing dispatch.
+     * Orchestrator logs this via `[AI permission]` (D5-5).
+     */
+    permissionResponse?: AIPermissionResponse;
   };
 }
 
@@ -213,7 +269,13 @@ export async function route(
       // messages go through it. Without an aiRouter (tests / degraded
       // fallback), use the legacy sticky-current logic.
       return opts.aiRouter
-        ? handlePlainWithAI(parsed.body, sessions, opts.state, opts.aiRouter)
+        ? handlePlainWithAI(
+            parsed.body,
+            sessions,
+            opts.state,
+            opts.aiRouter,
+            opts.listPendingPermissionRequests,
+          )
         : handlePlain(parsed.body, sessions, opts.state);
 
     case 'permission_response':
@@ -312,6 +374,9 @@ async function handlePlainWithAI(
   sessions: readonly SessionInfo[],
   state: RouterState,
   aiRouter: (opts: AIRoutingOpts) => Promise<AIRoutingResult>,
+  listPendingPermissionRequests:
+    | (() => Promise<readonly RouterPendingRequest[]>)
+    | undefined,
 ): Promise<RouterResult> {
   const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
   if (namedSessions.length === 0) {
@@ -328,20 +393,55 @@ async function handlePlainWithAI(
       ? namedSessions.find((s) => s.paneId === currentPaneId)?.tabTitle ?? null
       : null;
 
+  // Map cli-cc pending records (paneId-keyed IPC shape) → prompt records
+  // (tabName-keyed). Pendings for dead panes are silently dropped so the
+  // AI never sees a tab it can't approve. If the lookup callback is
+  // omitted entirely, we pass `undefined` — the prompt's PENDING block
+  // is gated on this and won't render (P2 semantic: empty array still
+  // renders an empty block; undefined skips it).
+  const pendingForPrompt: readonly PendingRequestForPrompt[] | undefined =
+    listPendingPermissionRequests
+      ? mapPendingToPrompt(
+          await listPendingPermissionRequests(),
+          namedSessions,
+        )
+      : undefined;
+
   const result = await aiRouter({
     userMsg: body,
     tabs: namedSessions.map((s) => s.tabTitle),
     currentTab,
+    pendingRequests: pendingForPrompt,
   });
 
   // Capture AI decision for the orchestrator to log. Per user smoke
   // 2026-05-11 — "理论上分诊不应该失败"; surfacing the reason in stderr
   // lets the user iterate on the prompt without rebuilding.
-  const baseTrace = {
-    target: result.target,
-    intent: result.intent,
-    reason: result.reason,
-  };
+  const baseTrace: NonNullable<RouterResult['aiTrace']> = result.permissionResponse
+    ? {
+        target: result.target,
+        intent: result.intent,
+        reason: result.reason,
+        permissionResponse: result.permissionResponse,
+      }
+    : {
+        target: result.target,
+        intent: result.intent,
+        reason: result.reason,
+      };
+
+  // Permission-reply path (DD §9.1 P3). Short-circuit before routing —
+  // even if AI also set top-level target/intent, treat the message as a
+  // permission reply since the prompt declares the two outputs mutually
+  // exclusive (permissionResponse wins on protocol mismatch).
+  if (result.permissionResponse !== null) {
+    return handleAIPermissionReply(
+      body,
+      result.permissionResponse,
+      namedSessions,
+      baseTrace,
+    );
+  }
 
   const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
 
@@ -396,6 +496,86 @@ async function handlePlainWithAI(
     echo: `target: ${displayName(target)}\ncontent: ${truncate(result.intent, ECHO_EXCERPT_MAX)}`,
     dispatches: [{ session: target, content: result.intent }],
     aiTrace: { ...baseTrace, fallback: null },
+  };
+}
+
+/**
+ * Map the cli-cc IPC representation of a pending PreToolUse
+ * (`paneId`/`sessionId`/`requestId` keyed) into the AI router's prompt
+ * representation (`tabName` keyed). Drops any pending whose `paneId` is
+ * no longer in the live session set — the user can't reasonably approve
+ * a request whose pane has died, and including dead-tab entries in the
+ * prompt risks the AI matching a reply to a phantom target.
+ */
+function mapPendingToPrompt(
+  pendings: readonly RouterPendingRequest[],
+  namedSessions: readonly SessionInfo[],
+): readonly PendingRequestForPrompt[] {
+  const out: PendingRequestForPrompt[] = [];
+  for (const p of pendings) {
+    const session = namedSessions.find((s) => s.paneId === p.paneId);
+    if (!session) continue;
+    out.push({
+      tabName: session.tabTitle,
+      toolName: p.toolName,
+      toolInput: p.toolInput,
+    });
+  }
+  return out;
+}
+
+/**
+ * Handle the AI-matched permission reply branch of `handlePlainWithAI`.
+ * Per [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P3.
+ *
+ * The IM message did NOT route a new task; instead AI matched it to a
+ * pending PreToolUse and decided allow / deny. Emit a
+ * `RouterPermissionResponse` so orchestrator dispatches via the same
+ * helper as the rigid-syntax `@<tab> /1` path — sticky `current` is
+ * NOT updated (mirrors rigid-syntax behavior; permission replies are
+ * orthogonal to routing default).
+ *
+ * Echo format mirrors the routing echo style so the user can confirm
+ * which pending was matched + decision at a glance.
+ */
+function handleAIPermissionReply(
+  body: string,
+  permissionResponse: AIPermissionResponse,
+  namedSessions: readonly SessionInfo[],
+  baseTrace: NonNullable<RouterResult['aiTrace']>,
+): RouterResult {
+  const target = namedSessions.find(
+    (s) => s.tabTitle === permissionResponse.target,
+  );
+  const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
+  if (!target) {
+    // AI picked a tab that's no longer live (race between
+    // listPendingPermissionRequests + the AI call) or the AI hallucinated
+    // a name. Echo the error so the user knows what happened; do NOT
+    // emit a permissionResponse since there's nothing to dispatch.
+    void body;
+    return {
+      echo:
+        `❌ AI 把审批路由到 \`${permissionResponse.target}\` 但 tab 不存在\n` +
+        `   可用：${availableTabs}\n` +
+        `   或用 @<tab> /1 显式指定`,
+      dispatches: [],
+      aiTrace: baseTrace,
+    };
+  }
+  const verb = permissionResponse.decision === 'allow' ? '允许' : '拒绝';
+  return {
+    echo:
+      `target: ${displayName(target)}\n` +
+      `permission: ${verb}\n` +
+      `reason: ${truncate(permissionResponse.reason, ECHO_EXCERPT_MAX)}`,
+    dispatches: [],
+    permissionResponse: {
+      session: target,
+      decision: permissionResponse.decision,
+      reason: permissionResponse.reason,
+    },
+    aiTrace: baseTrace,
   };
 }
 
