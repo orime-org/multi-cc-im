@@ -91,7 +91,7 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 | `@frontend /clear` | 转发 `/clear` 进 cc TUI（cc 自己当 slash 命令处理）|
 | `@frontend /1` | 权限允许（仅当有 pending PreToolUse）|
 | `@frontend /2` | 权限拒绝 |
-| `给前端写个登录页` | **纯消息**（无 `@`）：daemon 自动路由到最相关的 cc tab。回显选中的 tab + 提取后的任务：`target: frontend / content: 写个登录页`。容忍语音转写错字、大小写 / 连字符 / 空格变体、中英混合。AI 漏的情况自动走字面 substring 兜底。|
+| `给前端写个登录页` | **纯消息**（无 `@`）：daemon 调 **cc 自己**做分诊 — cc 决定路由到哪个 tab 并剥离路由提示词（"给前端" 等），提取纯净任务描述。回显 `target: frontend / content: 写个登录页`。容忍语音转写错字、大小写 / 连字符 / 空格变体、中英混合。cc 分诊漏的情况自动走字面 substring 兜底。**每条纯消息消耗一次 cc API 调用**（计入你的 cc 订阅 / Pro / Max 用量）。|
 
 **给 cc 起名**：在 cc TUI 里跑 `/rename <name>`，wezterm tab title 变成 `<name>`，IM 就能用 `@<name>` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
 
