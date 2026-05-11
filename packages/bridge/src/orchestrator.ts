@@ -51,7 +51,7 @@ export interface CreateOrchestratorOpts {
   imAdapter: IMAdapter;
   /**
    * WezTerm (or future tmux) Term adapter — must satisfy `TermListPanes` so
-   * the orchestrator can resolve `@<tabname>` to paneId via `listPanes()`.
+   * the orchestrator can resolve `#<tabname>` to paneId via `listPanes()`.
    * No `isPaneAlive` capability needed (DD #61 — daemon trusts user-side
    * `/start` listing for cc liveness).
    */
@@ -250,7 +250,7 @@ export function createOrchestrator(
       }
     }
 
-    // Permission response: either rigid syntax `@<tab> /1`/`/2` OR an
+    // Permission response: either rigid syntax `#<tab> /1`/`/2` OR an
     // AI-matched natural-language reply (DD §9.1 P4, 2026-05-11). Same
     // helper handles both — AI path provides a verbatim `reason`; rigid
     // syntax leaves it undefined so the helper falls back to the default
@@ -389,7 +389,7 @@ export function createOrchestrator(
   }
 
   // ============================================================================
-  // Permission response: IM user replied `@<tab> /1` (allow) or `/2` (deny)
+  // Permission response: IM user replied `#<tab> /1` (allow) or `/2` (deny)
   // ============================================================================
 
   async function handlePermissionResponseFromIM(
@@ -400,7 +400,7 @@ export function createOrchestrator(
      * Optional per-call reason override. AI-matched natural-language
      * replies (DD §9.1 P4) pass the AI's paraphrase of the user's
      * intent verbatim so it flows into cc's transcript via
-     * `permissionDecisionReason`. Rigid-syntax `@<tab> /1|/2` callers
+     * `permissionDecisionReason`. Rigid-syntax `#<tab> /1|/2` callers
      * omit it and we fall back to the historical default string.
      */
     reason?: string,
@@ -506,8 +506,8 @@ export function createOrchestrator(
     const body =
       `[${tabName}] 准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
       `⏳ 10 秒内回复，否则默认放行:\n` +
-      `  @${tabName} /1   = 允许\n` +
-      `  @${tabName} /2   = 拒绝`;
+      `  #${tabName} /1   = 允许\n` +
+      `  #${tabName} /2   = 拒绝`;
 
     log(`[PreToolUse pane=${paneId}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
     try {

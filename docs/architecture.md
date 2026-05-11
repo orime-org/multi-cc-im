@@ -155,9 +155,9 @@ multi-cc-im/
 wechat user → iLink getupdates → im-wechat.onMessage(IncomingMessage)
    → handleInbound 入口：write state/IMOrigin = msg.replyCtx (全局；每条入站都覆盖：
        dispatch / bridge 命令 / 权限响应 — 跟同步 echo 的 replyCtx 同源)
-   → bridge.router.parse(text)         # @<name> /<cmd> /1 /2 / @all 等
+   → bridge.router.parse(text)         # #<name> /<cmd> /1 /2 / #all 等
    → 每次都拉 termAdapter.listPanes() 当 ground truth
-   → matcher.matchSession(@<name>)     # tab title 4 级 fallback (=strict / exact / prefix / glob)
+   → matcher.matchSession(#<name>)     # tab title 4 级 fallback (=strict / exact / prefix / glob)
    → orchestrator.dispatchOne(session, content)
        → termAdapter.sendText(paneId, content)  # Step 1: paste（任意 unicode 安全）
        → sleep(300ms)                           # Step 2 → 等 cc TUI 渲染
@@ -227,10 +227,10 @@ chokidar add event → cli-cc adapter dispatches PreToolUse
    → orchestrator.handlePreToolUse({ paneId, sid, requestId, ... })
        → schedule reaper(setTimeout 10s) 兜底删 Request + Response（key: paneId:sid:reqId）
        → read state/IMOrigin → IMReplyContext（全局；最近一条入站 IM 的 ctx）
-       → if exists: imAdapter.send("[<tab>] 准备跑工具:\n  <Tool>(...)\n@<tab> /1 /2", ctx)
+       → if exists: imAdapter.send("[<tab>] 准备跑工具:\n  <Tool>(...)\n#<tab> /1 /2", ctx)
        → if missing (race with daemon stop): log + skip forward
 
-wechat user replies "@frontend /1" → router parses → permission_response branch
+IM user replies "#frontend /1" → router parses → permission_response branch
    → orchestrator.handlePermissionResponseFromIM(session, decision, replyCtx)
        → 扫 state/ 找 <session.paneId>_*.PermissionRequest.*.json，匹配 paneId
        → write <paneId>_<sid>.PermissionResponse.<reqId>.json
@@ -284,7 +284,7 @@ DD #61 之前：用户 `/exit` 后 pane 里残留 zsh，盲注入会发到 shell
 DD #61 之后：**daemon 不再独立追踪 cc 死活**。每次 IM 事件直接 `wezterm cli list --format json`：
 
 - 用户 `/exit` 后 pane 留着 zsh，仍然出现在 listPanes 输出里 —— 但其 tab title 还是用户之前设的（cc /rename 设的）
-- 用户重启 cc：`@<name>` 路由命中同一个 paneId，新 cc 接管这个名字
+- 用户重启 cc：`#<name>` 路由命中同一个 paneId，新 cc 接管这个名字
 - 用户关掉 wezterm tab：listPanes 不再返回这个 paneId → matcher 找不到 → echo 报告"未 /rename 或不存在"
 
 权衡：偶尔残留 zsh 的 pane 被注入是用户可见的痛感（自己关 tab 就好），换来 daemon 端零状态、零 stale-tracking 风险。SessionEnd hook + sid-keyed 文件 + PaneAlive 验证全部撤销。详见 [DD: pane-keyed state files](superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)。

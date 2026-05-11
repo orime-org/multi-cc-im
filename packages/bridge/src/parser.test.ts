@@ -10,28 +10,28 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
     expect(parse('   ')).toEqual({ type: 'plain', body: '' });
   });
 
-  it('no @ at start → plain', () => {
+  it('no # at start → plain', () => {
     expect(parse('hello world')).toEqual({ type: 'plain', body: 'hello world' });
   });
 
-  it('@<name> at start → mention', () => {
-    expect(parse('@frontend hello')).toEqual({
+  it('#<name> at start → mention', () => {
+    expect(parse('#frontend hello')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: 'hello',
     });
   });
 
-  it('@<name> only (no body) → mention with empty body', () => {
-    expect(parse('@frontend')).toEqual({
+  it('#<name> only (no body) → mention with empty body', () => {
+    expect(parse('#frontend')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: '',
     });
   });
 
-  it('@<name> with multiple spaces before body collapses → body trimmed', () => {
-    expect(parse('@frontend   hello   world')).toEqual({
+  it('#<name> with multiple spaces before body collapses → body trimmed', () => {
+    expect(parse('#frontend   hello   world')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: 'hello   world',
@@ -39,81 +39,79 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
   });
 
   it('multi-mention space-separated at start → mention list + body', () => {
-    expect(parse('@frontend @api sync implementation')).toEqual({
+    expect(parse('#frontend #api sync implementation')).toEqual({
       type: 'mention',
       mentions: ['frontend', 'api'],
       body: 'sync implementation',
     });
   });
 
-  it('@<id-hash> $-prefix preserved verbatim in mention token', () => {
-    expect(parse('@$abc1234 hello')).toEqual({
+  it('#<id-hash> $-prefix preserved verbatim in mention token', () => {
+    expect(parse('#$abc1234 hello')).toEqual({
       type: 'mention',
       mentions: ['$abc1234'],
       body: 'hello',
     });
   });
 
-  it('@=<exact> = prefix preserved verbatim', () => {
-    expect(parse('@=frontend hello')).toEqual({
+  it('#=<exact> = prefix preserved verbatim', () => {
+    expect(parse('#=frontend hello')).toEqual({
       type: 'mention',
       mentions: ['=frontend'],
       body: 'hello',
     });
   });
 
-  it('@<glob> * preserved verbatim', () => {
-    expect(parse('@front* hello')).toEqual({
+  it('#<glob> * preserved verbatim', () => {
+    expect(parse('#front* hello')).toEqual({
       type: 'mention',
       mentions: ['front*'],
       body: 'hello',
     });
   });
 
-  it('@all alone → broadcast (no body)', () => {
-    expect(parse('@all')).toEqual({ type: 'broadcast', body: '' });
+  it('#all alone → broadcast (no body)', () => {
+    expect(parse('#all')).toEqual({ type: 'broadcast', body: '' });
   });
 
-  it('@all + body → broadcast with body', () => {
-    expect(parse('@all stop everything')).toEqual({
+  it('#all + body → broadcast with body', () => {
+    expect(parse('#all stop everything')).toEqual({
       type: 'broadcast',
       body: 'stop everything',
     });
   });
 
-  it('@all combined with other @ → error (broadcast is exclusive)', () => {
-    expect(parse('@all @frontend hello')).toEqual({
+  it('#all combined with other # → error (broadcast is exclusive)', () => {
+    expect(parse('#all #frontend hello')).toEqual({
       type: 'error',
-      message: expect.stringMatching(/@all.*exclusive/i),
+      message: expect.stringMatching(/#all.*exclusive/i),
     });
   });
 
   // ==========================================================================
-  // Old bareword controls (@list / @help / @current) are now plain mentions.
-  // The DD G' control-command syntax was dropped because it collided with cc
-  // tab titles set via /rename. Replaced by @multi-cc-im /<command>.
-  // These cases verify the OLD bareword form is now treated as a normal
-  // mention — router will report "not found" (expected, no cc named "list").
+  // Bareword controls (#list / #help / #current) are plain mentions — they
+  // would collide with cc tab titles named via /rename. Bridge commands live
+  // under the bare-slash namespace (`/list`, `/help`, etc.).
   // ==========================================================================
 
-  it('@list (old bareword control) → now parses as mention', () => {
-    expect(parse('@list')).toEqual({
+  it('#list (bareword) → parses as mention', () => {
+    expect(parse('#list')).toEqual({
       type: 'mention',
       mentions: ['list'],
       body: '',
     });
   });
 
-  it('@help (old bareword control) → now parses as mention', () => {
-    expect(parse('@help')).toEqual({
+  it('#help (bareword) → parses as mention', () => {
+    expect(parse('#help')).toEqual({
       type: 'mention',
       mentions: ['help'],
       body: '',
     });
   });
 
-  it('@current (old bareword control) → now parses as mention', () => {
-    expect(parse('@current')).toEqual({
+  it('#current (bareword) → parses as mention', () => {
+    expect(parse('#current')).toEqual({
       type: 'mention',
       mentions: ['current'],
       body: '',
@@ -121,10 +119,7 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
   });
 
   // ==========================================================================
-  // Bridge commands: bare `/<command> [args]` (per DD #73 — replaced
-  // @multi-cc-im /<command> syntax, no backwards compat).
-  // The old @multi-cc-im /X form falls through to mention path → matcher
-  // returns "not found" → echo error. Verified in router.test.ts.
+  // Bridge commands: bare `/<command> [args]` (per DD #73).
   // ==========================================================================
 
   it('/list → bridge_command list', () => {
@@ -198,38 +193,36 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
     });
   });
 
-  it('OLD @multi-cc-im /list → mention (no backwards compat — falls through to matcher)', () => {
-    // Per DD #73: `@multi-cc-im /X` syntax was dropped. Parser sees this as
-    // a mention with body `/list`; matcher returns no-such-cc → router echoes
-    // "not found". Codifies the deliberate non-compat behavior.
-    expect(parse('@multi-cc-im /list')).toEqual({
-      type: 'mention',
-      mentions: ['multi-cc-im'],
-      body: '/list',
-    });
-  });
-
-  it('@<name> mid-message → NOT a mention (only start matters)', () => {
-    expect(parse('hello @frontend world')).toEqual({
+  // Per DD 2026-05-12: `@` is no longer a routing prefix. A message starting
+  // with `@` (which Feishu rewrites into a mention object anyway, so it never
+  // reaches the bridge as literal text) parses as plain — falls through to
+  // the AI router path on the production code side.
+  it('legacy `@`-prefixed text → plain (no longer a routing token)', () => {
+    expect(parse('@frontend hello')).toEqual({
       type: 'plain',
-      body: 'hello @frontend world',
+      body: '@frontend hello',
     });
   });
 
-  it('@@ double at → not a valid mention, treat as plain', () => {
-    // First @ leads, second @ is part of name → token is "@frontend" body? No,
-    // a leading mention token is `@<name>` where name is non-empty non-space.
-    // `@@frontend` parses as token `@frontend` (the "name" is `@frontend`),
+  it('#<name> mid-message → NOT a mention (only start matters)', () => {
+    expect(parse('hello #frontend world')).toEqual({
+      type: 'plain',
+      body: 'hello #frontend world',
+    });
+  });
+
+  it('## double hash → first # leads, second # is part of name', () => {
+    // `##frontend` parses as token `#frontend` (the "name" is `#frontend`),
     // which will fail matching downstream → router returns error.
-    expect(parse('@@frontend hello')).toEqual({
+    expect(parse('##frontend hello')).toEqual({
       type: 'mention',
-      mentions: ['@frontend'],
+      mentions: ['#frontend'],
       body: 'hello',
     });
   });
 
   it('Unicode + emoji friendly_name preserved', () => {
-    expect(parse('@前端 写文档 ✨')).toEqual({
+    expect(parse('#前端 写文档 ✨')).toEqual({
       type: 'mention',
       mentions: ['前端'],
       body: '写文档 ✨',
@@ -237,7 +230,7 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
   });
 
   it('newlines in body preserved', () => {
-    expect(parse('@frontend line1\nline2')).toEqual({
+    expect(parse('#frontend line1\nline2')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: 'line1\nline2',
@@ -245,79 +238,79 @@ describe('parser — plain / mention / broadcast / bridge_command', () => {
   });
 
   it('leading newlines / tabs trimmed before parsing', () => {
-    expect(parse('\n\t@frontend hello')).toEqual({
+    expect(parse('\n\t#frontend hello')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: 'hello',
     });
   });
 
-  it('mention list with @all in middle → error (still exclusive)', () => {
-    expect(parse('@a @all @b')).toEqual({
+  it('mention list with #all in middle → error (still exclusive)', () => {
+    expect(parse('#a #all #b')).toEqual({
       type: 'error',
-      message: expect.stringMatching(/@all.*exclusive/i),
+      message: expect.stringMatching(/#all.*exclusive/i),
     });
   });
 
-  it('@all with mid-message position → broadcast still triggered (last token decides)', () => {
-    // Edge: `@all @all body` — both are @all, treat as broadcast
-    expect(parse('@all @all stop')).toEqual({
+  it('#all with mid-message position → broadcast still triggered (last token decides)', () => {
+    // Edge: `#all #all body` — both are #all, treat as broadcast
+    expect(parse('#all #all stop')).toEqual({
       type: 'broadcast',
       body: 'stop',
     });
   });
 });
 
-describe('parser — permission_response (@<tab> /1 | /2)', () => {
-  it('@<name> /1 → permission_response allow', () => {
-    expect(parse('@frontend /1')).toEqual({
+describe('parser — permission_response (#<tab> /1 | /2)', () => {
+  it('#<name> /1 → permission_response allow', () => {
+    expect(parse('#frontend /1')).toEqual({
       type: 'permission_response',
       tabName: 'frontend',
       decision: 'allow',
     });
   });
 
-  it('@<name> /2 → permission_response deny', () => {
-    expect(parse('@frontend /2')).toEqual({
+  it('#<name> /2 → permission_response deny', () => {
+    expect(parse('#frontend /2')).toEqual({
       type: 'permission_response',
       tabName: 'frontend',
       decision: 'deny',
     });
   });
 
-  it('@<name> /1 with surrounding whitespace still parses as permission_response', () => {
-    expect(parse('@frontend   /1   ')).toEqual({
+  it('#<name> /1 with surrounding whitespace still parses as permission_response', () => {
+    expect(parse('#frontend   /1   ')).toEqual({
       type: 'permission_response',
       tabName: 'frontend',
       decision: 'allow',
     });
   });
 
-  it('@<name> /3 → mention (not permission_response — only /1 /2 are reserved)', () => {
-    expect(parse('@frontend /3')).toEqual({
+  it('#<name> /3 → mention (not permission_response — only /1 /2 are reserved)', () => {
+    expect(parse('#frontend /3')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: '/3',
     });
   });
 
-  it('@<name> /1 with extra body → mention (only exact /1 is reserved)', () => {
-    expect(parse('@frontend /1 extra')).toEqual({
+  it('#<name> /1 with extra body → mention (only exact /1 is reserved)', () => {
+    expect(parse('#frontend /1 extra')).toEqual({
       type: 'mention',
       mentions: ['frontend'],
       body: '/1 extra',
     });
   });
 
-  it('@all /1 → broadcast (not permission — broadcast wins for @all)', () => {
-    expect(parse('@all /1')).toEqual({
+  it('#all /1 → broadcast (not permission — broadcast wins for #all)', () => {
+    expect(parse('#all /1')).toEqual({
       type: 'broadcast',
       body: '/1',
     });
   });
 
-  it('@a @b /1 → mention (multi-mention disqualifies permission shortcut)', () => {
-    expect(parse('@a @b /1')).toEqual({
+  it('#a #b /1 → mention (multi-mention disqualifies permission shortcut)', () => {
+    expect(parse('#a #b /1')).toEqual({
       type: 'mention',
       mentions: ['a', 'b'],
       body: '/1',
@@ -334,8 +327,8 @@ describe('parser — permission_response (@<tab> /1 | /2)', () => {
     });
   });
 
-  it('@<name> /1 with $-prefix tabname preserved', () => {
-    expect(parse('@$abc12345 /2')).toEqual({
+  it('#<name> /1 with $-prefix tabname preserved', () => {
+    expect(parse('#$abc12345 /2')).toEqual({
       type: 'permission_response',
       tabName: '$abc12345',
       decision: 'deny',

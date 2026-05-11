@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-把多个跑在 WezTerm tab 里的 Claude Code (cc) session 接到飞书。在 IM 里随便说一句「给前端写个登录页」，daemon 让 cc 自己分诊，自动选最匹配的 tab 把任务发过去；要精确点名才用 `@<tab>`。
+把多个跑在 WezTerm tab 里的 Claude Code (cc) session 接到飞书。在 IM 里随便说一句「给前端写个登录页」，daemon 让 cc 自己分诊，自动选最匹配的 tab 把任务发过去；要精确点名才用 `#<tab>`。
 
 ---
 
@@ -38,7 +38,7 @@ daemon 前台运行，Ctrl+C 停止。每台机器只能跑一个 daemon — 已
 
 ## 给 cc tab 起名字
 
-在任意 cc TUI 里跑 `/rename frontend`，wezterm tab title 就变成 `frontend`，IM 里就能用 `@frontend` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
+在任意 cc TUI 里跑 `/rename frontend`，wezterm tab title 就变成 `frontend`，IM 里就能用 `#frontend` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
 
 > 避免起纯数字 tab title（会跟 wezterm pane ID 撞）。`/start` 时会主动 echo 警告。
 
@@ -50,7 +50,7 @@ daemon 前台运行，Ctrl+C 停止。每台机器只能跑一个 daemon — 已
 给前端写个登录页
 ```
 
-不用带 `@`。daemon 会让 cc 自己分诊：cc 挑最匹配的 tab，剥掉路由提示词（"给前端" 之类），把干净的任务发过去。IM 会回显：
+不用带 `#`。daemon 会让 cc 自己分诊：cc 挑最匹配的 tab，剥掉路由提示词（"给前端" 之类），把干净的任务发过去。IM 会回显：
 
 ```
 target: frontend
@@ -61,22 +61,22 @@ content: 写个登录页
 
 > 每条纯消息消耗一次 cc API 调用 — 计入你的 cc 订阅 / Pro / Max 用量。
 
-### 点名 `@` 精确指定
+### 点名 `#` 精确指定
 
 ```
-@frontend hello              # 发给 frontend tab；同时设为 sticky 默认
-@frontend @api sync          # 多目标分发（不改默认）
-@all stop everything         # 广播给所有命名的 cc
+#frontend hello              # 发给 frontend tab；同时设为 sticky 默认
+#frontend #api sync          # 多目标分发（不改默认）
+#all stop everything         # 广播给所有命名的 cc
 ```
 
-支持模糊匹配（`@front` 唯一匹配 `frontend` 就发过去）。匹配多个的话会列候选让你二选一。
+支持模糊匹配（`#front` 唯一匹配 `frontend` 就发过去）。匹配多个的话会列候选让你二选一。
 
 ### 从 IM 控制某个 cc
 
 ```
-@frontend /clear             # 把 /clear 转发给 cc（cc 自己当 slash command 处理）
-@frontend /1                 # 同意 pending 工具调用（仅 ask 模式有效）
-@frontend /2                 # 拒绝
+#frontend /clear             # 把 /clear 转发给 cc（cc 自己当 slash command 处理）
+#frontend /1                 # 同意 pending 工具调用（仅 ask 模式有效）
+#frontend /2                 # 拒绝
 ```
 
 ### 控制 daemon
@@ -101,8 +101,8 @@ content: 写个登录页
   Bash(rm -rf node_modules)
 
 ⏳ 10 秒内回复，否则默认放行:
-  @frontend /1   = 允许
-  @frontend /2   = 拒绝
+  #frontend /1   = 允许
+  #frontend /2   = 拒绝
 ```
 
 也可以直接说人话，cc 会自己分诊到哪个 pending：
@@ -176,7 +176,7 @@ rm ~/.multi-cc-im/state/daemon.pid
 1. 重跑 setup 走真实校验：`./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>`。
 2. 飞书应用发布了吗？权限 + 事件订阅必须在飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布之后才生效。详见 [`docs/setup-feishu.md`](docs/setup-feishu.md)。
 
-### `@frontend` 报 "not found"
+### `#frontend` 报 "not found"
 
 - 进 cc TUI 跑 `/rename frontend`。
 - 在 IM 发 `/list` 看哪些 tab 可寻址。

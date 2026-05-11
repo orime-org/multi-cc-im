@@ -67,8 +67,8 @@ export interface RouterOpts {
    *     broadcast) are rejected with "IMWork off — please /start" hint
    *   - `true` → normal dispatch
    *
-   * Bridge commands (`@multi-cc-im /...`) and permission responses
-   * (`@<tab> /1` `/2`) always work regardless of IMWork state.
+   * Bridge commands (bare `/list` `/start` etc.) and permission responses
+   * (`#<tab> /1` `/2`) always work regardless of IMWork state.
    */
   imWorkOn?: boolean;
   /**
@@ -119,7 +119,7 @@ export interface RouterDispatch {
 
 /**
  * Permission response derived from one of two IM paths:
- *   1. Rigid syntax `@<tabname> /1` (allow) / `/2` (deny)
+ *   1. Rigid syntax `#<tabname> /1` (allow) / `/2` (deny)
  *      — per [DD: permission forward](../../../docs/superpowers/specs/2026-05-07-permission-forward-dd.md)
  *   2. AI-matched natural-language reply ("multi-cc-im 那个我同意")
  *      — per [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P3
@@ -143,10 +143,10 @@ export interface RouterResult {
   echo: string;
   /** Sessions to forward `content` to. Empty for control commands / errors. */
   dispatches: RouterDispatch[];
-  /** Set when the IM message was a `@<tabname> /1` or `/2` permission response. */
+  /** Set when the IM message was a `#<tabname> /1` or `/2` permission response. */
   permissionResponse?: RouterPermissionResponse;
   /**
-   * Set when the IM user invoked `@multi-cc-im /start [auto]` or `/stop`.
+   * Set when the IM user invoked bare `/start [off]` or `/stop`.
    * Orchestrator acts on it after `route()` returns: writes / deletes
    * `<stateDir>/IMWork`.
    * - `{kind:'enable', auto:false}` ← `/start`
@@ -172,7 +172,7 @@ export interface RouterResult {
    * regressions are visible.
    *
    * Undefined when the message didn't go through `handlePlainWithAI`
-   * (e.g. it was a `@<tab>` mention, bridge command, etc.).
+   * (e.g. it was a `#<tab>` mention, bridge command, etc.).
    */
   aiTrace?: {
     /** What the AI picked as the target tab title, or null if it bailed. */
@@ -200,16 +200,16 @@ export interface RouterResult {
 /**
  * Route an IncomingMessage. High-level pipeline:
  *   1. parse text → ParsedMessage (parser.ts)
- *   2. handle bridge commands (@multi-cc-im /list / /help / /current / /start / /stop) — always pass IMWork gate
- *   3. handle permission_response (@<tab> /1 /2) — always pass IMWork gate
+ *   2. handle bridge commands (bare /list /help /current /start /stop) — always pass IMWork gate
+ *   3. handle permission_response (#<tab> /1 /2) — always pass IMWork gate
  *   4. IMWork gate: mention / plain / broadcast require IMWork on
- *   5. handle broadcast (@all) — fan out to all alive
+ *   5. handle broadcast (#all) — fan out to all alive
  *   6. handle mention(s) — match each via 4-level fallback (matcher.ts)
  *   7. handle plain — dispatch to current_pane (sticky); auto-set when only 1 pane
  *
  * State invariants:
  *   - **Single-mention with body** updates `current_pane` (last-explicit)
- *   - **Multi-mention / @all / control / plain** does NOT update current
+ *   - **Multi-mention / #all / control / plain** does NOT update current
  *   - When `current_pane` is dead at routing time, auto-unset + error
  */
 export async function route(
@@ -229,7 +229,7 @@ export async function route(
   const imWorkAuto = opts.imWorkAuto ?? false;
 
   // IMWork gate: "talk to cc" message types require IMWork on. Bridge
-  // commands (`@multi-cc-im /...`) + permission responses (`@<tab> /1` `/2`)
+  // commands (bare `/...`) + permission responses (`#<tab> /1` `/2`)
   // + parse errors always pass through.
   if (
     !imWorkOn &&
@@ -284,7 +284,7 @@ export async function route(
 }
 
 // ============================================================================
-// Permission response: @<tabname> /1 (allow) / @<tabname> /2 (deny)
+// Permission response: #<tabname> /1 (allow) / #<tabname> /2 (deny)
 // ============================================================================
 
 function handlePermissionResponse(
@@ -295,13 +295,13 @@ function handlePermissionResponse(
   const result = matchSession(tabName, sessions);
   if (result.type === 'none') {
     return {
-      echo: `❌ \`@${tabName}\` not found — no active session by that name`,
+      echo: `❌ \`#${tabName}\` not found — no active session by that name`,
       dispatches: [],
     };
   }
   if (result.type === 'ambiguous') {
     return {
-      echo: `❌ \`@${tabName}\` is ambiguous — matches: ${result.candidates
+      echo: `❌ \`#${tabName}\` is ambiguous — matches: ${result.candidates
         .map(displayName)
         .join(', ')}. /rename one of them.`,
       dispatches: [],
@@ -316,7 +316,7 @@ function handlePermissionResponse(
 }
 
 // ============================================================================
-// Plain (no @<name>): dispatch to current_pane
+// Plain (no #<name>): dispatch to current_pane
 // ============================================================================
 
 function handlePlain(
@@ -340,7 +340,7 @@ function handlePlain(
     if (!current) {
       state.setCurrent(null);
       return {
-        echo: '⚠️ previous current pane disconnected, current cleared. Use `@<name>` to pick a target.',
+        echo: '⚠️ previous current pane disconnected, current cleared. Use `#<name>` to pick a target.',
         dispatches: [],
       };
     }
@@ -360,13 +360,13 @@ function handlePlain(
   }
 
   return {
-    echo: '❌ no current session — send `@<name>` first or `/list`',
+    echo: '❌ no current session — send `#<name>` first or `/list`',
     dispatches: [],
   };
 }
 
 // ============================================================================
-// Plain (no @<name>) with AI routing
+// Plain (no #<name>) with AI routing
 // ============================================================================
 
 async function handlePlainWithAI(
@@ -443,7 +443,7 @@ async function handlePlainWithAI(
     );
   }
 
-  const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
+  const availableTabs = namedSessions.map((s) => `#${s.tabTitle}`).join(', ');
 
   if (result.target === null || result.intent === null) {
     // Deterministic substring fallback — try matching the message text
@@ -456,7 +456,7 @@ async function handlePlainWithAI(
     //
     // If exactly one tab name is found in the message → route to it.
     // If zero or multiple → fall through to the error echo (user picks
-    // explicitly via @<tab>).
+    // explicitly via #<tab>).
     const fallback = findTabBySubstring(body, namedSessions);
     if (fallback !== null) {
       state.setCurrent(fallback.paneId);
@@ -470,7 +470,7 @@ async function handlePlainWithAI(
       echo:
         `❌ 「${truncate(body, ECHO_EXCERPT_MAX)}」 无法识别目标\n` +
         `   可用：${availableTabs}\n` +
-        `   或用 @<tab> 显式指定`,
+        `   或用 #<tab> 显式指定`,
       dispatches: [],
       aiTrace: { ...baseTrace, fallback: null },
     };
@@ -483,14 +483,14 @@ async function handlePlainWithAI(
       echo:
         `❌ AI 路由到 \`${result.target}\` 但 tab 不存在\n` +
         `   可用：${availableTabs}\n` +
-        `   或用 @<tab> 显式指定`,
+        `   或用 #<tab> 显式指定`,
       dispatches: [],
       aiTrace: { ...baseTrace, fallback: null },
     };
   }
 
   // Sticky current — same as explicit single-mention. User can verify intent
-  // via the echo and override next message with `@<tab>` if AI mis-classified.
+  // via the echo and override next message with `#<tab>` if AI mis-classified.
   state.setCurrent(target.paneId);
   return {
     echo: `target: ${displayName(target)}\ncontent: ${truncate(result.intent, ECHO_EXCERPT_MAX)}`,
@@ -531,7 +531,7 @@ function mapPendingToPrompt(
  * The IM message did NOT route a new task; instead AI matched it to a
  * pending PreToolUse and decided allow / deny. Emit a
  * `RouterPermissionResponse` so orchestrator dispatches via the same
- * helper as the rigid-syntax `@<tab> /1` path — sticky `current` is
+ * helper as the rigid-syntax `#<tab> /1` path — sticky `current` is
  * NOT updated (mirrors rigid-syntax behavior; permission replies are
  * orthogonal to routing default).
  *
@@ -547,7 +547,7 @@ function handleAIPermissionReply(
   const target = namedSessions.find(
     (s) => s.tabTitle === permissionResponse.target,
   );
-  const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
+  const availableTabs = namedSessions.map((s) => `#${s.tabTitle}`).join(', ');
   if (!target) {
     // AI picked a tab that's no longer live (race between
     // listPendingPermissionRequests + the AI call) or the AI hallucinated
@@ -558,7 +558,7 @@ function handleAIPermissionReply(
       echo:
         `❌ AI 把审批路由到 \`${permissionResponse.target}\` 但 tab 不存在\n` +
         `   可用：${availableTabs}\n` +
-        `   或用 @<tab> /1 显式指定`,
+        `   或用 #<tab> /1 显式指定`,
       dispatches: [],
       aiTrace: baseTrace,
     };
@@ -580,7 +580,7 @@ function handleAIPermissionReply(
 }
 
 // ============================================================================
-// @<name> mention(s)
+// #<name> mention(s)
 // ============================================================================
 
 function handleMention(
@@ -598,7 +598,7 @@ function handleMention(
       resolved.push(result.session);
     } else if (result.type === 'ambiguous') {
       errors.push(
-        `❌ \`@${m}\` is ambiguous — matches: ${result.candidates
+        `❌ \`#${m}\` is ambiguous — matches: ${result.candidates
           .map(displayName)
           .join(', ')}`,
       );
@@ -606,8 +606,8 @@ function handleMention(
       const named = sessions.filter((s) => s.tabTitle.length > 0);
       errors.push(
         named.length === 0
-          ? `❌ \`@${m}\` not found — no /rename'd cc panes`
-          : `❌ \`@${m}\` not found — alive: ${named.map(displayName).join(', ')}`,
+          ? `❌ \`#${m}\` not found — no /rename'd cc panes`
+          : `❌ \`#${m}\` not found — alive: ${named.map(displayName).join(', ')}`,
       );
     }
   }
@@ -645,7 +645,7 @@ function handleMention(
 }
 
 // ============================================================================
-// @all broadcast
+// #all broadcast
 // ============================================================================
 
 function handleBroadcast(
@@ -673,7 +673,7 @@ function handleBroadcast(
 
 // ============================================================================
 // Bridge commands: bare `/<command> [args]` (per DD #73 — replaced
-// `@multi-cc-im /<command>` syntax, no backwards compat)
+// per DD #73 — replaces legacy v1.4 `@multi-cc-im /<command>` form)
 // ============================================================================
 
 function handleBridgeCommand(
@@ -696,12 +696,12 @@ function handleBridgeCommand(
         echo: [
           '路由示例：',
           '  hello                      → current cc (last-explicit-mention 粘性；只一个 cc 时自动 = 那一个)',
-          '  @frontend hello            → tab title=frontend 的 cc，并设为 current',
-          '  @fr hello                  → 短前缀（4 级 fallback：=strict → exact → prefix → glob；歧义列候选拒绝）',
-          '  @frontend @api sync        → 多目标分发；不改 current',
-          '  @frontend /clear           → 转发 /clear 进 cc TUI（cc 自己当 slash 命令处理）',
-          '  @all stop everything       → 广播给所有 /rename\'d cc',
-          '  @frontend /1   /  /2       → 权限允许 / 拒绝（仅当有 pending PreToolUse）',
+          '  #frontend hello            → tab title=frontend 的 cc，并设为 current',
+          '  #fr hello                  → 短前缀（4 级 fallback：=strict → exact → prefix → glob；歧义列候选拒绝）',
+          '  #frontend #api sync        → 多目标分发；不改 current',
+          '  #frontend /clear           → 转发 /clear 进 cc TUI（cc 自己当 slash 命令处理）',
+          '  #all stop everything       → 广播给所有 /rename\'d cc',
+          '  #frontend /1   /  /2       → 权限允许 / 拒绝（仅当有 pending PreToolUse）',
           '',
           'Bridge 命令（直接 /<cmd>）：',
           '  /list                      → 列当前 wezterm tabs（含可寻址状态）',
@@ -710,7 +710,7 @@ function handleBridgeCommand(
           '  /start                     → 开启 IM 模式（默认 auto-approve；加 `off` 切 ask 模式）',
           '  /stop                      → 关闭 IM 模式（cc 回复留 cc TUI，工具审批走 cc 原生菜单）',
           '',
-          'Tip: 进 cc TUI 跑 /rename <name> 设 @<name> 寻址（real-time，cc /resume 也带）；',
+          'Tip: 进 cc TUI 跑 /rename <name> 设 #<name> 寻址（real-time，cc /resume 也带）；',
           '     tab title 不要用纯数字 — 易混淆 (paneId 显示也是数字)。',
         ].join('\n'),
         dispatches: [],
@@ -768,8 +768,10 @@ function handleBridgeCommand(
           '  - IM 路由只用 tab title (cc /rename 设的)',
           '  - 没 /rename 的 cc 只能在 cc TUI 里用，IM 寻址不到',
           '  - 建议 tab title 用字母/单词，**不要用纯数字** (易混淆)',
+          '  - 直接说人话（无 `#`）会让 cc 帮你分诊到最匹配的 tab；要精确点名才用 `#<tab>`',
           '  - cc 回复转发到 IM (Stop hook)',
           autoTipLine,
+          '  - ask 模式下也能用自然语言回审批：「<tab> 同意」/「<tab> 拒绝」/「deny the bash one」之类（AI 找匹配的 pending）',
           '  - 终端 cc TUI 直接打字不会 forward 到 IM',
           '',
           '完整命令说明：发 /help',
@@ -803,7 +805,7 @@ function handleBridgeCommand(
  *
  * Lists **all** wezterm panes (zsh / cc / vim / 任何东西) — daemon 不知道每个
  * pane 里跑啥，只知道 tab title 是不是被 /rename 过。每行显示寻址状态：
- *   - 有 /rename → `[可寻址 @<name>]`
+ *   - 有 /rename → `[可寻址 #<name>]`
  *   - 没 /rename → `[未 /rename — 进 cc TUI 跑 /rename <name>]`
  */
 function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
@@ -814,7 +816,7 @@ function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
   sessions.forEach((s, i) => {
     const status =
       s.tabTitle.length > 0
-        ? `[可寻址 @${s.tabTitle}]`
+        ? `[可寻址 #${s.tabTitle}]`
         : `[未 /rename — 进 cc TUI 跑 /rename <name>]`;
     lines.push(`  ${i + 1}. ${displayName(s)} (pane ${s.paneId}) ${status}`);
   });
@@ -895,7 +897,7 @@ function normalizeForSubstring(s: string): string {
  *
  * Multi-match ambiguity is deliberately NOT resolved here — if two
  * tab names both appear in the message, deferring to the user's
- * `@<tab>` picker is safer than guessing.
+ * `#<tab>` picker is safer than guessing.
  */
 function findTabBySubstring(
   message: string,

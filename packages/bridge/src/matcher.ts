@@ -2,9 +2,9 @@ import type { PaneId } from '@multi-cc-im/shared';
 
 /**
  * Reserved tab name that always refers to the bridge daemon itself rather
- * than any cc session. `@multi-cc-im /list` etc. are bridge commands. Users
- * cannot legitimately /rename a cc to this string (router rejects it on
- * matcher entry).
+ * than any cc session. Bridge commands live under bare-slash syntax
+ * (`/list`, `/start`, etc.). Users cannot legitimately /rename a cc to
+ * this string (router rejects it on matcher entry).
  */
 export const RESERVED_BRIDGE_NAME = 'multi-cc-im';
 
@@ -36,7 +36,7 @@ export type MatchResult =
   | { type: 'none' };
 
 /**
- * Resolve a `@<query>` token to a SessionInfo via tmux-style 4-level
+ * Resolve a `#<query>` token to a SessionInfo via tmux-style 4-level
  * fallback over the user-set tab title (cc `/rename`):
  *
  * 1. **`=<exact>`** — strict exact tabTitle match
@@ -55,8 +55,7 @@ export type MatchResult =
  * the duplicate names.
  *
  * Reserved name `multi-cc-im` is filtered out before matching — even if a
- * user manages to /rename a cc to that string, it's never resolvable to a
- * session (router treats `@multi-cc-im` as a bridge command target).
+ * user manages to /rename a cc to that string, it's never resolvable.
  */
 export function matchSession(
   query: string,

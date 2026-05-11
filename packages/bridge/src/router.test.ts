@@ -98,7 +98,7 @@ describe('router — plain message + sticky current_pane', () => {
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toMatch(/no current|@<name>|\/list/i);
+    expect(result.echo).toMatch(/no current|#<name>|\/list/i);
   });
 
   it('plain + current set but pane no longer present → unset + error', async () => {
@@ -134,10 +134,10 @@ describe('router — plain message + sticky current_pane', () => {
   });
 });
 
-describe('router — @<name> mention', () => {
-  it('@frontend hello → unique match + dispatches + sets current', async () => {
+describe('router — #<name> mention', () => {
+  it('#frontend hello → unique match + dispatches + sets current', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend hello'), {
+    const result = await routeOn(incoming('#frontend hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -148,9 +148,9 @@ describe('router — @<name> mention', () => {
     expect(result.echo).toContain('frontend');
   });
 
-  it('@front matches "frontend" by prefix', async () => {
+  it('#front matches "frontend" by prefix', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@front hello'), {
+    const result = await routeOn(incoming('#front hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -158,9 +158,9 @@ describe('router — @<name> mention', () => {
     expect(result.dispatches[0]?.session).toBe(FRONTEND);
   });
 
-  it('@front ambiguous (frontend + frame) → error lists candidates', async () => {
+  it('#front ambiguous (frontend + frame) → error lists candidates', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@fr hello'), {
+    const result = await routeOn(incoming('#fr hello'), {
       registry: fixedRegistry([FRONTEND, FRAME]),
       state,
     });
@@ -170,9 +170,9 @@ describe('router — @<name> mention', () => {
     expect(result.echo).toContain('frame');
   });
 
-  it('@nonexistent → error lists alive named sessions', async () => {
+  it('#nonexistent → error lists alive named sessions', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@nope hello'), {
+    const result = await routeOn(incoming('#nope hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -181,10 +181,10 @@ describe('router — @<name> mention', () => {
     expect(result.echo).toContain('frontend');
   });
 
-  it('@nonexistent + zero named panes → "no /rename\'d" hint', async () => {
+  it('#nonexistent + zero named panes → "no /rename\'d" hint', async () => {
     const state = memState(null);
     const noName = s('', 5);
-    const result = await routeOn(incoming('@nope hello'), {
+    const result = await routeOn(incoming('#nope hello'), {
       registry: fixedRegistry([noName]),
       state,
     });
@@ -192,9 +192,9 @@ describe('router — @<name> mention', () => {
     expect(result.echo).toMatch(/no \/rename'd/i);
   });
 
-  it('@frontend (empty body, single resolve) → sets current with note', async () => {
+  it('#frontend (empty body, single resolve) → sets current with note', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend'), {
+    const result = await routeOn(incoming('#frontend'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -204,9 +204,9 @@ describe('router — @<name> mention', () => {
     expect(result.echo).toContain('frontend');
   });
 
-  it('@frontend @api hello → multi-target dispatch, current NOT updated', async () => {
+  it('#frontend #api hello → multi-target dispatch, current NOT updated', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend @api hello'), {
+    const result = await routeOn(incoming('#frontend #api hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -216,9 +216,9 @@ describe('router — @<name> mention', () => {
     expect(state.getCurrent()).toBeNull();
   });
 
-  it('@frontend @api (empty body, multi resolve) → error', async () => {
+  it('#frontend #api (empty body, multi resolve) → error', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend @api'), {
+    const result = await routeOn(incoming('#frontend #api'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -227,10 +227,10 @@ describe('router — @<name> mention', () => {
   });
 });
 
-describe('router — @all broadcast', () => {
-  it('@all hello → fan out to every named pane', async () => {
+describe('router — #all broadcast', () => {
+  it('#all hello → fan out to every named pane', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@all hello'), {
+    const result = await routeOn(incoming('#all hello'), {
       registry: fixedRegistry([FRONTEND, API, FRAME]),
       state,
     });
@@ -246,10 +246,10 @@ describe('router — @all broadcast', () => {
     expect(state.getCurrent()).toBeNull();
   });
 
-  it('@all hello + un-renamed pane present → un-renamed excluded', async () => {
+  it('#all hello + un-renamed pane present → un-renamed excluded', async () => {
     const state = memState(null);
     const noName = s('', 99);
-    const result = await routeOn(incoming('@all hello'), {
+    const result = await routeOn(incoming('#all hello'), {
       registry: fixedRegistry([FRONTEND, noName]),
       state,
     });
@@ -257,9 +257,9 @@ describe('router — @all broadcast', () => {
     expect(result.dispatches[0]?.session).toBe(FRONTEND);
   });
 
-  it('@all (empty body) → error', async () => {
+  it('#all (empty body) → error', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@all'), {
+    const result = await routeOn(incoming('#all'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -267,9 +267,9 @@ describe('router — @all broadcast', () => {
     expect(result.echo).toMatch(/empty body/i);
   });
 
-  it('@all + zero named panes → error', async () => {
+  it('#all + zero named panes → error', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@all hello'), {
+    const result = await routeOn(incoming('#all hello'), {
       registry: fixedRegistry([]),
       state,
     });
@@ -300,14 +300,14 @@ describe('router — bridge commands (bare /<command>)', () => {
     expect(result.echo).not.toContain('可用 cc sessions');
   });
 
-  it('/list → /rename\'d pane renders [可寻址 @<name>] status; un-renamed renders /rename hint', async () => {
+  it('/list → /rename\'d pane renders [可寻址 #<name>] status; un-renamed renders /rename hint', async () => {
     const state = memState(null);
     const unnamed = s('', 99);
     const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([FRONTEND, unnamed]),
       state,
     });
-    expect(result.echo).toContain('[可寻址 @frontend]');
+    expect(result.echo).toContain('[可寻址 #frontend]');
     expect(result.echo).toContain('[未 /rename');
   });
 
@@ -328,8 +328,8 @@ describe('router — bridge commands (bare /<command>)', () => {
       state,
     });
     expect(result.dispatches).toEqual([]);
-    expect(result.echo).toContain('@<name>');
-    expect(result.echo).toContain('@all');
+    expect(result.echo).toContain('#<name>');
+    expect(result.echo).toContain('#all');
     expect(result.echo).toContain('/list');
   });
 
@@ -420,8 +420,8 @@ describe('router — bridge commands (bare /<command>)', () => {
     });
     // Concrete examples (not just placeholder syntax) so users know what
     // to type without guessing.
-    expect(result.echo).toContain('@frontend hello');
-    expect(result.echo).toContain('@all');
+    expect(result.echo).toContain('#frontend hello');
+    expect(result.echo).toContain('#all');
     expect(result.echo).toContain('/clear');
     expect(result.echo).toContain('/1');
     expect(result.echo).toContain('Bridge 命令');
@@ -512,10 +512,10 @@ describe('router — bridge commands (bare /<command>)', () => {
   });
 });
 
-describe('router — permission_response @<tab> /1 /2', () => {
-  it('@frontend /1 → permissionResponse allow + echo + no dispatch', async () => {
+describe('router — permission_response #<tab> /1 /2', () => {
+  it('#frontend /1 → permissionResponse allow + echo + no dispatch', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend /1'), {
+    const result = await routeOn(incoming('#frontend /1'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
     });
@@ -527,9 +527,9 @@ describe('router — permission_response @<tab> /1 /2', () => {
     expect(result.echo).toContain('frontend');
   });
 
-  it('@frontend /2 → permissionResponse deny', async () => {
+  it('#frontend /2 → permissionResponse deny', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@frontend /2'), {
+    const result = await routeOn(incoming('#frontend /2'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -539,9 +539,9 @@ describe('router — permission_response @<tab> /1 /2', () => {
     });
   });
 
-  it('@nonexistent /1 → no permissionResponse, error echo', async () => {
+  it('#nonexistent /1 → no permissionResponse, error echo', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@nope /1'), {
+    const result = await routeOn(incoming('#nope /1'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -549,9 +549,9 @@ describe('router — permission_response @<tab> /1 /2', () => {
     expect(result.echo).toMatch(/not found/i);
   });
 
-  it('@<ambiguous> /1 → no permissionResponse, ambiguity echo', async () => {
+  it('#<ambiguous> /1 → no permissionResponse, ambiguity echo', async () => {
     const state = memState(null);
-    const result = await routeOn(incoming('@fr /1'), {
+    const result = await routeOn(incoming('#fr /1'), {
       registry: fixedRegistry([FRONTEND, FRAME]),
       state,
     });
@@ -572,9 +572,9 @@ describe('router — IMWork off gate', () => {
     expect(result.echo).toMatch(/IMWork off/i);
   });
 
-  it('@<name> mention rejected when off', async () => {
+  it('#<name> mention rejected when off', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend hello'), {
+    const result = await route(incoming('#frontend hello'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -583,9 +583,9 @@ describe('router — IMWork off gate', () => {
     expect(result.echo).toMatch(/IMWork off/i);
   });
 
-  it('@all broadcast rejected when off', async () => {
+  it('#all broadcast rejected when off', async () => {
     const state = memState(null);
-    const result = await route(incoming('@all hello'), {
+    const result = await route(incoming('#all hello'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -614,9 +614,9 @@ describe('router — IMWork off gate', () => {
     expect(result.imWorkAction).toEqual({ kind: 'enable', auto: true });
   });
 
-  it('permission response @<tab> /1 ALWAYS allowed even when off', async () => {
+  it('permission response #<tab> /1 ALWAYS allowed even when off', async () => {
     const state = memState(null);
-    const result = await route(incoming('@frontend /1'), {
+    const result = await route(incoming('#frontend /1'), {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: false,
@@ -761,7 +761,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toMatch(/无法识别/);
-    expect(result.echo).toContain('@<tab>');
+    expect(result.echo).toContain('#<tab>');
   });
 
   it('plain msg + aiRouter returns intent=null → echo "无法识别" even if target set', async () => {
@@ -796,7 +796,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toContain('mobile');
-    expect(result.echo).toMatch(/不存在|@<tab>/);
+    expect(result.echo).toMatch(/不存在|#<tab>/);
   });
 
   it('plain msg + aiRouter passes currentTab from sticky state', async () => {
@@ -847,10 +847,10 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
     expect(result.echo).toMatch(/IMWork off/i);
   });
 
-  it('@<name> mention bypasses aiRouter entirely', async () => {
+  it('#<name> mention bypasses aiRouter entirely', async () => {
     const state = memState(null);
     let aiCalled = false;
-    const result = await route(incoming('@frontend hello'), {
+    const result = await route(incoming('#frontend hello'), {
       registry: fixedRegistry([FRONTEND, API]),
       state,
       imWorkOn: true,
@@ -866,11 +866,11 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
 });
 
 describe('router — parser error passthrough', () => {
-  it('malformed @ token → error echo', async () => {
-    // Two-mention with @all in the middle is ambiguous (@all + named) — parser
+  it('malformed # token → error echo', async () => {
+    // Two-mention with #all in the middle is ambiguous (#all + named) — parser
     // returns error. Tested here to ensure error type passes through router.
     const state = memState(null);
-    const result = await routeOn(incoming('@all @frontend hello'), {
+    const result = await routeOn(incoming('#all #frontend hello'), {
       registry: fixedRegistry([FRONTEND]),
       state,
     });
@@ -948,8 +948,8 @@ describe('router — AI-routed echo format', () => {
     });
     expect(result.echo).toBe(
       '❌ 「哎呀今天好烦」 无法识别目标\n' +
-        '   可用：@frontend, @api\n' +
-        '   或用 @<tab> 显式指定',
+        '   可用：#frontend, #api\n' +
+        '   或用 #<tab> 显式指定',
     );
   });
 
@@ -964,8 +964,8 @@ describe('router — AI-routed echo format', () => {
       aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.echo).toContain(`❌ 「${longMsg.slice(0, 19)}…」 无法识别目标`);
-    expect(result.echo).toContain('可用：@frontend');
-    expect(result.echo).toContain('或用 @<tab> 显式指定');
+    expect(result.echo).toContain('可用：#frontend');
+    expect(result.echo).toContain('或用 #<tab> 显式指定');
   });
 
   it('AI routing failure echo lists every named tab in order so user sees full inventory', async () => {
@@ -977,7 +977,7 @@ describe('router — AI-routed echo format', () => {
       aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     // Tabs preserved in registry order (frontend → api → frame).
-    expect(result.echo).toContain('可用：@frontend, @api, @frame');
+    expect(result.echo).toContain('可用：#frontend, #api, #frame');
   });
 
   it('substring fallback: AI returns null but message contains a tab name verbatim → routes via deterministic match', async () => {
@@ -1022,10 +1022,10 @@ describe('router — AI-routed echo format', () => {
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toContain('无法识别目标');
-    expect(result.echo).toContain('可用：@frontend, @api');
+    expect(result.echo).toContain('可用：#frontend, #api');
   });
 
-  it('substring fallback: multiple tabs match → ambiguous, defers to user @<tab> (no guess)', async () => {
+  it('substring fallback: multiple tabs match → ambiguous, defers to user #<tab> (no guess)', async () => {
     const state = memState(null);
     const result = await route(incoming('frontend 和 api 两边都看看'), {
       registry: fixedRegistry([FRONTEND, API]),
@@ -1129,7 +1129,7 @@ describe('router — AI-routed echo format', () => {
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toContain('AI 路由到 `mobile` 但 tab 不存在');
-    expect(result.echo).toContain('可用：@frontend, @api');
+    expect(result.echo).toContain('可用：#frontend, #api');
   });
 });
 
@@ -1363,7 +1363,7 @@ describe('router — AI permission reply integration (DD 2026-05-11)', () => {
       }),
     });
     // current_pane unchanged — permission replies don't move the routing
-    // default (mirrors the @<tab> /1 /2 rigid syntax behavior).
+    // default (mirrors the #<tab> /1 /2 rigid syntax behavior).
     expect(state.getCurrent()).toBe(API.paneId);
   });
 
