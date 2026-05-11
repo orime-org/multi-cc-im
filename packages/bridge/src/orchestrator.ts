@@ -21,6 +21,7 @@ import {
   readIMWorkFile,
   deletePermissionFileByPath,
   existsIMWorkFile,
+  listPendingPermissionRequests,
   permissionRequestPath,
   permissionResponsePath,
   readIMOriginFile,
@@ -210,6 +211,24 @@ export function createOrchestrator(
       imWorkOn,
       imWorkAuto,
       aiRouter,
+      // Bound to this orchestrator's stateDir so the router can enumerate
+      // pending PreToolUse approvals when deciding whether to treat the
+      // IM message as a natural-language permission reply. Per DD §9.1 P4
+      // (2026-05-11). Always wired — router still gates per-message on
+      // whether AI is actually consulted (plain no-mention messages only).
+      //
+      // Brand bridging: cli-cc's `PendingPermissionRequest.paneId` is
+      // `number` (cli-cc has no @multi-cc-im/shared dep so it can't
+      // reference the branded `PaneId`). Cast at this IPC boundary so
+      // the router's branded `RouterPendingRequest` flows downstream
+      // type-safely.
+      listPendingPermissionRequests: async () => {
+        const raw = await listPendingPermissionRequests(opts.stateDir);
+        return raw.map((p) => ({
+          ...p,
+          paneId: p.paneId as unknown as PaneId,
+        }));
+      },
     });
 
     // IMWork toggle from /start [auto] /stop
@@ -231,12 +250,17 @@ export function createOrchestrator(
       }
     }
 
-    // Permission response: @<tab> /1 /2
+    // Permission response: either rigid syntax `@<tab> /1`/`/2` OR an
+    // AI-matched natural-language reply (DD §9.1 P4, 2026-05-11). Same
+    // helper handles both — AI path provides a verbatim `reason`; rigid
+    // syntax leaves it undefined so the helper falls back to the default
+    // "IM user replied /1|/2" string.
     if (result.permissionResponse) {
       await handlePermissionResponseFromIM(
         result.permissionResponse.session.paneId as unknown as number,
         result.permissionResponse.decision,
         msg.replyCtx as IMReplyContext,
+        result.permissionResponse.reason,
       );
     }
 
@@ -255,6 +279,16 @@ export function createOrchestrator(
       log(
         `[AI router] target=${t.target ?? 'none'} intent="${truncate(t.intent ?? '', 60)}" reason="${truncate(t.reason ?? '', 60)}"${fallbackTag}`,
       );
+      // D5-5 (always log) per DD §8.3 — emit a separate audit trail line
+      // when the AI matched the IM message to a pending PreToolUse. The
+      // user / operator sees both what the AI decided AND its paraphrase
+      // of the user's reply, so they can confirm the decision was sane.
+      if (t.permissionResponse) {
+        const p = t.permissionResponse;
+        log(
+          `[AI permission] target=${p.target} decision=${p.decision} reason="${truncate(p.reason, 60)}"`,
+        );
+      }
     }
 
     if (result.dispatches.length > 0) {
@@ -362,6 +396,14 @@ export function createOrchestrator(
     paneId: number,
     decision: 'allow' | 'deny',
     replyCtx: IMReplyContext,
+    /**
+     * Optional per-call reason override. AI-matched natural-language
+     * replies (DD §9.1 P4) pass the AI's paraphrase of the user's
+     * intent verbatim so it flows into cc's transcript via
+     * `permissionDecisionReason`. Rigid-syntax `@<tab> /1|/2` callers
+     * omit it and we fall back to the historical default string.
+     */
+    reason?: string,
   ): Promise<void> {
     let entries: string[];
     try {
@@ -406,7 +448,9 @@ export function createOrchestrator(
           sessionId: p.sessionId,
           requestId: p.requestId,
           decision,
-          reason: `IM user replied /${decision === 'allow' ? '1' : '2'}`,
+          reason:
+            reason ??
+            `IM user replied /${decision === 'allow' ? '1' : '2'}`,
         });
       } catch (err) {
         onError(err, {

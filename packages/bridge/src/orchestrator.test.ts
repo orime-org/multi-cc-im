@@ -1675,3 +1675,255 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
     await orch.stop();
   });
 });
+
+// ============================================================================
+// P4 — AI-matched natural-language permission reply dispatch
+// (DD 2026-05-11 §9.1 P4)
+// ============================================================================
+
+describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', () => {
+  let aiPermStateDir: string;
+  beforeEach(async () => {
+    aiPermStateDir = mkdtempSync(join(tmpdir(), 'orch-ai-perm-'));
+    await writeIMWorkFile(aiPermStateDir, { auto: false });
+  });
+
+  // Helper: write a pending PermissionRequest file under the test state
+  // dir so listPendingPermissionRequests (wired by the orchestrator) can
+  // find it when the inbound IM message arrives.
+  async function writePending(opts: {
+    paneId: PaneId;
+    sessionId: SessionId;
+    requestId: string;
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+  }): Promise<void> {
+    const path = permissionRequestPath({
+      stateDir: aiPermStateDir,
+      paneId: opts.paneId as unknown as number,
+      sessionId: opts.sessionId,
+      requestId: opts.requestId,
+    });
+    await writeFile(
+      path,
+      JSON.stringify({
+        requestId: opts.requestId,
+        toolName: opts.toolName ?? 'Bash',
+        toolInput: opts.toolInput ?? { command: 'rm -rf node_modules' },
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  it('aiRouter sees the pending PermissionRequest (orchestrator wires listPendingPermissionRequests by stateDir)', async () => {
+    const requestId = 'aabb1111';
+    await writePending({
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+    });
+
+    const im = makeMockIM();
+    let observed:
+      | readonly { tabName: string; toolName: string; toolInput: Record<string, unknown> }[]
+      | undefined;
+    const orch = createOrchestrator({
+      stateDir: aiPermStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async (o) => {
+        observed = o.pendingRequests as typeof observed;
+        return {
+          target: null,
+          intent: null,
+          reason: 'permission reply',
+          permissionResponse: {
+            target: 'frontend',
+            decision: 'allow',
+            reason: '用户同意 rm node_modules',
+          },
+        };
+      },
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('frontend 那个 rm 同意'));
+
+    expect(observed).toEqual([
+      {
+        tabName: 'frontend',
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf node_modules' },
+      },
+    ]);
+    await orch.stop();
+  });
+
+  it('AI permissionResponse allow → writes PermissionResponse file with AI reason verbatim', async () => {
+    const requestId = 'ccdd2222';
+    await writePending({
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+    });
+
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: aiPermStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'allow',
+          reason: '用户同意 rm node_modules',
+        },
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('frontend 那个 rm 同意'));
+
+    const resp = await readPermissionResponseFile(
+      permissionResponsePath({
+        stateDir: aiPermStateDir,
+        paneId: FRONTEND_PANE as unknown as number,
+        sessionId: SID_A,
+        requestId,
+      }),
+    );
+    expect(resp).toEqual({
+      requestId,
+      decision: 'allow',
+      reason: '用户同意 rm node_modules',
+    });
+    await orch.stop();
+  });
+
+  it('AI permissionResponse deny → writes PermissionResponse file with deny + reason', async () => {
+    const requestId = 'eeff3333';
+    await writePending({
+      paneId: API_PANE,
+      sessionId: SID_B,
+      requestId,
+      toolName: 'Edit',
+      toolInput: { file_path: '/etc/hosts' },
+    });
+
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: aiPermStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([API_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'api',
+          decision: 'deny',
+          reason: '用户拒绝改 /etc/hosts',
+        },
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('api 拒绝改 hosts'));
+
+    const resp = await readPermissionResponseFile(
+      permissionResponsePath({
+        stateDir: aiPermStateDir,
+        paneId: API_PANE as unknown as number,
+        sessionId: SID_B,
+        requestId,
+      }),
+    );
+    expect(resp?.decision).toBe('deny');
+    expect(resp?.reason).toBe('用户拒绝改 /etc/hosts');
+    await orch.stop();
+  });
+
+  it('emits [AI permission] log line on dispatch (D5-5 — always log)', async () => {
+    const requestId = '11119999';
+    await writePending({
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+    });
+
+    const lines: string[] = [];
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: aiPermStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'allow',
+          reason: '用户同意 rm node_modules',
+        },
+      }),
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('frontend 那个 rm 同意'));
+
+    const aiPermLine = lines.find((l) => l.startsWith('[AI permission]'));
+    expect(aiPermLine).toBeDefined();
+    expect(aiPermLine).toContain('target=frontend');
+    expect(aiPermLine).toContain('decision=allow');
+    expect(aiPermLine).toContain('reason="用户同意 rm node_modules"');
+    await orch.stop();
+  });
+
+  it('rigid-syntax `@frontend /1` path unchanged (no AI reason → default "IM user replied /1")', async () => {
+    const requestId = '22228888';
+    await writePending({
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+    });
+
+    const im = makeMockIM();
+    const orch = createOrchestrator({
+      stateDir: aiPermStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null, // route via parser, not AI
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('@frontend /1'));
+
+    const resp = await readPermissionResponseFile(
+      permissionResponsePath({
+        stateDir: aiPermStateDir,
+        paneId: FRONTEND_PANE as unknown as number,
+        sessionId: SID_A,
+        requestId,
+      }),
+    );
+    expect(resp?.decision).toBe('allow');
+    // Default reason is preserved when router didn't provide one.
+    expect(resp?.reason).toContain('/1');
+    await orch.stop();
+  });
+});
