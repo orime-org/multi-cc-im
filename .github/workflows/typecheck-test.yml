@@ -90,7 +90,7 @@ jobs:
       - name: Smoke — bin wrapper picks up bundled cli (--version)
         run: |
           out="$(./bin/multi-cc-im --version)"
-          test "$out" = "0.0.0"
+          test "$out" = "0.0.1"
 
       - name: Smoke — Stop hook silently exits when WEZTERM_PANE undefined
         # Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
@@ -168,4 +168,4 @@ jobs:
         run: |
           rm -rf apps/multi-cc-im/dist
           out="$(./bin/multi-cc-im --version)"
-          test "$out" = "0.0.0"
+          test "$out" = "0.0.1"
