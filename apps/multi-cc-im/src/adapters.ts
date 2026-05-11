@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import {
   createLarkAdapter,
   LarkCredentialsSchema,
@@ -7,6 +8,7 @@ import {
 import type { AdapterSetupSchema, IMAdapter } from '@multi-cc-im/shared';
 import { createCredentialStore } from '@multi-cc-im/storage-files';
 import type { AppPaths } from './config-paths.js';
+import { defaultDocsDir } from './wizard/guide.js';
 
 /**
  * Single source of truth for "which IM adapters this binary can wire up".
@@ -63,6 +65,14 @@ export interface AdapterRegistryEntry {
     paths: AppPaths;
     log: (line: string) => void;
   }) => IMAdapter;
+
+  /**
+   * Absolute path to a markdown guide rendered inline before the W4
+   * wizard's first prompt. Optional — adapters without a guide skip
+   * the W6 hook silently. Per
+   * [DD §10.1 W6](../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#101-implementation-milestones-post-dd).
+   */
+  guideDocPath?: string;
 }
 
 function buildLarkPersistShape(
@@ -94,6 +104,7 @@ const larkEntry: AdapterRegistryEntry = {
     });
     return createLarkAdapter({ credentialStore, log });
   },
+  guideDocPath: join(defaultDocsDir(), 'setup-feishu.md'),
 };
 
 /**

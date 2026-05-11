@@ -55,6 +55,12 @@ export interface WizardPromptIO {
   outro: (msg: string) => void;
   info: (msg: string) => void;
   error: (msg: string) => void;
+  /**
+   * Render a multi-line message without a prefix icon or `[INFO]` label.
+   * Used for the inline configuration guide (W6) which is already
+   * formatted with its own headings + ANSI styling.
+   */
+  message: (msg: string) => void;
   text: (opts: WizardTextPromptOpts) => Promise<string | symbol>;
   password: (opts: WizardPasswordPromptOpts) => Promise<string | symbol>;
   confirm: (opts: WizardConfirmPromptOpts) => Promise<boolean | symbol>;
@@ -78,6 +84,7 @@ export const realClackIO: WizardPromptIO = {
   outro: (msg) => clack.outro(msg),
   info: (msg) => clack.log.info(msg),
   error: (msg) => clack.log.error(msg),
+  message: (msg) => clack.log.message(msg),
   text: (opts) => clack.text(opts),
   password: (opts) => clack.password(opts),
   confirm: (opts) => clack.confirm(opts),

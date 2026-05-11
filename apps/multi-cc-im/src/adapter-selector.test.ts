@@ -67,6 +67,7 @@ function makeIO(scripted: ScriptedResponse[]): {
       error: (m) => {
         calls.errors.push(m);
       },
+      message: vi.fn(),
       text: vi.fn() as unknown as WizardPromptIO['text'],
       password: vi.fn() as unknown as WizardPromptIO['password'],
       confirm: async (opts: WizardConfirmPromptOpts) => {
@@ -237,6 +238,87 @@ describe('selectAndConfigureAdapter (W5 — adapter selection + creds branch)', 
     });
     expect(result).toEqual({ status: 'cancelled' });
     expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('W6: when entry.guideDocPath is set + file exists, wizard receives a rendered guide', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'selector-guide-'));
+    const guidePath = join(dir, 'setup.md');
+    writeFileSync(guidePath, '# Setup heading\n\nplain body');
+
+    const entryWithGuide: AdapterRegistryEntry = {
+      ...larkEntry,
+      guideDocPath: guidePath,
+    };
+    const runWizardSpy = vi.fn(async (_opts: RunWizardOpts): Promise<RunWizardResult> => ({
+      status: 'completed',
+      values: { appId: 'cli_x', appSecret: 'sec' },
+    }));
+    const { io } = makeIO([
+      { method: 'select', expectedValues: ['configure', 'back'], pick: 'configure' },
+    ]);
+    await selectAndConfigureAdapter({
+      adapterArg: 'lark',
+      registry: [entryWithGuide, tgEntry],
+      io,
+      deps: makeDeps({
+        isFile: async () => false,
+        runWizard: runWizardSpy,
+      }),
+    });
+    expect(runWizardSpy).toHaveBeenCalledOnce();
+    const wizardArgs = runWizardSpy.mock.calls[0]![0];
+    expect(wizardArgs.guide).toBeDefined();
+    expect(wizardArgs.guide).toContain('Setup heading');
+    expect(wizardArgs.guide).toContain('plain body');
+    // Heading rendered through bold ANSI (renderGuide default)
+    expect(wizardArgs.guide).toContain('\x1b[1m');
+  });
+
+  it('W6: when entry.guideDocPath is unset, wizard receives guide=undefined', async () => {
+    const runWizardSpy = vi.fn(async (_opts: RunWizardOpts): Promise<RunWizardResult> => ({
+      status: 'completed',
+      values: { appId: 'cli_x', appSecret: 'sec' },
+    }));
+    const { io } = makeIO([
+      { method: 'select', expectedValues: ['configure', 'back'], pick: 'configure' },
+    ]);
+    await selectAndConfigureAdapter({
+      adapterArg: 'lark',
+      registry,
+      io,
+      deps: makeDeps({
+        isFile: async () => false,
+        runWizard: runWizardSpy,
+      }),
+    });
+    expect(runWizardSpy.mock.calls[0]![0].guide).toBeUndefined();
+  });
+
+  it('W6: guide file missing → wizard receives guide=undefined (silent fallback)', async () => {
+    const entryWithBadGuide: AdapterRegistryEntry = {
+      ...larkEntry,
+      guideDocPath: '/nonexistent-W6-fallback-test.md',
+    };
+    const runWizardSpy = vi.fn(async (_opts: RunWizardOpts): Promise<RunWizardResult> => ({
+      status: 'completed',
+      values: { appId: 'cli_x', appSecret: 'sec' },
+    }));
+    const { io } = makeIO([
+      { method: 'select', expectedValues: ['configure', 'back'], pick: 'configure' },
+    ]);
+    await selectAndConfigureAdapter({
+      adapterArg: 'lark',
+      registry: [entryWithBadGuide, tgEntry],
+      io,
+      deps: makeDeps({
+        isFile: async () => false,
+        runWizard: runWizardSpy,
+      }),
+    });
+    expect(runWizardSpy.mock.calls[0]![0].guide).toBeUndefined();
   });
 
   it('with-arg + creds missing + select cancelled (Ctrl-C) → status cancelled', async () => {
