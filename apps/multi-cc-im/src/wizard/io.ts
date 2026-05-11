@@ -26,6 +26,20 @@ export interface WizardConfirmPromptOpts {
   initialValue?: boolean;
 }
 
+export interface WizardSelectOption<V extends string = string> {
+  value: V;
+  label: string;
+  /** Greyed-out hint shown after the label (e.g. "✓ configured"). */
+  hint?: string;
+}
+
+export interface WizardSelectPromptOpts<V extends string = string> {
+  message: string;
+  options: ReadonlyArray<WizardSelectOption<V>>;
+  /** Pre-selected option value; arrow keys move from there. */
+  initialValue?: V;
+}
+
 /**
  * Thin abstraction over `@clack/prompts` so the wizard logic can be
  * unit-tested with a stub that scripts user responses without spawning a
@@ -44,6 +58,9 @@ export interface WizardPromptIO {
   text: (opts: WizardTextPromptOpts) => Promise<string | symbol>;
   password: (opts: WizardPasswordPromptOpts) => Promise<string | symbol>;
   confirm: (opts: WizardConfirmPromptOpts) => Promise<boolean | symbol>;
+  select: <V extends string>(
+    opts: WizardSelectPromptOpts<V>,
+  ) => Promise<V | symbol>;
   /**
    * Test against the sentinel symbol returned by `text` / `password` /
    * `confirm` when the user hits Ctrl-C. Wraps `@clack/core`'s `isCancel`.
@@ -64,5 +81,15 @@ export const realClackIO: WizardPromptIO = {
   text: (opts) => clack.text(opts),
   password: (opts) => clack.password(opts),
   confirm: (opts) => clack.confirm(opts),
+  select: <V extends string>(opts: WizardSelectPromptOpts<V>) =>
+    clack.select<V>({
+      message: opts.message,
+      // clack's `Option<V>` declares `label?: string` (optional); ours is
+      // required. A direct cast through `unknown` is sound at runtime
+      // because every option we construct has a label, satisfying clack's
+      // optional contract.
+      options: opts.options as unknown as Parameters<typeof clack.select<V>>[0]['options'],
+      initialValue: opts.initialValue,
+    }),
   isCancel: clack.isCancel,
 };
