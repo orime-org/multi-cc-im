@@ -112,6 +112,26 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toContain('multi-cc-im 已经合并');
   });
 
+  it('intent language constraint: prompt instructs intent be in the same language as the user message', async () => {
+    // Real-account smoke 2026-05-11: AI was occasionally translating
+    // Chinese user messages to English in the `intent` field, forcing cc
+    // to mentally translate back. New prompt rule explicitly forbids
+    // language switching.
+    const out = renderRoutingPrompt({
+      userMsg: '给前端写个登录页',
+      tabs: ['frontend', 'backend'],
+      currentTab: null,
+    });
+    // Rule visible in CRITICAL block:
+    expect(out).toMatch(/same language/i);
+    // Each direction covered:
+    expect(out).toMatch(/Chinese.*Chinese/);
+    expect(out).toMatch(/English.*English/);
+    expect(out).toMatch(/Mixed/);
+    // Output spec field annotation:
+    expect(out).toMatch(/intent.*user's source language/);
+  });
+
   it('does NOT mention cc slash commands (avoids polluting spawned cc)', () => {
     // Per DD #73 §6.3: prompt must not name `/rename` or any cc TUI slash
     // command — the spawned cc agent itself knows about those, and naming

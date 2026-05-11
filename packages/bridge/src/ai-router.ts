@@ -183,10 +183,19 @@ Pick EXACTLY ONE target. Multiple targets are forbidden. If several
 tabs are plausibly mentioned, pick the one the message is most about
 (usually the one whose name appears first or is most specific).
 
+CRITICAL: The "intent" field MUST be written in the **same language**
+as the user's IM message:
+  - User message in Chinese → intent in Chinese
+  - User message in English → intent in English
+  - Mixed Chinese-English ("frontend那个搞一下") → keep the natural mix
+Do NOT translate the user's message into another language. The intent
+is forwarded verbatim into the target cc tab; mismatched language
+forces cc to mentally translate before doing the actual task.
+
 Output JSON, no markdown wrapping:
 {
   "target": "<exact tab name from the active list above>" | "none",
-  "intent": "<task description with routing cues stripped>" | null,
+  "intent": "<task description with routing cues stripped, in the user's source language>" | null,
   "reason": "<short internal explanation, ≤15 words — used for debugging>"
 }`;
 }
