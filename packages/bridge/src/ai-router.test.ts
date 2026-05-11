@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildClaudeArgs,
+  explainExecError,
   parseRoutingOutput,
   renderRoutingPrompt,
   routeViaAI,
@@ -403,5 +404,89 @@ exit 0
     }
     const dumped = readFileSync(envDumpPath, 'utf8').trim();
     expect(dumped).toBe('WEZTERM_PANE=<unset>');
+  });
+});
+
+// ============================================================================
+// explainExecError — diagnostic reason formatter
+// Per user smoke 2026-05-11: SIGTERM-killed cc subprocesses (exit 143)
+// were showing as "cc exec failed: 143" — obscuring the fact that
+// Node's execFile timeout fires SIGTERM at deadline. This helper makes
+// the cause explicit + includes stderr.
+// ============================================================================
+
+describe('ai-router — explainExecError', () => {
+  it('ENOENT → "cc not in PATH" (fail-fast, no signal / stderr noise)', () => {
+    const err = Object.assign(new Error('spawn claude ENOENT'), {
+      code: 'ENOENT',
+    });
+    expect(explainExecError(err, 30_000)).toBe('cc not in PATH');
+  });
+
+  it('timeout detected via killed=true → "cc timeout after Nms" + signal', () => {
+    const err = Object.assign(new Error('timed out'), {
+      code: 143,
+      signal: 'SIGTERM',
+      killed: true,
+    });
+    expect(explainExecError(err, 30_000)).toMatch(
+      /cc timeout after 30000ms signal=SIGTERM/,
+    );
+  });
+
+  it('timeout detected via legacy code=ETIMEDOUT (older Node versions)', () => {
+    const err = Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+    expect(explainExecError(err, 15_000)).toMatch(/cc timeout after 15000ms/);
+  });
+
+  it('timeout detected via signal=SIGTERM even without killed flag', () => {
+    const err = Object.assign(new Error('killed'), {
+      signal: 'SIGTERM',
+      code: null,
+    });
+    expect(explainExecError(err, 30_000)).toMatch(/cc timeout/);
+  });
+
+  it('numeric exit code (non-timeout) → "cc exited code=N" + stderr snippet', () => {
+    const err = Object.assign(new Error('exit 1'), {
+      code: 1,
+      stderr: 'Error: invalid model name\n  at parseArgs (...)\n',
+    });
+    const out = explainExecError(err, 30_000);
+    expect(out).toContain('cc exited code=1');
+    expect(out).toContain('stderr="Error: invalid model name"');
+  });
+
+  it('Buffer stderr is decoded to UTF-8 (Node returns Buffer when no encoding set)', () => {
+    const err = Object.assign(new Error('exit 2'), {
+      code: 2,
+      stderr: Buffer.from('boom from cc\n', 'utf-8'),
+    });
+    expect(explainExecError(err, 30_000)).toContain('stderr="boom from cc"');
+  });
+
+  it('long stderr is truncated to 80 chars', () => {
+    const longErr = 'x'.repeat(200);
+    const err = Object.assign(new Error('exit 1'), {
+      code: 1,
+      stderr: longErr,
+    });
+    const out = explainExecError(err, 30_000);
+    const match = /stderr="([^"]+)"/.exec(out);
+    expect(match).toBeTruthy();
+    expect(match![1]!.length).toBeLessThanOrEqual(80);
+  });
+
+  it('no stderr → no stderr= suffix', () => {
+    const err = Object.assign(new Error('exit 5'), { code: 5 });
+    const out = explainExecError(err, 30_000);
+    expect(out).toBe('cc exited code=5');
+    expect(out).not.toContain('stderr=');
+  });
+
+  it('unknown shape (no code, no signal) → "cc exec failed: unknown"', () => {
+    expect(explainExecError(new Error('mystery'), 30_000)).toBe(
+      'cc exec failed: unknown',
+    );
   });
 });

@@ -60,7 +60,15 @@ export interface AIRoutingResult {
   reason: string | null;
 }
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+/**
+ * Default subprocess timeout. Bumped from 15s → 30s per user smoke
+ * 2026-05-11: cc cold-start (≈2-5 s) + Haiku inference (≈2-10 s) + a
+ * 10-tab routing prompt can easily push past 15 s on a slow network,
+ * leading to SIGTERM-kill (exit 143) of an otherwise-valid request.
+ * 30 s gives generous headroom; if it's still hitting timeout, the
+ * reason text now distinguishes timeout from other exit modes.
+ */
+const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_CLAUDE_BINARY = 'claude';
 
@@ -310,15 +318,86 @@ export async function routeViaAI(
     });
     stdout = result.stdout;
   } catch (err) {
-    const code = (err as Error & { code?: unknown }).code;
-    const reason =
-      code === 'ETIMEDOUT'
-        ? 'cc timeout'
-        : code === 'ENOENT'
-          ? 'cc not in PATH'
-          : `cc exec failed: ${code ?? 'unknown'}`;
-    return { target: null, intent: null, reason };
+    return { target: null, intent: null, reason: explainExecError(err, timeoutMs) };
   }
 
   return parseRoutingOutput(stdout);
+}
+
+/**
+ * Maximum length of a captured stderr line in the diagnostic reason
+ * string. Long enough to see a one-line error, short enough not to
+ * blow up the daemon log + IM echo (the reason eventually flows into
+ * `[AI router]` stderr log via `aiTrace.reason`).
+ */
+const STDERR_SNIPPET_MAX = 80;
+
+/**
+ * Decode a `child_process.execFile` rejection into a human-readable
+ * reason string covering all failure modes we care about diagnostically:
+ *
+ *  - `ENOENT`         → cc binary missing from PATH
+ *  - timeout          → Node's execFile sent SIGTERM after `timeoutMs`
+ *                       elapsed. Detected via `killed=true`, `signal`
+ *                       matching SIGTERM/SIGKILL, or legacy ETIMEDOUT.
+ *                       Returns "cc timeout after Nms" + stderr snippet.
+ *  - numeric exit code → cc exited with non-zero (e.g. 1 for command
+ *                       error). Returns "cc exited code=N signal=S
+ *                       stderr=\"...\"".
+ *  - everything else  → "cc exec failed: <code|unknown>" + signal +
+ *                       stderr snippet.
+ *
+ * Per user smoke 2026-05-11: the previous "cc exec failed: 143" message
+ * obscured the fact that SIGTERM-killed (exit 128+15=143) processes are
+ * almost always Node's timeout firing. This helper makes timeout
+ * detection explicit + includes stderr so the user can see cc's actual
+ * complaint if any.
+ */
+export function explainExecError(err: unknown, timeoutMs: number): string {
+  const e = err as Error & {
+    code?: unknown;
+    signal?: string | null;
+    killed?: boolean;
+    stderr?: Buffer | string;
+  };
+  const stderrText =
+    typeof e.stderr === 'string'
+      ? e.stderr
+      : Buffer.isBuffer(e.stderr)
+        ? e.stderr.toString('utf-8')
+        : '';
+  const stderrFirstLine = stderrText.split('\n')[0]?.trim() ?? '';
+  const stderrSuffix = stderrFirstLine
+    ? ` stderr="${stderrFirstLine.slice(0, STDERR_SNIPPET_MAX)}"`
+    : '';
+
+  // ENOENT — cc binary not in PATH (fail-fast, no signal / stderr).
+  if (e.code === 'ENOENT') {
+    return 'cc not in PATH';
+  }
+
+  // Timeout — Node fires SIGTERM on timeout, sets `killed=true`. Some
+  // Node versions set `code = 'ETIMEDOUT'` (string); newer versions
+  // leave `code` as the post-SIGTERM exit code (number 143). Detect
+  // any of the three signals.
+  const isTimeout =
+    e.killed === true ||
+    e.code === 'ETIMEDOUT' ||
+    e.signal === 'SIGTERM' ||
+    e.signal === 'SIGKILL';
+  if (isTimeout) {
+    const sigSuffix = e.signal ? ` signal=${e.signal}` : '';
+    return `cc timeout after ${timeoutMs}ms${sigSuffix}${stderrSuffix}`;
+  }
+
+  // Numeric exit code — cc ran but exited non-zero.
+  if (typeof e.code === 'number') {
+    const sigSuffix = e.signal ? ` signal=${e.signal}` : '';
+    return `cc exited code=${e.code}${sigSuffix}${stderrSuffix}`;
+  }
+
+  // Everything else — unknown shape, surface what we have.
+  const codeRepr = e.code != null ? String(e.code) : 'unknown';
+  const sigSuffix = e.signal ? ` signal=${e.signal}` : '';
+  return `cc exec failed: ${codeRepr}${sigSuffix}${stderrSuffix}`;
 }
