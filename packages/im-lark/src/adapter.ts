@@ -92,12 +92,51 @@ export interface CreateLarkAdapterOpts {
  * WSClient.close(). Reconnection / pinging are owned by the SDK; we
  * only surface state changes via `log`.
  */
+/**
+ * Maximum number of recently-seen `message_id`s to keep in the inbound
+ * dedup set. Feishu's WebSocket event delivery is at-least-once
+ * (SDK / server may redeliver on reconnect, ping-loss, etc.) per the
+ * official docs, so the adapter has to dedup by `message.message_id`
+ * (server-unique `om_xxx`) or the bridge dispatches the same IM message
+ * to the same cc tab multiple times. Per user smoke 2026-05-11.
+ *
+ * Sized at 200 because: avg IM message at most a few per second; 200 ~=
+ * one to several minutes of history. Well above the typical Feishu
+ * redelivery window after a reconnect (a handful of buffered events,
+ * not hundreds). Tighter caps risk evicting a still-pending dup before
+ * it arrives; larger caps cost memory without benefit.
+ */
+const SEEN_MSGID_MAX = 200;
+
 export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
   const log = opts.log ?? (() => {});
 
   let wsClient: LarkWSClientShape | undefined;
   let client: LarkClientShape | undefined;
   let started = false;
+
+  /**
+   * LRU of recently-seen inbound `message_id`s. JS `Set` preserves
+   * insertion order, so the oldest entry is `seenMsgIds.values().next()`.
+   * Lookup + insert + eviction are all O(1).
+   */
+  const seenMsgIds = new Set<string>();
+
+  /**
+   * Returns `true` if `messageId` was new (caller should process this
+   * inbound event) or `false` if it's a duplicate (caller should drop).
+   * On `true`, the id is recorded; if the set exceeds `SEEN_MSGID_MAX`
+   * the oldest id is evicted.
+   */
+  function rememberOrDropMsgId(messageId: string): boolean {
+    if (seenMsgIds.has(messageId)) return false;
+    seenMsgIds.add(messageId);
+    if (seenMsgIds.size > SEEN_MSGID_MAX) {
+      const oldest = seenMsgIds.values().next().value;
+      if (oldest !== undefined) seenMsgIds.delete(oldest);
+    }
+    return true;
+  }
 
   function buildDefaultClient(creds: LarkCredentials): LarkClientShape {
     return new lark.Client({
@@ -163,6 +202,19 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
 
       const dispatcher = (opts.buildDispatcher ?? buildDefaultDispatcher)().register({
         'im.message.receive_v1': async (data) => {
+          // Dedup by Feishu's server-unique message_id (`om_xxx`). Feishu's
+          // WebSocket event subscription is **at-least-once** delivery —
+          // the SDK / server may redeliver the same event on reconnect,
+          // ping loss, ack timeout, etc. Without this gate, the bridge
+          // dispatches the same IM message to the same cc tab multiple
+          // times. Per user smoke 2026-05-11.
+          if (!rememberOrDropMsgId(data.message.message_id)) {
+            log(
+              `[lark] dropping duplicate inbound msg_id=${data.message.message_id} (Feishu at-least-once redelivery)`,
+            );
+            return;
+          }
+
           // Filter to text only in v1 MVP (DD §8.4). Other message_type
           // values drop silently — bridge router already logs visible echo
           // for "no addressable cc" / "not found" so users won't be left
