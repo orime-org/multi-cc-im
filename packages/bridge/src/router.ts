@@ -306,9 +306,14 @@ async function handlePlainWithAI(
     currentTab,
   });
 
+  const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
+
   if (result.target === null || result.intent === null) {
     return {
-      echo: `❌ 「${truncate(body, ECHO_EXCERPT_MAX)}」 无法识别目标，请用 @<tab>`,
+      echo:
+        `❌ 「${truncate(body, ECHO_EXCERPT_MAX)}」 无法识别目标\n` +
+        `   可用：${availableTabs}\n` +
+        `   或用 @<tab> 显式指定`,
       dispatches: [],
     };
   }
@@ -317,7 +322,10 @@ async function handlePlainWithAI(
   const target = namedSessions.find((s) => s.tabTitle === result.target);
   if (!target) {
     return {
-      echo: `❌ AI 路由到 \`${result.target}\` 但 tab 不存在，请用 @<tab>`,
+      echo:
+        `❌ AI 路由到 \`${result.target}\` 但 tab 不存在\n` +
+        `   可用：${availableTabs}\n` +
+        `   或用 @<tab> 显式指定`,
       dispatches: [],
     };
   }
