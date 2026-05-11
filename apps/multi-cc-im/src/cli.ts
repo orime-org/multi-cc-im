@@ -72,7 +72,7 @@ async function main(): Promise<number> {
     case 'cleanup':
       return await dispatchCleanup(rest);
     case 'start':
-      return await dispatchStart();
+      return await dispatchStart(rest);
     default:
       process.stderr.write(
         `multi-cc-im: unknown subcommand '${subcommand}'\nRun \`multi-cc-im --help\` for usage.\n`,
@@ -156,8 +156,18 @@ async function dispatchHook(args: string[]): Promise<number> {
   return result.exitCode;
 }
 
-async function dispatchStart(): Promise<number> {
-  const result = await runStartCommand();
+async function dispatchStart(args: string[]): Promise<number> {
+  // Parse `multi-cc-im start [<adapter>]` — single optional positional arg.
+  // Per [DD §4](docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command).
+  if (args.length > 1) {
+    process.stderr.write(
+      `multi-cc-im start: too many arguments (got ${args.length}, expected 0 or 1)\n` +
+        `Usage: multi-cc-im start [<adapter>]\n`,
+    );
+    return 2;
+  }
+  const adapterArg = args[0];
+  const result = await runStartCommand({ adapterArg });
   if (result.stderr.length > 0) {
     process.stderr.write(`${result.stderr}\n`);
     return result.exitCode;

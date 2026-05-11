@@ -83,6 +83,9 @@ function makeScriptedIO(scripted: readonly ScriptedResponse[]): {
         calls.push({ method: 'confirm', opts });
         return take('confirm') as boolean | symbol;
       },
+      select: async () => {
+        throw new Error('runWizard tests do not exercise select; selector tests do');
+      },
       isCancel: (v): v is symbol => v === CANCEL,
     },
   };

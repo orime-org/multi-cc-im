@@ -1,4 +1,3 @@
-import { stat } from 'node:fs/promises';
 import { formatErrorWithCause, type PaneId } from '@multi-cc-im/shared';
 import {
   createOrchestrator,
@@ -14,22 +13,17 @@ import {
   readDaemonPidFile,
   writeDaemonPidFile,
 } from '@multi-cc-im/cli-cc';
-import {
-  createLarkAdapter,
-  LarkCredentialsSchema,
-  type CreateLarkAdapterOpts,
-  type LarkCredentials,
-} from '@multi-cc-im/im-lark';
-import type { IMAdapter } from '@multi-cc-im/shared';
-import {
-  createConfigStore,
-  createCredentialStore,
-} from '@multi-cc-im/storage-files';
+import { createConfigStore } from '@multi-cc-im/storage-files';
 import {
   createWezTermAdapter,
   listAllTabs,
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
+import { adapters, type AdapterRegistryEntry } from './adapters.js';
+import {
+  selectAndConfigureAdapter,
+  type SelectAdapterResult,
+} from './adapter-selector.js';
 import { resolveAppPaths } from './config-paths.js';
 import { runSetupHooksCommand } from './setup-hooks.js';
 import { sweepStaleStateFiles } from './state-sweep.js';
@@ -76,14 +70,28 @@ export interface RunStartCommandOpts {
    */
   log?: (line: string) => void;
   /**
-   * Override the lark adapter factory. Default: real `createLarkAdapter`
-   * (see `@multi-cc-im/im-lark`). Tests inject a stub so unit tests don't
-   * have to mock the entire `@larksuiteoapi/node-sdk` surface or hit the
-   * real Feishu open API. Used by the default-orchestrator branch only;
-   * callers that pass `buildOrchestrator` short-circuit before this is
-   * touched.
+   * Optional positional CLI arg `multi-cc-im start [<adapter>]`. When set,
+   * skips the interactive adapter-selection menu and looks up the named
+   * adapter in the registry directly. Per
+   * [DD §4](../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command).
    */
-  buildLarkAdapter?: (opts: CreateLarkAdapterOpts) => IMAdapter;
+  adapterArg?: string;
+
+  /**
+   * Override the adapter registry consulted by the default selector.
+   * Tests inject a fixture registry (with stubbed `buildAdapterRuntime`)
+   * to avoid spinning up real IM adapters. Production passes nothing
+   * (defaults to the package-level `adapters` array).
+   */
+  registry?: readonly AdapterRegistryEntry[];
+
+  /**
+   * Override the adapter selection / wizard flow. Default uses
+   * `selectAndConfigureAdapter` (interactive menu / arg lookup / wizard
+   * branch per DD D1). Tests stub this to return a chosen adapter
+   * synthetically without prompting.
+   */
+  selectAdapter?: () => Promise<SelectAdapterResult>;
 }
 
 export interface StartCommandResult {
@@ -147,20 +155,41 @@ export async function runStartCommand(
     }
   }
 
-  // ===== 1. Pre-flight: lark credentials =====
-  const credentialPath = paths.credentialFor('lark');
-  try {
-    await stat(credentialPath);
-  } catch {
-    return {
-      exitCode: 1,
-      stderr:
-        `multi-cc-im start: lark credentials not found at ${credentialPath}\n` +
-        `  Run \`multi-cc-im login lark --app-id <id> --app-secret <secret>\`\n` +
-        `  first (or set LARK_APP_ID / LARK_APP_SECRET env vars).`,
-    };
+  // ===== 1. Pre-flight: adapter selection + credentials =====
+  // Per [DD §4 D1](../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command):
+  // single `start [<adapter>]` command — no-arg renders an interactive
+  // adapter menu, with-arg looks up the registry directly. If the picked
+  // adapter has no creds, branches into the W4 wizard (or returns
+  // 'cancelled'/'error' so the caller can exit cleanly).
+  const registry = opts.registry ?? adapters;
+  const selectFn =
+    opts.selectAdapter ??
+    (() =>
+      selectAndConfigureAdapter({
+        adapterArg: opts.adapterArg,
+        registry,
+        paths,
+        deps: {
+          persistCredentials: async (entry, values) => {
+            // Default persistence: delegate to the registry entry.
+            // Selector's deps default already does this when called via
+            // `selectAndConfigureAdapter` directly, but we re-thread it
+            // here so the dep is explicit at this layer too.
+            await defaultPersistCredentials(entry, values, paths);
+          },
+        },
+      }));
+  const selection = await selectFn();
+  if (selection.status === 'cancelled') {
+    return { exitCode: 0, stderr: '' };
   }
-  log(`  ✓ lark credentials at ${credentialPath}`);
+  if (selection.status === 'error') {
+    return { exitCode: selection.exitCode, stderr: selection.message };
+  }
+  const selectedEntry = selection.adapter;
+  log(
+    `  ✓ ${selectedEntry.id} credentials at ${paths.credentialFor(selectedEntry.id)}`,
+  );
 
   // ===== 1b. Pre-flight: wezterm path resolution =====
   const configStore = createConfigStore({ filePath: paths.configToml });
@@ -285,11 +314,6 @@ export async function runStartCommand(
   }
 
   // ===== 2. Build adapters =====
-  const credentialStore = createCredentialStore<LarkCredentials>({
-    filePath: credentialPath,
-    schema: LarkCredentialsSchema,
-  });
-
   // In-memory sticky `current_pane` — last-explicit-mention pointer.
   // Does NOT persist across daemon restart (the user re-binds by sending
   // `@<name> <body>` from IM after restart).
@@ -311,10 +335,7 @@ export async function runStartCommand(
     );
   }
 
-  const imAdapter = (opts.buildLarkAdapter ?? createLarkAdapter)({
-    credentialStore,
-    log,
-  });
+  const imAdapter = selectedEntry.buildAdapterRuntime({ paths, log });
   const termAdapter = createWezTermAdapter({
     wezterm: { path: wezterm },
   });
@@ -369,4 +390,17 @@ function defaultLog(line: string): void {
  */
 async function defaultResolveWezTerm(cachedPath?: string): Promise<string> {
   return resolveWezTermPath(cachedPath ? { cachedPath } : {});
+}
+
+/**
+ * Default credential persistence — delegates to the registry entry's own
+ * `persist` so adapter-specific Zod schemas stay encapsulated. Used by
+ * the default selector when the wizard completes.
+ */
+async function defaultPersistCredentials(
+  entry: AdapterRegistryEntry,
+  values: Record<string, unknown>,
+  paths: ReturnType<typeof resolveAppPaths>,
+): Promise<void> {
+  await entry.persist(values, paths);
 }
