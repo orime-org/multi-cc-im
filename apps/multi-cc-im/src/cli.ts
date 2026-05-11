@@ -50,7 +50,9 @@ Exit codes:
   2  — usage error (unknown subcommand / missing arg)
 `.trimStart();
 
-const VERSION = '0.0.0';
+// Initial release version. Keep in sync with `package.json` "version"
+// in this app + all workspace packages — both are bumped together.
+const VERSION = '0.0.1';
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
