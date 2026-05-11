@@ -105,6 +105,16 @@ When `/start off` is active, every cc tool call asks you first:
   @frontend /2   = deny
 ```
 
+You can also reply in natural language and cc decides which pending prompt you meant:
+
+```
+multi-cc-im 那个 rm 同意
+api 的拒绝
+deny the bash one
+```
+
+The daemon echoes back which pending it matched + the decision. Allow is safe-by-default — if your reply doesn't mention the tool name / a key argument / a clear paraphrase of the operation, the AI downgrades it to deny and you can re-issue with content. Deny always goes through.
+
 Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) auto-allow without bothering IM.
 
 ## cc replies → IM rendering
