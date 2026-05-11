@@ -22,10 +22,11 @@ const STATUS_PREFIX_RE = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}✀-�
 /**
  * Default tab titles cc itself sets when the user has not run `/rename`.
  * Treat any of these (after status-prefix stripping) as **unnamed** so the
- * router falls back to `$<sid8>` and the IM-side rename hint kicks in.
+ * IM-side rename hint kicks in (no `$<sid>` fallback — DD pane-keyed-state
+ * removed sid-prefix matching).
  *
  * Without this guard, multiple un-renamed cc sessions would all show up as
- * "Claude Code" in `@list` output and `@<query>` matching, defeating the
+ * "Claude Code" in `/list` output and `#<query>` matching, defeating the
  * point of having a friendly identifier at all.
  *
  * Variants observed in real wezterm output:

@@ -476,7 +476,7 @@ export async function listPendingPermissionRequests(
 
 // ============================================================================
 // IMWork: global IM-mode flag — file exists ⇔ user is in IM mode (manual
-// switch via `@multi-cc-im /start /stop`).
+// switch via bare `/start [off]` / `/stop`.
 //
 // Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)
 // + [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md):

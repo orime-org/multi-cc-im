@@ -1,7 +1,7 @@
 # DD: Lark group-chat support (`#bot` in group chats)
 
 **Date**: 2026-05-12
-**Status**: 🟡 DRAFT — pending user step-5 decision
+**Status**: ✅ LOCKED 2026-05-12 — **D1-1 (不做群聊支持)** picked by user; D2-D5 N/A
 
 ---
 
@@ -225,26 +225,38 @@ D1-2 + D4-2 combination produces this audit-friendly behavior:
 
 | Dim | Recommendation | User decision |
 |---|---|---|
-| D1 | D1-2 — group_at_msg only | ⏳ |
-| D2 | D2-1 — strip only bot's @-placeholder | ⏳ |
-| D3 | D3-2 — per-tab sticky chat_id | ⏳ |
-| D4 | D4-2 — force-DM for permission prompts | ⏳ |
-| D5 | D5-1 — plain send (no thread) | ⏳ |
+| **D1** | D1-2 — group_at_msg only | ❌ **D1-1 (不做)** ✅ accepted 2026-05-12 |
+| D2 | D2-1 — strip only bot's @-placeholder | N/A — D1-1 closes scope |
+| D3 | D3-2 — per-tab sticky chat_id | N/A |
+| D4 | D4-2 — force-DM for permission prompts | N/A |
+| D5 | D5-1 — plain send (no thread) | N/A |
 
-When all five `⏳` rows resolve, this DD enters **LOCKED** and implementation milestones in §7 move into [`docs/conventions.md`](../../conventions.md).
+### Why D1-1 over the recommended D1-2
+
+User directive 2026-05-12: `不支持群聊就行了，支持群聊会带来一系列问题`. Concrete reasons re-derived from the matrix in §4, post-decision:
+
+1. **Privacy creep (C4)**. D1-2 + D3-2 (per-tab sticky to source chat) means cc text replies — even benign progress messages — surface to co-workers in the group. Bot's command surface AND task output become observable in a non-personal space. File paths / task content of personal projects can leak.
+2. **Multi-context state complexity**. D3-2 + D4-2 add two new state surfaces (per-tab `chat_id`, `state/UserDmChatId` cache) plus force-DM branching on every outbound path. v1's single-file `state/IMOrigin` was a deliberate simplicity choice ([DD IMOrigin global 2026-05-08](2026-05-08-imorigin-global-dd.md)); group support undoes it.
+3. **Scope-drift risk**. Once group is in, natural follow-ups are multi-user routing, per-tab allowlist, per-group config — each one more DD dimension. CLAUDE.md project intro caps the project at "**个人本地 bridge**". Multi-user is over the ceiling.
+4. **Owner-only ACL is fragile**. D1-2 keeps bot silent for non-owner messages, but the bot still RECEIVES every @-mention in the group. A future regression / scope-add that loses the owner check turns every group member into a router. v1.4's `permissionDecision: "ask"` accident showed how fragile single-line ACL is.
+5. **No demonstrated personal need**. User has DM working. Group-as-second-entry was a hypothetical, not a real workflow request. CLAUDE.md "Don't add features beyond what task requires".
+
+DD is **LOCKED**. If a future use case demands group support, this DD reopens (status `🔄 REOPENED`) with a new revision-log entry stating what changed.
 
 ---
 
-## 7. Implementation milestones (post-lock)
+## 7. Implementation milestones — **CANCELLED**
 
-| ID | Scope |
+D1-1 closes scope. The P1-P6 plan below is preserved as historical reference (what would have been implemented under D1-2 recommendation) but **NOT executed**. If DD reopens, this section gets re-validated against then-current code before any P1 commit.
+
+| ID | Scope (historical, not implemented) |
 |---|---|
-| **P1** | `packages/im-lark/src/adapter.ts` extend event handler: branch on `chat_type`; in group path resolve bot's own `open_id` (cache from `auth.v3.app.access_token` endpoint at adapter start); strip the bot's `@_user_N` placeholder from `content.text` (D2-1); enforce owner-only (drop events where `sender.sender_id.open_id !== ownerOpenId`). |
-| **P2** | Setup wizard: lark schema gains optional `ownerOpenId` field (auto-derived from first DM inbound if not provided in setup, but persisted in `credentials/lark.json` after first capture for restart resilience). |
-| **P3** | `packages/cli-cc/src/state-files.ts` + bridge: extend `RouterState` (or new state) with per-tab sticky `chat_id`. Per-pane file `state/<paneId>.SourceChat` or extend existing IMOrigin schema. D3-2. |
-| **P4** | Orchestrator: introduce `state/UserDmChatId` cache, populated on first P2P inbound. PreToolUse forward (D4-2) reads from this cache. Bootstrap echo when cache empty + group inbound triggers permission flow. |
-| **P5** | Tests: adapter unit (group event handling / @-placeholder strip / owner-only filter / chat_type branching); router unit (sticky chat_id); orchestrator integration (force-DM permission with cache hit / cache miss / DM-only fallback). |
-| **P6** | Docs: README + README.zh-CN — small "Use bot in group chats" section; conventions.md status row v1.9 + revision log; setup-feishu.md — instructions to enable the `im:message.group_at_msg:readonly` scope + add bot to group. |
+| ~~P1~~ | ~~`packages/im-lark/src/adapter.ts` extend event handler: branch on `chat_type`; in group path resolve bot's own `open_id`; strip the bot's `@_user_N` placeholder from `content.text` (D2-1); enforce owner-only.~~ |
+| ~~P2~~ | ~~Setup wizard: lark schema gains optional `ownerOpenId` field.~~ |
+| ~~P3~~ | ~~Extend `RouterState` with per-tab sticky `chat_id` (D3-2).~~ |
+| ~~P4~~ | ~~Orchestrator: `state/UserDmChatId` cache, force-DM permission flow (D4-2).~~ |
+| ~~P5~~ | ~~Tests: adapter unit / router unit / orchestrator integration.~~ |
+| ~~P6~~ | ~~Docs + setup-feishu.md group scope instructions.~~ |
 
 ---
 
@@ -263,3 +275,4 @@ When all five `⏳` rows resolve, this DD enters **LOCKED** and implementation m
 ## 9. Review log
 
 - **2026-05-12 (a)** — DD drafted. User scope pre-locked: personal-only, ACL owner-only. Web fetches captured §2 hard facts. Recommendations §5 build on the matrix in §4.
+- **2026-05-12 (b)** — User read draft + decided **D1-1 (不做)** overriding the D1-2 recommendation. Reasoning (per §6 sub-section): privacy creep / multi-context state complexity / scope-drift risk / fragile owner-only ACL / no demonstrated personal need. P1-P6 cancelled. Status flipped to **LOCKED**. The DD body is preserved as historical record of "considered + decided not".

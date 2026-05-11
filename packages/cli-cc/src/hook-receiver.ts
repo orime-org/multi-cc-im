@@ -146,7 +146,7 @@ function defaultResolvePaneId(): number | undefined {
  *      `ask` overrides user-saved allow rules; silent exit respects them.
  *   3. IMWork.auto = true → emit `permissionDecision: allow`
  *      (per [DD: PreToolUse auto-approve](../../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md);
- *       user opted in via `@multi-cc-im /start auto`)
+ *       user opted in via bare `/start` — default is auto since v1.7)
  *   4. !`<paneId>.IMOrigin` → silent exit (same reason as step 2)
  *   5. !daemon alive → silent exit (same reason as step 2)
  *   6. otherwise: write `<paneId>_<sid>.PermissionRequest.<id>.json`,
