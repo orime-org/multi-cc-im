@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { AdapterRegistryEntry } from './adapters.js';
 import type { AppPaths } from './config-paths.js';
+import { loadGuide, renderGuide } from './wizard/guide.js';
 import { realClackIO, type WizardPromptIO } from './wizard/io.js';
 import { runWizard, type RunWizardResult } from './wizard/run-wizard.js';
 
@@ -222,10 +223,23 @@ async function branchOnCredentials(
     return { status: 'back' };
   }
 
-  // 'configure' → run wizard
+  // 'configure' → run wizard.
+  // Per [DD §10.1 W6]: when the adapter declares a markdown guide, render
+  // it through `terminal-link` so OSC-8-capable terminals get clickable
+  // hyperlinks while the rest get plain-text fallback. Loader silently
+  // returns null if the file is missing (`docs/setup-feishu.md` not
+  // shipped in some downstream packaging), in which case the wizard
+  // proceeds without an intro guide — same UX as before W6.
+  let guide: string | undefined;
+  if (entry.guideDocPath) {
+    const raw = await loadGuide(entry.guideDocPath);
+    if (raw !== null) guide = renderGuide(raw);
+  }
+
   const wizardResult: RunWizardResult = await ctx.deps.runWizard({
     schema: entry.setupSchema,
     io: ctx.io,
+    guide,
   });
   if (wizardResult.status === 'cancelled') {
     if (adapterArg !== undefined) return { status: 'cancelled' };

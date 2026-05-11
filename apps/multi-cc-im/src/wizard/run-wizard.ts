@@ -31,6 +31,16 @@ export interface RunWizardOpts {
    * user responses without spawning a real terminal.
    */
   io?: WizardPromptIO;
+
+  /**
+   * Optional pre-rendered guide text (markdown→ANSI from `renderGuide`
+   * in W6's `guide.ts`). When set, the wizard prints it after the intro
+   * and before the first field prompt, so the user sees the per-IM
+   * configuration steps before typing credentials.
+   *
+   * Per [DD §10.1 W6](../../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#101-implementation-milestones-post-dd).
+   */
+  guide?: string;
 }
 
 export type RunWizardResult =
@@ -67,6 +77,8 @@ export async function runWizard(
   const existing = opts.existing ?? {};
 
   io.intro(`Setup ${opts.schema.displayName}`);
+
+  if (opts.guide) io.message(opts.guide);
 
   while (true) {
     const values: Record<string, unknown> = {};

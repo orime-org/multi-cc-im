@@ -39,12 +39,14 @@ function makeScriptedIO(scripted: readonly ScriptedResponse[]): {
   intros: string[];
   outros: string[];
   errors: string[];
+  messages: string[];
 } {
   const calls: PromptCall[] = [];
   const remaining = [...scripted];
   const intros: string[] = [];
   const outros: string[] = [];
   const errors: string[] = [];
+  const messages: string[] = [];
 
   function take(method: PromptCall['method']) {
     const next = remaining.shift();
@@ -66,11 +68,13 @@ function makeScriptedIO(scripted: readonly ScriptedResponse[]): {
     intros,
     outros,
     errors,
+    messages,
     io: {
       intro: (msg) => intros.push(msg),
       outro: (msg) => outros.push(msg),
       info: vi.fn(),
       error: (msg) => errors.push(msg),
+      message: (msg) => messages.push(msg),
       text: async (opts) => {
         calls.push({ method: 'text', opts });
         return take('text') as string | symbol;
@@ -308,6 +312,30 @@ describe('runWizard (W4)', () => {
     ]);
     const result = await runWizard({ schema, io });
     expect(result).toEqual({ status: 'cancelled' });
+  });
+
+  it('guide option: pre-rendered guide is printed via io.message before first field prompt (W6)', async () => {
+    const { io, messages, calls } = makeScriptedIO([
+      { method: 'text', value: 'cli_abc' },
+      { method: 'password', value: 's' },
+    ]);
+    await runWizard({
+      schema: fakeSchema,
+      io,
+      guide: '<rendered guide text>',
+    });
+    expect(messages).toEqual(['<rendered guide text>']);
+    // Guide must precede the first prompt
+    expect(calls.length).toBe(2);
+  });
+
+  it('guide option absent: io.message never called', async () => {
+    const { io, messages } = makeScriptedIO([
+      { method: 'text', value: 'cli_abc' },
+      { method: 'password', value: 's' },
+    ]);
+    await runWizard({ schema: fakeSchema, io });
+    expect(messages).toEqual([]);
   });
 
   it('completed wizard does NOT mutate schema or existing values', async () => {
