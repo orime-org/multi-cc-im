@@ -91,11 +91,24 @@ Every command is a single message sent to the bot's Lark thread.
 | `@frontend /clear` | Forward `/clear` into the cc TUI as cc's own slash command |
 | `@frontend /1` | Permission allow (only if there's a pending PreToolUse) |
 | `@frontend /2` | Permission deny |
-| `给前端写个登录页` | **Plain message — AI-routed**: daemon spawns a `claude --print` subprocess to triage which tab fits + extract the clean intent. Routes to the picked tab; echoes `→ frontend｜AI: 「写个登录页」` |
+| `给前端写个登录页` | **Plain message** (no `@`): daemon auto-routes to the most relevant cc tab. Echoes back the picked tab + cleaned task: `target: frontend / content: 写个登录页`. Tolerates speech-to-text typos, case / hyphen / whitespace variants, and Chinese-English mixed input. Falls back to deterministic substring match if AI misses. |
 
 **Naming a cc:** in a cc TUI, run `/rename <name>`. The wezterm tab title becomes `<name>` and IM can address it as `@<name>`. Tabs with no `/rename` are listed by `/list` but are **not addressable** from IM.
 
 **Tab title constraints:** avoid pure-numeric titles (they collide with wezterm pane IDs). `/start` echo warns when any are present.
+
+## cc replies → IM rendering
+
+Feishu text messages don't render markdown, so cc replies get simplified before sending — you see clean text instead of raw `**` / backticks:
+
+| cc output | IM displays |
+|---|---|
+| `# Heading` | `▌ Heading` |
+| `**bold**` | `bold` |
+| `` `code` `` | `「code」` |
+| `- item` | `• item` |
+| ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` annotation + content unchanged |
+| `[text](url)` | `text (url)` |
 
 ## Tool permission flow (ask mode only)
 
