@@ -105,6 +105,16 @@ content: 写个登录页
   @frontend /2   = 拒绝
 ```
 
+也可以直接说人话，cc 会自己分诊到哪个 pending：
+
+```
+multi-cc-im 那个 rm 同意
+api 的拒绝
+deny the bash one
+```
+
+daemon 回显匹配到哪个 pending + 决定。允许是安全默认 — 如果你的回复里没提工具名 / 关键参数 / 操作的清楚转述，AI 会把允许降级成拒绝（你可以补一句再发）。拒绝总是直接生效。
+
 只读工具（`Read` / `Grep` / `Glob` / `NotebookRead`）自动放行，不打扰 IM。
 
 ## cc 回复 → IM 显示
