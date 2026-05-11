@@ -210,8 +210,7 @@ export async function runSetupHooksCommand(
   // `isDeepStrictEqual` ignores key order which is what we want here.
   if (isDeepStrictEqual(newSettings, existing)) {
     log(`  ✓ already up-to-date, no changes needed`);
-    log(`  done. Test with: \`./bin/multi-cc-im start\` then start cc in any wezterm tab.`);
-    return {
+      return {
       exitCode: 0,
       stderr: '',
       writtenTo: ccSettingsPath,
@@ -265,7 +264,6 @@ export async function runSetupHooksCommand(
   } else {
     log(`  ✓ total handlers now: ${totalHandlers}`);
   }
-  log(`  done. Test with: \`./bin/multi-cc-im start\` then start cc in any wezterm tab.`);
 
   return {
     exitCode: 0,

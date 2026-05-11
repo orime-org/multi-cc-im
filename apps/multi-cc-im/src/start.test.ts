@@ -150,6 +150,17 @@ describe('runStartCommand — pre-flight failures', () => {
     expect(joined).toContain(`✓ IMWork: OFF`);
     expect(joined).toContain(`✓ daemon.pid: PID ${process.pid}`);
     expect(joined).toMatch(/✓ orchestrator started.*Ctrl\+C/);
+    // Last line tells the user the next action — IMWork starts OFF so the
+    // bridge does nothing until `/start` from IM, and the IMWork-OFF mid-
+    // setup line is easy to miss when log scrolls past.
+    expect(joined).toMatch(
+      /⏳ Next: send `\/start` from your IM to enable bridge routing/,
+    );
+    // And the next-step hint must be AFTER the 'orchestrator started'
+    // line so the user reads it last (the order matters for UX).
+    const startedIdx = lines.findIndex((l) => l.includes('orchestrator started'));
+    const nextIdx = lines.findIndex((l) => l.includes('Next: send'));
+    expect(nextIdx).toBeGreaterThan(startedIdx);
     await result.shutdown!();
   });
 

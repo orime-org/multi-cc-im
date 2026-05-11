@@ -369,6 +369,13 @@ export async function runStartCommand(
 
   await orchestrator.start();
   log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
+  // Next-step hint — IMWork starts OFF on every daemon launch (per
+  // DD #8 §5.3 always-fresh lifecycle), so the user MUST send `/start`
+  // from their IM session before the bridge actually routes anything.
+  // The 'IMWork: OFF (run `/start` from IM to enable)' status line
+  // appears mid-setup; this final line repeats the action at the
+  // bottom so it's the last thing the user sees.
+  log(`  ⏳ Next: send \`/start\` from your IM to enable bridge routing.`);
 
   return {
     exitCode: 0,
