@@ -272,11 +272,17 @@ async function dispatchOne(
         last_assistant_message: file.last_assistant_message,
         paneId: classified.paneId,
       };
-      await handler.onStop(payload);
-      // Forward succeeded → unlink so the file doesn't replay on next
-      // daemon restart. Throws → onHandlerError already logged; leave
-      // the file for next-run retry / sweep cleanup.
-      await deleteStopFile(classified.filePath);
+      // Delete-always semantics (user policy 2026-05-11): once we've
+      // dispatched the Stop file to the orchestrator, drop it from disk
+      // regardless of forward success. Keeping it around for "next-run
+      // retry" was misleading — the daemon's state-sweep is only on
+      // start, so failed forwards already could not auto-retry. Better
+      // to delete cleanly + let the next cc reply produce a fresh Stop.
+      try {
+        await handler.onStop(payload);
+      } finally {
+        await deleteStopFile(classified.filePath);
+      }
       return;
     }
   }
