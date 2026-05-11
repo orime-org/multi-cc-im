@@ -169,7 +169,11 @@ describe('createCcCliAdapter', () => {
       await adapter.stop();
     });
 
-    it('keeps the Stop file when handler throws (next-run retry)', async () => {
+    it('deletes the Stop file even when handler throws (delete-always per user policy 2026-05-11)', async () => {
+      // Previous behavior kept the file "for next-run retry / sweep
+      // cleanup" but daemon's state-sweep only runs at start, so the
+      // retry never actually happened. New policy: once dispatched,
+      // delete regardless of forward success — leave nothing behind.
       const adapter = createCcCliAdapter({
         stateDir,
         onHandlerError: () => undefined,
@@ -192,10 +196,8 @@ describe('createCcCliAdapter', () => {
         last_assistant_message: 'x',
       });
 
-      await waitFor(async () => await fileExists(path));
-      // Wait a beat to make sure dispatch finished even though handler threw.
-      await new Promise((r) => setTimeout(r, 100));
-      expect(await fileExists(path)).toBe(true);
+      // File is deleted even on handler throw — try/finally semantics.
+      await waitFor(async () => !(await fileExists(path)));
 
       await adapter.stop();
     });

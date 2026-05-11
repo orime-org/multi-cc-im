@@ -285,34 +285,43 @@ export async function runHookReceiver(
       const deadline = Date.now() + timeoutMs;
       let decision: 'allow' | 'deny' = 'allow';
       let reason = `${Math.round(timeoutMs / 1000)}s timeout, default allow`;
-      while (Date.now() < deadline) {
-        try {
-          await stat(respPath);
-          const resp = await readPermissionResponseFile(respPath);
-          if (resp && resp.requestId === requestId) {
-            decision = resp.decision;
-            reason = resp.reason || `IM user ${decision}`;
-            break;
+      // Delete-always semantics (user policy 2026-05-11): wrap the entire
+      // polling loop in try/finally so the Request + Response files are
+      // ALWAYS deleted on exit — success (break), timeout (deadline), or
+      // throw (non-ENOENT filesystem error). The previous code only
+      // cleaned up on the success / timeout paths; a non-ENOENT throw
+      // mid-poll left both files around for the next daemon-start sweep.
+      // The polling loop reads Response BEFORE finally runs, so this
+      // doesn't race the read.
+      try {
+        while (Date.now() < deadline) {
+          try {
+            await stat(respPath);
+            const resp = await readPermissionResponseFile(respPath);
+            if (resp && resp.requestId === requestId) {
+              decision = resp.decision;
+              reason = resp.reason || `IM user ${decision}`;
+              break;
+            }
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
           }
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          await sleep(pollMs);
         }
-        await sleep(pollMs);
+      } finally {
+        await deletePermissionRequestFile({
+          stateDir,
+          paneId,
+          sessionId,
+          requestId,
+        });
+        await deletePermissionResponseFile({
+          stateDir,
+          paneId,
+          sessionId,
+          requestId,
+        });
       }
-
-      // Cleanup both Request + Response files regardless of timeout / decision.
-      await deletePermissionRequestFile({
-        stateDir,
-        paneId,
-        sessionId,
-        requestId,
-      });
-      await deletePermissionResponseFile({
-        stateDir,
-        paneId,
-        sessionId,
-        requestId,
-      });
 
       return {
         hookSpecificOutput: {
