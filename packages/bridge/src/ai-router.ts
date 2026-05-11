@@ -26,6 +26,43 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * One pending PreToolUse approval visible to the AI router. Caller maps
+ * a `PendingPermissionRequest` from `@multi-cc-im/cli-cc` into this shape
+ * by attaching the resolved tab title (the cli-cc record only carries
+ * `paneId`/`sessionId` — the router prompt needs the user-facing name).
+ *
+ * Per [DD: natural-language permission reply](../../../docs/superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) §9.1 P2.
+ */
+export interface PendingRequestForPrompt {
+  /** Tab title the request belongs to (matched on the user's IM reply). */
+  tabName: string;
+  /** Tool cc wants to call (e.g. `'Bash'`, `'Edit'`). Used as match-signal (D5-3). */
+  toolName: string;
+  /** cc's tool_input verbatim — the AI sees key substrings (rm / node_modules / a file path / URL) for match-signal evaluation. */
+  toolInput: Record<string, unknown>;
+}
+
+/**
+ * AI-side resolution of a natural-language permission reply (DD §9.1 P2).
+ * Populated only when the AI decides the user's IM message is a reply to
+ * a pending PreToolUse — not a routing request.
+ *
+ * D5-3 asymmetric trust: AI is instructed (via prompt) to downgrade
+ * `allow` → `deny` when the user's message lacks a content match-signal
+ * (tool name / key argument substring / clear paraphrase). Deny is always
+ * safe; allow needs evidence. Code-level enforcement of the same rule is
+ * P3 router scope.
+ */
+export interface AIPermissionResponse {
+  /** Tab the AI matched the reply to (must be one of the `pendingRequests[].tabName` values). */
+  target: string;
+  /** User's decision relayed verbatim from IM. */
+  decision: 'allow' | 'deny';
+  /** Short paraphrase the AI built from the user's reply; flows into cc as `permissionDecisionReason`. */
+  reason: string;
+}
+
 export interface AIRoutingOpts {
   /** The IM message body (already with `@<tab>` prefix stripped if any — but caller should only invoke this for plain no-mention messages). */
   userMsg: string;
@@ -33,6 +70,13 @@ export interface AIRoutingOpts {
   tabs: readonly string[];
   /** The last-explicitly-mentioned tab title, used as a context signal for pronoun resolution. */
   currentTab: string | null;
+  /**
+   * Pending PreToolUse prompts visible to the AI. Empty/undefined → no
+   * permission section in the prompt + AI never fills `permissionResponse`.
+   * Non-empty → AI may match the IM message to one of these instead of
+   * treating it as a routing request (DD §9.1 P2).
+   */
+  pendingRequests?: readonly PendingRequestForPrompt[];
   /**
    * Path to the `claude` CLI binary. Default: `'claude'` (resolved via PATH).
    * Tests override to a stub script for deterministic output.
@@ -58,6 +102,12 @@ export interface AIRoutingResult {
   intent: string | null;
   /** Short (<15 char) reason from the AI; daemon log only, not user-facing. */
   reason: string | null;
+  /**
+   * Populated when the AI matches the user's IM message to a pending
+   * PreToolUse (DD §9.1 P2). Null when no pending or AI decided it's a
+   * routing request. Caller (router) routes on this field's presence.
+   */
+  permissionResponse: AIPermissionResponse | null;
 }
 
 /**
@@ -85,12 +135,18 @@ export function renderRoutingPrompt(opts: {
   userMsg: string;
   tabs: readonly string[];
   currentTab: string | null;
+  pendingRequests?: readonly PendingRequestForPrompt[];
 }): string {
   const tabList = opts.tabs.length === 0
     ? '(no active tabs)'
     : opts.tabs.map((t) => `  - ${t}`).join('\n');
 
   const currentLine = opts.currentTab ?? 'none';
+
+  const pendingBlock = renderPendingBlock(opts.pendingRequests);
+  const outputSpec = pendingBlock === ''
+    ? OUTPUT_SPEC_ROUTING_ONLY
+    : OUTPUT_SPEC_WITH_PERMISSION;
 
   return `You are the IM routing assistant for multi-cc-im.
 
@@ -174,7 +230,7 @@ Rule 3 — TRULY UNROUTABLE → "none".
   If you are tempted to bail because the message is "long" or "looks
   like a description", re-check Rule 1 — most messages contain enough
   signal.
-
+${pendingBlock}
 ==================================================================
 OUTPUT
 ==================================================================
@@ -193,11 +249,120 @@ is forwarded verbatim into the target cc tab; mismatched language
 forces cc to mentally translate before doing the actual task.
 
 Output JSON, no markdown wrapping:
-{
+${outputSpec}`;
+}
+
+const OUTPUT_SPEC_ROUTING_ONLY = `{
   "target": "<exact tab name from the active list above>" | "none",
   "intent": "<task description with routing cues stripped, in the user's source language>" | null,
   "reason": "<short internal explanation, ≤15 words — used for debugging>"
 }`;
+
+const OUTPUT_SPEC_WITH_PERMISSION = `{
+  "target": "<exact tab name from the active list above>" | "none",
+  "intent": "<task description with routing cues stripped, in the user's source language>" | null,
+  "reason": "<short internal explanation, ≤15 words — used for debugging>",
+  "permissionResponse": {
+    "target": "<exact tab name from the PENDING list above>",
+    "decision": "allow" | "deny",
+    "reason": "<short paraphrase of the user's reply, in the user's source language>"
+  } | null
+}
+
+Set "permissionResponse" only when the user's message is a reply to a
+PENDING request. In that case set top-level "target" and "intent" to
+null — a permission reply does not also route a new task. Otherwise
+set "permissionResponse" to null and route normally.`;
+
+/**
+ * Render the optional "PENDING TOOL PERMISSION REQUESTS" section.
+ *
+ * Per DD §9.1 P2 (2026-05-11). The block lists each pending PreToolUse,
+ * spells out the **D5-3 asymmetric trust rule** (allow needs a content
+ * match-signal; deny is always safe), and tells the AI to set the
+ * `permissionResponse` output field instead of routing when the user's
+ * message is a natural-language reply ("multi-cc-im 那个我同意" /
+ * "deny the bash one").
+ *
+ * Returns `''` (so the rendered prompt is identical to the routing-only
+ * variant) when `pendingRequests` is missing or empty — the block must
+ * not appear when there's nothing to approve, otherwise the AI is
+ * primed to look for "permission reply" semantics in plain task
+ * messages.
+ */
+function renderPendingBlock(
+  pendingRequests: readonly PendingRequestForPrompt[] | undefined,
+): string {
+  if (!pendingRequests || pendingRequests.length === 0) return '';
+
+  const bullets = pendingRequests
+    .map((p) => {
+      const inputStr = formatToolInputForPrompt(p.toolInput);
+      return `  - tab=${p.tabName}  tool=${p.toolName}  input=${inputStr}`;
+    })
+    .join('\n');
+
+  return `
+==================================================================
+PENDING TOOL PERMISSION REQUESTS
+==================================================================
+
+These cc tool calls are waiting for an IM-side allow / deny decision:
+
+${bullets}
+
+If the user's current IM message is a natural-language reply to one of
+these (e.g. "multi-cc-im 那个我同意", "node 的拒绝", "deny the rm one"),
+fill the OUTPUT \`permissionResponse\` field instead of routing.
+
+ASYMMETRIC TRUST RULE (D5-3) — applies to "allow" only:
+
+  Output decision="allow" ONLY when the user's message contains a
+  CONTENT MATCH-SIGNAL — at least one of:
+
+    (a) The tool name explicitly ("Bash" / "Edit" / "WebFetch" / etc.)
+    (b) A substring of a key tool-input argument
+        (e.g. "rm" / "node_modules" / a filename / a URL fragment)
+    (c) A clear paraphrase of the operation
+        (e.g. "删除", "执行命令", "fetch the URL")
+
+  WITHOUT a match-signal, downgrade allow → deny. A bare "yes" /
+  "同意" could refer to any pending request — safe default is deny,
+  the user can re-issue with content if they really meant allow.
+
+  Deny is safe without a match-signal: deny does NOT require any
+  match-signal because denying any pending prompt is always
+  conservative. If the user's message reads as a refusal ("拒绝",
+  "no", "stop", "取消"), set decision="deny" on the most likely
+  target tab.
+
+Multiple pending requests + ambiguous reply → degrade to deny on
+the best-guess target (user can re-issue).
+`;
+}
+
+/**
+ * Stringify a tool_input record into a compact one-line representation
+ * the LLM can use for the match-signal check (D5-3). We don't pretty-
+ * print or quote-escape — the goal is "the AI can grep this for `rm` /
+ * `node_modules` / a filename / a URL", not perfect round-trip JSON.
+ *
+ * Long values are truncated so a single pathological input doesn't
+ * dominate the prompt. Truncation matters here because the prompt is
+ * an LLM context window — see DD §6.4 for budget guidance.
+ */
+const TOOL_INPUT_VALUE_MAX = 200;
+function formatToolInputForPrompt(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(input)) {
+    const valueStr = typeof v === 'string' ? v : JSON.stringify(v);
+    const truncated =
+      valueStr.length > TOOL_INPUT_VALUE_MAX
+        ? `${valueStr.slice(0, TOOL_INPUT_VALUE_MAX)}…`
+        : valueStr;
+    parts.push(`${k}=${truncated}`);
+  }
+  return parts.length === 0 ? '{}' : parts.join(' ');
 }
 
 /**
@@ -239,7 +404,7 @@ export function parseRoutingOutput(stdout: string): AIRoutingResult {
   try {
     envelope = JSON.parse(stdout);
   } catch {
-    return { target: null, intent: null, reason: 'cc envelope not JSON' };
+    return failure('cc envelope not JSON');
   }
   if (
     typeof envelope !== 'object' ||
@@ -247,7 +412,7 @@ export function parseRoutingOutput(stdout: string): AIRoutingResult {
     !('result' in envelope) ||
     typeof (envelope as { result: unknown }).result !== 'string'
   ) {
-    return { target: null, intent: null, reason: 'cc envelope missing result' };
+    return failure('cc envelope missing result');
   }
   let inner = (envelope as { result: string }).result.trim();
 
@@ -263,10 +428,10 @@ export function parseRoutingOutput(stdout: string): AIRoutingResult {
   try {
     parsed = JSON.parse(inner);
   } catch {
-    return { target: null, intent: null, reason: 'inner not JSON' };
+    return failure('inner not JSON');
   }
   if (typeof parsed !== 'object' || parsed === null) {
-    return { target: null, intent: null, reason: 'inner not object' };
+    return failure('inner not object');
   }
   const obj = parsed as Record<string, unknown>;
   const targetRaw = obj.target;
@@ -280,8 +445,32 @@ export function parseRoutingOutput(stdout: string): AIRoutingResult {
   const intent =
     typeof intentRaw === 'string' && intentRaw.length > 0 ? intentRaw : null;
   const reason = typeof reasonRaw === 'string' ? reasonRaw : null;
+  const permissionResponse = parsePermissionResponse(obj.permissionResponse);
 
-  return { target, intent, reason };
+  return { target, intent, reason, permissionResponse };
+}
+
+function failure(reason: string): AIRoutingResult {
+  return { target: null, intent: null, reason, permissionResponse: null };
+}
+
+/**
+ * Extract the optional `permissionResponse` field from the inner LLM JSON.
+ * All three sub-fields are required for a valid response; any miss → null
+ * (caller falls back to routing path). `decision` is strictly
+ * `'allow'|'deny'` — anything else (typo, unexpected value) is treated as
+ * "AI did not give us a usable response" rather than guessing.
+ */
+function parsePermissionResponse(raw: unknown): AIPermissionResponse | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+  const target = obj.target;
+  const decision = obj.decision;
+  const reason = obj.reason;
+  if (typeof target !== 'string' || target.length === 0) return null;
+  if (decision !== 'allow' && decision !== 'deny') return null;
+  if (typeof reason !== 'string') return null;
+  return { target, decision, reason };
 }
 
 /**
@@ -304,6 +493,7 @@ export async function routeViaAI(
     userMsg: opts.userMsg,
     tabs: opts.tabs,
     currentTab: opts.currentTab,
+    pendingRequests: opts.pendingRequests,
   });
   const args = buildClaudeArgs({ model, prompt });
 
@@ -327,7 +517,12 @@ export async function routeViaAI(
     });
     stdout = result.stdout;
   } catch (err) {
-    return { target: null, intent: null, reason: explainExecError(err, timeoutMs) };
+    return {
+      target: null,
+      intent: null,
+      reason: explainExecError(err, timeoutMs),
+      permissionResponse: null,
+    };
   }
 
   return parseRoutingOutput(stdout);

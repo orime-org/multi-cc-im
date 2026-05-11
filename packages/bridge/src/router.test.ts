@@ -735,6 +735,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
         target: 'frontend',
         intent: '写个登录页',
         reason: '前端关键词',
+        permissionResponse: null,
       }),
     });
     expect(result.dispatches).toEqual([
@@ -755,6 +756,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
         target: null,
         intent: null,
         reason: '模糊',
+        permissionResponse: null,
       }),
     });
     expect(result.dispatches).toEqual([]);
@@ -772,6 +774,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
         target: 'frontend',
         intent: null,
         reason: 'partial',
+        permissionResponse: null,
       }),
     });
     expect(result.dispatches).toEqual([]);
@@ -788,6 +791,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
         target: 'mobile',
         intent: 'hello',
         reason: 'mobile picked',
+        permissionResponse: null,
       }),
     });
     expect(result.dispatches).toEqual([]);
@@ -804,7 +808,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
       imWorkOn: true,
       aiRouter: async (opts) => {
         received = opts.currentTab;
-        return { target: 'api', intent: '继续', reason: 'pronoun' };
+        return { target: 'api', intent: '继续', reason: 'pronoun', permissionResponse: null };
       },
     });
     expect(received).toBe('api');
@@ -820,7 +824,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
       imWorkOn: true,
       aiRouter: async () => {
         aiCalled = true;
-        return { target: null, intent: null, reason: '' };
+        return { target: null, intent: null, reason: '', permissionResponse: null };
       },
     });
     expect(aiCalled).toBe(false);
@@ -836,7 +840,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
       imWorkOn: false,
       aiRouter: async () => {
         aiCalled = true;
-        return { target: 'frontend', intent: 'hello', reason: 'r' };
+        return { target: 'frontend', intent: 'hello', reason: 'r', permissionResponse: null };
       },
     });
     expect(aiCalled).toBe(false);
@@ -852,7 +856,7 @@ describe('router — AI-routed plain dispatch (DD #73)', () => {
       imWorkOn: true,
       aiRouter: async () => {
         aiCalled = true;
-        return { target: 'api', intent: 'should-be-ignored', reason: '' };
+        return { target: 'api', intent: 'should-be-ignored', reason: '', permissionResponse: null };
       },
     });
     expect(aiCalled).toBe(false);
@@ -891,6 +895,7 @@ describe('router — AI-routed echo format', () => {
         target: 'frontend',
         intent: '写个登录页',
         reason: '前端关键词',
+        permissionResponse: null,
       }),
     });
     expect(result.echo).toBe('target: frontend\ncontent: 写个登录页');
@@ -908,6 +913,7 @@ describe('router — AI-routed echo format', () => {
         target: 'frontend',
         intent: longIntent,
         reason: 'r',
+        permissionResponse: null,
       }),
     });
     const lines = result.echo.split('\n');
@@ -926,6 +932,7 @@ describe('router — AI-routed echo format', () => {
         target: 'frontend',
         intent: 'hi',
         reason: 'r',
+        permissionResponse: null,
       }),
     });
     expect(result.echo).toBe('target: frontend\ncontent: hi');
@@ -937,7 +944,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, API]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.echo).toBe(
       '❌ 「哎呀今天好烦」 无法识别目标\n' +
@@ -954,7 +961,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.echo).toContain(`❌ 「${longMsg.slice(0, 19)}…」 无法识别目标`);
     expect(result.echo).toContain('可用：@frontend');
@@ -967,7 +974,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, API, FRAME]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     // Tabs preserved in registry order (frontend → api → frame).
     expect(result.echo).toContain('可用：@frontend, @api, @frame');
@@ -984,7 +991,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, MULTI]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.dispatches).toEqual([
       { session: MULTI, content: '是那个multi-cc-im 已经合并了' },
@@ -1000,7 +1007,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, MULTI]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.dispatches[0]?.session).toBe(MULTI);
   });
@@ -1011,7 +1018,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, API]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toContain('无法识别目标');
@@ -1024,7 +1031,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([FRONTEND, API]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.dispatches).toEqual([]);
     expect(result.echo).toContain('无法识别目标');
@@ -1037,7 +1044,7 @@ describe('router — AI-routed echo format', () => {
       registry: fixedRegistry([SHORT]),
       state,
       imWorkOn: true,
-      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
     });
     expect(result.dispatches).toEqual([]);  // not auto-routed despite "ai" substring
     expect(result.echo).toContain('无法识别目标');
@@ -1058,6 +1065,7 @@ describe('router — AI-routed echo format', () => {
         target: 'frontend',
         intent: 'hello there',
         reason: 'literal name match',
+        permissionResponse: null,
       }),
     });
     expect(ok.aiTrace).toEqual({
@@ -1076,6 +1084,7 @@ describe('router — AI-routed echo format', () => {
         target: null,
         intent: null,
         reason: 'I bailed on the topic-mention case',
+        permissionResponse: null,
       }),
     });
     expect(fb.aiTrace).toEqual({
@@ -1094,6 +1103,7 @@ describe('router — AI-routed echo format', () => {
         target: null,
         intent: null,
         reason: 'no signal in message',
+        permissionResponse: null,
       }),
     });
     expect(miss.aiTrace).toEqual({
@@ -1114,6 +1124,7 @@ describe('router — AI-routed echo format', () => {
         target: 'mobile',
         intent: 'hello',
         reason: 'mobile picked',
+        permissionResponse: null,
       }),
     });
     expect(result.dispatches).toEqual([]);
