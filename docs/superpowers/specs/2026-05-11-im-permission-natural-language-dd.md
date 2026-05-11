@@ -1,7 +1,7 @@
 # DD: Natural-language IM permission replies
 
 **Date**: 2026-05-11
-**Status**: 🟡 **DRAFT — Step 4 (recommendations), awaiting user step-5 picks per dimension**
+**Status**: ✅ **LOCKED** (decisions accepted by user 2026-05-11; see §10)
 **Author**: multi-cc-im maintainer
 **Scope**: extend the PreToolUse permission flow so users can approve / deny a pending tool call in IM with natural language (e.g. `"multi-cc-im 那个我同意"` / `"node 的请求拒绝"`) instead of the rigid `@<tab> /1` / `@<tab> /2` syntax. Affects `packages/bridge/src/{router,ai-router,orchestrator}.ts`, the AI-router prompt, and `RouterResult` shape (cross-package contract via `@multi-cc-im/shared` if extended).
 
@@ -226,11 +226,13 @@ Track per-dimension decision below. Each dimension is independent — user can a
 
 | Dim | Recommendation | User decision |
 |---|---|---|
-| D1 | D1-3 — rigid syntax + AI natural-language layered (§4.3) | ⏳ |
-| D2 | D2-3 — daemon scans `*.PermissionRequest.*` per message (§5.3) | ⏳ |
-| D3 | D3-1 — extend AI output with `permissionResponse?` (§6.3) | ⏳ |
-| D4 | D4-2 + D4-1 — precondition gate + AI decides within (§7.3) | ⏳ |
-| D5 | D5-3 + D5-5 — asymmetric trust (deny safe / allow needs match-signal) + always log (§8.3) | ⏳ |
+| D1 | D1-3 — rigid syntax + AI natural-language layered (§4.3) | ✅ accepted 2026-05-11 |
+| D2 | D2-3 — daemon scans `*.PermissionRequest.*` per message (§5.3) | ✅ accepted 2026-05-11 |
+| D3 | D3-1 — extend AI output with `permissionResponse?` (§6.3) | ✅ accepted 2026-05-11 |
+| D4 | D4-2 + D4-1 — precondition gate + AI decides within (§7.3) | ✅ accepted 2026-05-11 |
+| D5 | D5-3 + D5-5 — asymmetric trust (deny safe / allow needs match-signal) + always log (§8.3) | ✅ accepted 2026-05-11 |
+
+All five rows resolved. DD is **LOCKED**. P1-P6 implementation milestones in §9.1 move into [`docs/conventions.md`](../../conventions.md) status table.
 
 When all five `⏳` rows resolve, this DD enters **LOCKED** and implementation milestones move into [`docs/conventions.md`](../../conventions.md).
 
@@ -240,3 +242,4 @@ When all five `⏳` rows resolve, this DD enters **LOCKED** and implementation m
 
 - **2026-05-11 (a)** — initial draft. Candidate enumeration for 5 dimensions completed. Awaiting user review of candidate list before running 尽调 / drafting matrix.
 - **2026-05-11 (b)** — candidate list accepted by user verbatim. Matrices + traceable recommendations added per dim. Pre-尽调 lean revised for D2 from D2-2 (in-memory + watcher) to D2-3 (disk-scan per message) after recognising the watcher-vs-event race risk. DD now at Step 4; awaiting user step-5 picks per dimension.
+- **2026-05-11 (c)** — User accepted all 5 recommendations verbatim. DD status flipped to **LOCKED**. P1-P6 implementation milestones reflected in [`docs/conventions.md`](../../conventions.md) status table.
