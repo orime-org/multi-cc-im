@@ -247,7 +247,13 @@ export function createOrchestrator(
       const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
       log(`[IM → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);
     } else if (result.echo.length > 0) {
-      log(`[IM] router returned echo only: ${truncate(result.echo, 80)}`);
+      // Multi-line echoes (failure echo with `可用：` tab list, plain-route
+      // success echo with `target:` / `content:` lines) are unfolded so
+      // daemon stderr matches what the IM user sees. Single-line echoes
+      // collapse to one log line as before. Per user smoke 2026-05-11.
+      const echoLines = result.echo.split('\n');
+      log(`[IM] router returned echo only:`);
+      for (const line of echoLines) log(`  ${line}`);
     }
 
     // Run dispatches in parallel (each pane independent).

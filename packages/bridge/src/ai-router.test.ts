@@ -94,6 +94,25 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toContain('"none"');
   });
 
+  it('topic-mention coverage: prompt teaches the model that tab name appearing as TOPIC also counts as a route signal', async () => {
+    // Real-account smoke 2026-05-11: user sent "是那个multi-cc-im 已经合并"
+    // — the message's subject is "multi-cc-im" (topic word, not a routing
+    // cue word), and the user has a tab named "multi-cc-im". The previous
+    // prompt phrasing ("消息 mention 了某个 tab 名") let the model bail
+    // because "mention" implied directed routing. The new prompt makes
+    // topic-as-route explicit with an inline example.
+    const out = renderRoutingPrompt({
+      userMsg: '是那个multi-cc-im 已经合并',
+      tabs: ['multi-cc-im', 'node'],
+      currentTab: null,
+    });
+    // Topic vs route distinction called out explicitly:
+    expect(out).toContain('话题词');
+    expect(out).toContain('路由词');
+    // Inline example specifically for the user's reported case:
+    expect(out).toContain('multi-cc-im 已经合并');
+  });
+
   it('does NOT mention cc slash commands (avoids polluting spawned cc)', () => {
     // Per DD #73 §6.3: prompt must not name `/rename` or any cc TUI slash
     // command — the spawned cc agent itself knows about those, and naming

@@ -973,6 +973,76 @@ describe('router — AI-routed echo format', () => {
     expect(result.echo).toContain('可用：@frontend, @api, @frame');
   });
 
+  it('substring fallback: AI returns null but message contains a tab name verbatim → routes via deterministic match', async () => {
+    // Real-account smoke 2026-05-11: user sent "是那个multi-cc-im 已经合并..."
+    // and AI bailed because it read "multi-cc-im" as a topic word, not a
+    // route cue. The deterministic substring fallback catches this when
+    // the tab name actually appears in the message text.
+    const state = memState(null);
+    const MULTI = s('multi-cc-im', 50);
+    const result = await route(incoming('是那个multi-cc-im 已经合并了'), {
+      registry: fixedRegistry([FRONTEND, MULTI]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.dispatches).toEqual([
+      { session: MULTI, content: '是那个multi-cc-im 已经合并了' },
+    ]);
+    expect(result.echo).toContain('target: multi-cc-im');
+    expect(state.getCurrent()).toBe(MULTI.paneId);
+  });
+
+  it('substring fallback: case-insensitive + ignores hyphens / whitespace (matches AI prompt leniency)', async () => {
+    const state = memState(null);
+    const MULTI = s('multi-cc-im', 50);
+    const result = await route(incoming('multi CC IM 已经合并'), {
+      registry: fixedRegistry([FRONTEND, MULTI]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.dispatches[0]?.session).toBe(MULTI);
+  });
+
+  it('substring fallback: zero matches → standard error echo with tab list (no false dispatch)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('哎呀今天好烦'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('无法识别目标');
+    expect(result.echo).toContain('可用：@frontend, @api');
+  });
+
+  it('substring fallback: multiple tabs match → ambiguous, defers to user @<tab> (no guess)', async () => {
+    const state = memState(null);
+    const result = await route(incoming('frontend 和 api 两边都看看'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('无法识别目标');
+  });
+
+  it('substring fallback: skips tab names shorter than 3 chars (defensive — minimizes false positives)', async () => {
+    const state = memState(null);
+    const SHORT = s('ai', 60);  // 2 chars — would match "the AI is broken" etc.
+    const result = await route(incoming('the ai is broken'), {
+      registry: fixedRegistry([SHORT]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+    });
+    expect(result.dispatches).toEqual([]);  // not auto-routed despite "ai" substring
+    expect(result.echo).toContain('无法识别目标');
+  });
+
   it('AI picks unknown tab → echo includes both the picked-but-missing name AND the actual available list', async () => {
     const state = memState(null);
     const result = await route(incoming('hello'), {
