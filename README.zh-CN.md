@@ -91,11 +91,24 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
 | `@frontend /clear` | 转发 `/clear` 进 cc TUI（cc 自己当 slash 命令处理）|
 | `@frontend /1` | 权限允许（仅当有 pending PreToolUse）|
 | `@frontend /2` | 权限拒绝 |
-| `给前端写个登录页` | **纯消息 — AI 路由**：daemon 起一次性 `claude --print` 子进程做分诊（哪个 tab 合适 + 提取纯净意图）。路由到选中的 tab；echo `→ frontend｜AI: 「写个登录页」` |
+| `给前端写个登录页` | **纯消息**（无 `@`）：daemon 自动路由到最相关的 cc tab。回显选中的 tab + 提取后的任务：`target: frontend / content: 写个登录页`。容忍语音转写错字、大小写 / 连字符 / 空格变体、中英混合。AI 漏的情况自动走字面 substring 兜底。|
 
 **给 cc 起名**：在 cc TUI 里跑 `/rename <name>`，wezterm tab title 变成 `<name>`，IM 就能用 `@<name>` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
 
 **Tab title 约束**：避免纯数字（会跟 wezterm pane ID 撞）。`/start` echo 会主动警告。
+
+## cc 回复 → IM 显示
+
+飞书文字消息不渲染 markdown，所以 cc 回复在发送前会做简化 — 你看到的是干净文字而不是裸 `**` / 反引号：
+
+| cc 输出 | IM 显示 |
+|---|---|
+| `# 标题` | `▌ 标题` |
+| `**粗体**` | `粗体` |
+| `` `代码` `` | `「代码」` |
+| `- 列表项` | `• 列表项` |
+| ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` 标注 + 代码内容不变 |
+| `[链接文字](url)` | `链接文字 (url)` |
 
 ## 工具审批通路（仅 ask 模式）
 
