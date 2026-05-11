@@ -309,6 +309,25 @@ async function handlePlainWithAI(
   const availableTabs = namedSessions.map((s) => `@${s.tabTitle}`).join(', ');
 
   if (result.target === null || result.intent === null) {
+    // Deterministic substring fallback — try matching the message text
+    // against tab names with the same leniency the AI prompt promises
+    // (case-insensitive, ignore hyphens / underscores / whitespace).
+    // Per user smoke 2026-05-11: the AI sometimes bails on cases where
+    // the tab name appears verbatim as a topic word (e.g. "multi-cc-im
+    // 已经合并" when there IS a multi-cc-im tab). The fallback catches
+    // these by direct string substring without consulting the LLM.
+    //
+    // If exactly one tab name is found in the message → route to it.
+    // If zero or multiple → fall through to the error echo (user picks
+    // explicitly via @<tab>).
+    const fallback = findTabBySubstring(body, namedSessions);
+    if (fallback !== null) {
+      state.setCurrent(fallback.paneId);
+      return {
+        echo: `target: ${displayName(fallback)}\ncontent: ${truncate(body, ECHO_EXCERPT_MAX)}`,
+        dispatches: [{ session: fallback, content: body }],
+      };
+    }
     return {
       echo:
         `❌ 「${truncate(body, ECHO_EXCERPT_MAX)}」 无法识别目标\n` +
@@ -623,4 +642,50 @@ function displayName(s: SessionInfo): string {
   // No /rename — display by paneId. User can't IM-route to this pane until
   // they /rename, but we still want /list etc. to show it exists.
   return `(pane ${s.paneId})`;
+}
+
+/**
+ * Minimum tab-name length (after normalization) for substring fallback
+ * to consider a match. Tabs shorter than this are very likely to
+ * produce false positives ("no" matches "node" / "go" / "stop"...).
+ * Mostly defensive — real cc tab names are 3+ chars in practice.
+ */
+const SUBSTRING_FALLBACK_MIN_LEN = 3;
+
+/**
+ * Normalize a string for lenient substring comparison: lowercase + strip
+ * hyphens / underscores / whitespace. Mirrors the leniency promised in
+ * the AI router prompt so the deterministic fallback agrees with the
+ * AI's intended matching semantics.
+ */
+function normalizeForSubstring(s: string): string {
+  return s.toLowerCase().replace(/[-_\s]+/g, '');
+}
+
+/**
+ * Deterministic substring match: returns the unique tab whose
+ * (normalized) name appears in the (normalized) message text, or
+ * `null` if zero / multiple tabs match.
+ *
+ * Used as a fallback when the AI router returns `target: null` —
+ * recovers cases where the AI bailed on topic-word mentions
+ * (e.g. message "multi-cc-im 合并了" + tab "multi-cc-im"). Per user
+ * smoke 2026-05-11.
+ *
+ * Multi-match ambiguity is deliberately NOT resolved here — if two
+ * tab names both appear in the message, deferring to the user's
+ * `@<tab>` picker is safer than guessing.
+ */
+function findTabBySubstring(
+  message: string,
+  sessions: readonly SessionInfo[],
+): SessionInfo | null {
+  const normMsg = normalizeForSubstring(message);
+  const matches: SessionInfo[] = [];
+  for (const session of sessions) {
+    const normTab = normalizeForSubstring(session.tabTitle);
+    if (normTab.length < SUBSTRING_FALLBACK_MIN_LEN) continue;
+    if (normMsg.includes(normTab)) matches.push(session);
+  }
+  return matches.length === 1 ? matches[0]! : null;
 }

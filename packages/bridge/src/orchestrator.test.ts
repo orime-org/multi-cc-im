@@ -898,6 +898,54 @@ describe('createOrchestrator — log sink', () => {
     await orch.stop();
   });
 
+  it('multi-line echo unfolds in daemon stderr (matches IM-side rendering)', async () => {
+    // Per user smoke 2026-05-11: the failure echo with `可用：@tab1, @tab2`
+    // was being truncated by `truncate(result.echo, 80)` in the daemon
+    // log, making the local terminal view incomplete vs what the IM
+    // actually shows. Fix unfolds the echo line by line so daemon stderr
+    // mirrors what gets sent to IM. Test exercises this via the
+    // handlePlainWithAI failure path which produces a 3-line echo.
+    const im = makeMockIM();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      // Stub aiRouter that always returns null so the plain-with-AI
+      // failure echo fires (3-line: error + 可用 + 或用 @<tab>).
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊' }),
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+
+    await im.handler!.onMessage(incoming('哎呀今天好烦'));
+
+    // Header line + each echo line on its own log entry.
+    const headerIdx = lines.findIndex((l) =>
+      l.startsWith('[IM] router returned echo only:'),
+    );
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    // Header line itself does NOT contain the echo body (echo goes to
+    // following indented lines, not the header).
+    expect(lines[headerIdx]).not.toContain('哎呀');
+    // The 3 indented lines after the header carry the echo:
+    //   line 0: ❌ 「哎呀今天好烦」 无法识别目标
+    //   line 1:    可用：@frontend
+    //   line 2:    或用 @<tab> 显式指定
+    const indented = lines
+      .slice(headerIdx + 1)
+      .filter((l) => l.startsWith('  '));
+    expect(indented.length).toBeGreaterThanOrEqual(3);
+    const joined = indented.join('\n');
+    expect(joined).toContain('无法识别目标');
+    expect(joined).toContain('可用：@frontend');
+    expect(joined).toContain('或用 @<tab> 显式指定');
+    await orch.stop();
+  });
+
   it('cc Stop emits [cc → IM] line with truncated reply', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
