@@ -293,6 +293,50 @@ describe('createLarkAdapter', () => {
       });
     });
 
+    it('markdown stripping: bold / heading / fenced code in cc reply are simplified before send', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const ccReply =
+        '# 完成\n\n修了 `router.ts` 的 **bold echo**。\n\n```ts\nconst x = 1;\n```';
+      await adapter.send(ccReply, {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+
+      // Inspect what the SDK actually got: the inner `text` should be
+      // the stripped version, not the raw markdown.
+      const sent = create.mock.calls[0]![0];
+      const sentText = JSON.parse(sent.data.content) as { text: string };
+      expect(sentText.text).toContain('▌ 完成');
+      expect(sentText.text).toContain('「router.ts」');
+      expect(sentText.text).toContain('bold echo');
+      expect(sentText.text).not.toContain('**');
+      expect(sentText.text).toContain('[ts]');
+      expect(sentText.text).toContain('const x = 1;');
+      expect(sentText.text).not.toContain('```');
+    });
+
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(async () => ({ code: 230020, msg: 'permission denied' }));
