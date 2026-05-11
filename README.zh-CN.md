@@ -2,117 +2,99 @@
 
 [English](README.md) | **中文**
 
-通过飞书 (Lark) IM 把跑在 WezTerm tab 里的多个 Claude Code (cc) session 暴露到手机。`@<tab-name>` 寻址；不带 `@` 的纯消息由 AI 路由到最匹配的 cc tab。包含 IM 端工具审批通路 (`/1` 允许 / `/2` 拒绝)，可扩展更多 IM / 终端 / CLI。
+把多个跑在 WezTerm tab 里的 Claude Code (cc) session 接到飞书。在 IM 里随便说一句「给前端写个登录页」，daemon 让 cc 自己分诊，自动选最匹配的 tab 把任务发过去；要精确点名才用 `@<tab>`。
 
 ---
 
 # Part 1 — 直接使用
 
-## 前置依赖
+## 你需要什么
 
-- macOS / Linux（Windows 需 WSL，未实测）
-- Node.js ≥ 22
-- pnpm ≥ 9
+- macOS / Linux（Windows 用 WSL，没实测）
+- Node.js ≥ 22, pnpm ≥ 9
 - WezTerm ≥ 20240203
-- 已登录的 Claude Code CLI（`claude` 在 `PATH` 中可执行；AI 路由需要 cc Pro/Max 订阅）
-- 一个专用做 bot 的飞书账号
+- 已登录的 Claude Code CLI（`claude` 在 `PATH` 里；AI 分诊需要 Pro / Max 订阅）
+- 一个专门当 bot 的飞书账号
 
-## 安装
+## 第一次启动
 
 ```bash
 git clone https://github.com/orime-org/multi-cc-im.git
 cd multi-cc-im
 pnpm install
 pnpm --filter multi-cc-im build
-```
-
-入口是 `./bin/multi-cc-im`，自动选择 `apps/multi-cc-im/dist/cli.js`（已 build）或 `tsx src/cli.ts`（dev fallback）。
-
-可选：软链到 `PATH`：
-
-```bash
-ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
-```
-
-## 启动
-
-```bash
 ./bin/multi-cc-im start
 ```
 
-就这一条命令。首次跑发现 `~/.multi-cc-im/credentials/lark.json` 不存在 → daemon 自动进交互式 setup wizard（用 [`docs/setup-feishu.md`](docs/setup-feishu.md) 作为指引）：
+就这样。首次运行会弹出配置向导 — 选 `lark`，跟着内嵌指南去飞书开放平台建一个自建应用，把 `App ID` + `App Secret` 填回来，daemon 在线校验通过后就直接进入运行模式。
 
-1. 上下箭头选 IM adapter（目前只有 `lark`；光标默认聚焦在已配置过的那个）
-2. 阅读内嵌配置指南 — 含可点击链接（终端支持 OSC 8 时），指向飞书开放平台对应页面：建自建应用 → 启用机器人 → 事件订阅选 WebSocket → 抄 `App ID` + `App Secret`
-3. 填 `App ID`（明文）和 `App Secret`（mask 输入）。wizard 调 Feishu `auth.v3.tenantAccessToken.internal` 端点真实验证后才持久化
-4. 同进程续跑 daemon
-
-跳过菜单直接选 adapter：`./bin/multi-cc-im start lark`。
-
-非交互场景（CI / dotfile 同步 / 重新配凭据）：
+之后想重配 / 自动化场景：
 
 ```bash
 ./bin/multi-cc-im login lark --app-id cli_xxxxxxxxxxxx --app-secret xxxxxxxxxxxxxxxx
-# 或用环境变量：
-LARK_APP_ID=cli_xxx LARK_APP_SECRET=xxx ./bin/multi-cc-im login lark
 ```
 
-`login` 走的是跟 wizard 同一条 validate + persist 路径 — 盘上 JSON 结构跟 wizard 写的完全一致。`login` 成功之后再跑 `multi-cc-im start` 会跳过 wizard。
+daemon 前台运行，Ctrl+C 停止。每台机器只能跑一个 daemon — 已有 daemon 时再 `start` 会打印已存在的 PID 并退出。
 
-cc hook 由 `start` 自动注册，不需要单独跑命令。首次 `start` 会先写时间戳 `.bak.<iso>` 备份 `~/.claude/settings.json`，再幂等合并 `PreToolUse` + `Stop` 两条 hook entries。其他工具的 hook 保留不动。
+## 给 cc tab 起名字
 
-daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `state/IMWork`、`state/IMOrigin`、`state/daemon.pid`。
+在任意 cc TUI 里跑 `/rename frontend`，wezterm tab title 就变成 `frontend`，IM 里就能用 `@frontend` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
 
-每台机器只能跑一个 daemon。已有 daemon 时再次 `start` 会 exit 1 并打印已存在的 PID。
+> 避免起纯数字 tab title（会跟 wezterm pane ID 撞）。`/start` 时会主动 echo 警告。
 
-## Daemon 命令（在 IM 发）
+## 在 IM 里发什么
 
-每条命令是发给 bot IM 会话的单条消息。
+### 随便说一句 — AI 帮你选 tab
+
+```
+给前端写个登录页
+```
+
+不用带 `@`。daemon 会让 cc 自己分诊：cc 挑最匹配的 tab，剥掉路由提示词（"给前端" 之类），把干净的任务发过去。IM 会回显：
+
+```
+target: frontend
+content: 写个登录页
+```
+
+容忍语音转写错字、大小写 / 连字符 / 空格变体、中英混合输入。cc 选错了也会自动走字面 substring 兜底。
+
+> 每条纯消息消耗一次 cc API 调用 — 计入你的 cc 订阅 / Pro / Max 用量。
+
+### 点名 `@` 精确指定
+
+```
+@frontend hello              # 发给 frontend tab；同时设为 sticky 默认
+@frontend @api sync          # 多目标分发（不改默认）
+@all stop everything         # 广播给所有命名的 cc
+```
+
+支持模糊匹配（`@front` 唯一匹配 `frontend` 就发过去）。匹配多个的话会列候选让你二选一。
+
+### 从 IM 控制某个 cc
+
+```
+@frontend /clear             # 把 /clear 转发给 cc（cc 自己当 slash command 处理）
+@frontend /1                 # 同意 pending 工具调用（仅 ask 模式有效）
+@frontend /2                 # 拒绝
+```
+
+### 控制 daemon
 
 | 命令 | 效果 |
 |---|---|
-| `/list` | 列当前 wezterm tabs，标出哪些可寻址（已 `/rename`）|
+| `/start` | 开启 IM 模式，**自动放行** — cc 工具调用不来打扰 |
+| `/start off` | 开启 IM 模式，**每次先问** — 工具调用先转 IM 等 `/1` / `/2` |
+| `/stop` | 关闭 IM 模式（cc 回复留 TUI；工具审批走 cc 原生菜单）|
+| `/list` | IM 能寻址哪些 tab |
+| `/current` | 当前 sticky 默认 + IM 模式状态 |
 | `/help` | 路由示例 |
-| `/current` | 显示当前 sticky target + IMWork 状态 |
-| `/start` | 开启 IM 模式 + **auto-approve**（cc 工具调用直接放行）|
-| `/start off` | 开启 IM 模式 + **ask** 模式（每次工具调用转到 IM 走 `/1` / `/2`）|
-| `/stop` | 关闭 IM 模式（cc 回复留 cc TUI；工具审批走 cc 原生菜单）|
 
-每次 daemon start 会重置 `IMWork` 为 OFF。每段远程会话都需要重新 `/start`。
-
-## 路由（在 IM 发）
-
-| 消息 | 效果 |
-|---|---|
-| `@frontend hello` | 发给 tab title 是 `frontend` 的 cc，并设为 sticky `current` |
-| `@front hello` | 模糊匹配（4 级 fallback：`=exact` → exact → 短前缀 → glob；歧义列候选并拒绝）|
-| `@frontend @api sync` | 多目标分发；**不**改 `current` |
-| `@all stop everything` | 广播给所有命名的 cc |
-| `@frontend /clear` | 转发 `/clear` 进 cc TUI（cc 自己当 slash 命令处理）|
-| `@frontend /1` | 权限允许（仅当有 pending PreToolUse）|
-| `@frontend /2` | 权限拒绝 |
-| `给前端写个登录页` | **纯消息**（无 `@`）：daemon 调 **cc 自己**做分诊 — cc 决定路由到哪个 tab 并剥离路由提示词（"给前端" 等），提取纯净任务描述。回显 `target: frontend / content: 写个登录页`。容忍语音转写错字、大小写 / 连字符 / 空格变体、中英混合。cc 分诊漏的情况自动走字面 substring 兜底。**每条纯消息消耗一次 cc API 调用**（计入你的 cc 订阅 / Pro / Max 用量）。|
-
-**给 cc 起名**：在 cc TUI 里跑 `/rename <name>`，wezterm tab title 变成 `<name>`，IM 就能用 `@<name>` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
-
-**Tab title 约束**：避免纯数字（会跟 wezterm pane ID 撞）。`/start` echo 会主动警告。
-
-## cc 回复 → IM 显示
-
-飞书文字消息不渲染 markdown，所以 cc 回复在发送前会做简化 — 你看到的是干净文字而不是裸 `**` / 反引号：
-
-| cc 输出 | IM 显示 |
-|---|---|
-| `# 标题` | `▌ 标题` |
-| `**粗体**` | `粗体` |
-| `` `代码` `` | `「代码」` |
-| `- 列表项` | `• 列表项` |
-| ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` 标注 + 代码内容不变 |
-| `[链接文字](url)` | `链接文字 (url)` |
+> IM 模式每次 daemon 启动会重置为 OFF。每段会话开始记得先在 IM 发 `/start`。
 
 ## 工具审批通路（仅 ask 模式）
 
-`/start off` 生效时，从 IM 寻址 cc 后，cc 调工具会触发这条往返：
+`/start off` 模式下，cc 每次要跑工具都会先来问你：
 
 ```
 [frontend] 准备跑工具:
@@ -123,44 +105,39 @@ daemon 前台运行，stderr 输出日志。Ctrl+C 停止 daemon 并清理 `stat
   @frontend /2   = 拒绝
 ```
 
-| 回复 | 效果 |
-|---|---|
-| `@frontend /1` | 允许 — cc 继续 |
-| `@frontend /2` | 拒绝 — cc 取消并询问替代方案 |
-| 10 秒内不回复 | 默认放行 |
-
 只读工具（`Read` / `Grep` / `Glob` / `NotebookRead`）自动放行，不打扰 IM。
 
-## 文件位置
+## cc 回复 → IM 显示
 
-| 路径 | 用途 |
+飞书不渲染 markdown，所以 cc 回复在发送前会做简化 — 你看到的是干净文字而不是裸 `**` / 反引号：
+
+| cc 输出 | IM 显示 |
 |---|---|
-| `~/.multi-cc-im/config.toml` | daemon 配置（外部 CLI 路径如 `wezterm` 在运行时缓存到此）|
-| `~/.multi-cc-im/credentials/lark.json` | `{ appId, appSecret, savedAt }`（mode 0600）|
-| `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM 模式开关（文件存在 = ON）|
-| `~/.multi-cc-im/state/IMOrigin` | 最新 IM 回复上下文（每条入站覆盖）|
-| `~/.multi-cc-im/state/daemon.pid` | daemon 活性锁 |
-| `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc 回复事件（daemon 消费）|
-| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | in-flight 工具审批请求 |
-| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | 审批结果 |
+| `# 标题` | `▌ 标题` |
+| `**粗体**` | `粗体` |
+| `` `代码` `` | `「代码」` |
+| `- 列表项` | `• 列表项` |
+| ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` 标注 + 代码内容不变 |
+| `[链接文字](url)` | `链接文字 (url)` |
 
-`MULTI_CC_IM_HOME` 环境变量可覆盖根目录。
+## 文件在哪里
+
+- `~/.multi-cc-im/credentials/lark.json` — 飞书凭据（mode 0600）
+- `~/.multi-cc-im/state/` — 运行时状态，daemon 自管理
+
+要换路径设 `MULTI_CC_IM_HOME` 环境变量。
 
 ## CLI 参考
 
 | 命令 | 说明 |
 |---|---|
-| `multi-cc-im start` | 启动 daemon（前台长跑）。无参数 → adapter 选择菜单；选定 adapter 未配置则进 wizard。首次自动注册 cc hook（幂等合并）|
-| `multi-cc-im start <adapter>` | 跳过菜单直接选指定 adapter（如 `start lark`）。凭据缺失也会进 wizard |
-| `multi-cc-im login <adapter> [--<field> <value>...]` | 非交互凭据配置。field flag 从 adapter schema 派生（lark：`--app-id` `--app-secret`）；同时支持环境变量 `<ADAPTER>_<FIELD>`（如 `LARK_APP_ID`）。走的是跟 wizard 同一条 validate + persist 路径 |
-| `multi-cc-im cleanup [--dry-run]` | 清理过期 state 文件；daemon 跑着也安全 |
-| `multi-cc-im hook <event>` | cc 内部 hook 入口（由 `~/.claude/settings.json` 调用）|
+| `multi-cc-im start [adapter]` | 启动 daemon（前台运行）。无参数 → adapter 选择菜单。首次会先把 `~/.claude/settings.json` 备份到 `.bak.<iso>` 再自动注册 cc hook |
+| `multi-cc-im login <adapter> [--<field> <value>...]` | 非交互配凭据。走的是跟向导同一条 validate + persist 路径。也支持 `LARK_APP_ID` 这类环境变量 |
+| `multi-cc-im cleanup [--dry-run]` | 清理过期 state 文件。daemon 跑着也安全 |
 | `multi-cc-im --help` / `-h` | 打印 help |
 | `multi-cc-im --version` / `-v` | 打印版本 |
 
 退出码：`0` 成功，`1` 运行时失败，`2` 用法错误。
-
-无 TTY 兜底：`multi-cc-im start` 无参数情况需要 TTY（要弹菜单）。headless 调用方必须显式指定 adapter — `multi-cc-im start lark`。凭据缺失场景同理（wizard 需要 TTY）：headless 应先跑 `multi-cc-im login lark --app-id ... --app-secret ...`。
 
 ## 故障排查
 
@@ -176,44 +153,33 @@ echo 'path = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-
 ### `multi-cc-im start` 报 "another daemon already running"
 
 ```bash
-# 看锁住的 PID：
 cat ~/.multi-cc-im/state/daemon.pid
-
-# 真在跑就正常停（Ctrl+C 它自己的终端，或 `kill <pid>`）。
-# PID 是僵尸（被 SIGKILL）就直接删锁：
+# 真在跑就 Ctrl+C 它自己的终端，或 `kill <pid>`。
+# 僵尸 PID（被 SIGKILL）就直接删锁：
 rm ~/.multi-cc-im/state/daemon.pid
 ```
 
-### Daemon 跑着但 IM 收不到消息
+### daemon 跑着但 IM 收不到消息
 
-```bash
-# 1. WSClient 连上没？daemon 启动 stderr 应该有
-#    "[lark] WS connected" + "ws client ready"。没看到说明长连接没建上，
-#    一般是凭据 / 事件订阅配置问题。重新跑 setup 走真实 Feishu 校验：
-./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>
+依次检查：
 
-# 2. cc hook 真的有触发吗？cc 完成 reply 时应该有 Stop 文件出现：
-ls -la ~/.multi-cc-im/state/*.Stop.*
-
-# 3. 飞书应用发布了没？权限 + WebSocket 事件订阅
-#    必须在飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布
-#    才生效。详见 docs/setup-feishu.md。
-```
+1. 重跑 setup 走真实校验：`./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>`。
+2. 飞书应用发布了吗？权限 + 事件订阅必须在飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布之后才生效。详见 [`docs/setup-feishu.md`](docs/setup-feishu.md)。
 
 ### `@frontend` 报 "not found"
 
 - 进 cc TUI 跑 `/rename frontend`。
 - 在 IM 发 `/list` 看哪些 tab 可寻址。
 
-### 工具审批转发不到 IM
+### IM 收不到工具审批
 
 1. 是不是 `/start off` 模式？（默认 `/start` 是 auto-approve，不会转发）
-2. 你之前从 IM 寻址过这个 cc 吗？（没 `IMOrigin` → 没 thread 可转发）
+2. 你之前从 IM 寻址过这个 cc 吗？（没寻址 → 没 IM thread 可转发）
 3. daemon 还活着吗？（`cat ~/.multi-cc-im/state/daemon.pid`）
 
-### Hook 注册（`start` 时自动跑）报现有 hook 冲突
+### Hook 注册报现有 hook 冲突
 
-从 `start` merge 前自动写的 backup 恢复：
+从 `start` 自动写的备份恢复：
 
 ```bash
 ls -la ~/.claude/settings.json.bak.*
@@ -224,11 +190,11 @@ cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json
 
 ```bash
 ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
-# 都该不存在。还在的话手动删：
+# 都应该不存在；还在的话手动删：
 rm -f ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/IMOrigin ~/.multi-cc-im/state/daemon.pid
 ```
 
-### `state/` 攒了一堆文件
+### state/ 攒了一堆文件
 
 ```bash
 ./bin/multi-cc-im cleanup --dry-run   # 预演
@@ -283,6 +249,10 @@ multi-cc-im/
 | `pnpm --filter multi-cc-im smoke` | 跑 bundled CLI（`node dist/cli.js`）|
 
 覆盖率门槛：全 workspace 行覆盖 ≥ 80%。CI 强制。
+
+## 内部 CLI 命令（hook 调用，非用户接口）
+
+- `multi-cc-im hook <event>` — 由 `~/.claude/settings.json` 的 PreToolUse / Stop hook 调用。`start` 时自动注册，**不要**手动跑。
 
 ## TDD 节奏
 

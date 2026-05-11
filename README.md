@@ -2,7 +2,7 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app, addressed by `@<tab-name>`. Plain (no-mention) messages are AI-routed to the most relevant cc tab. Includes IM-side tool permission gate (`/1` allow / `/2` deny) and a pluggable architecture for additional IMs / terminals / CLIs.
+Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `@<tab>` only when you want to be explicit.
 
 ---
 
@@ -11,95 +11,105 @@ Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feis
 ## Prerequisites
 
 - macOS / Linux (Windows via WSL untested)
-- Node.js ≥ 22
-- pnpm ≥ 9
+- Node.js ≥ 22, pnpm ≥ 9
 - WezTerm ≥ 20240203
-- Claude Code CLI logged in (`claude` resolvable via `PATH`; cc Pro/Max account required for AI routing)
+- Claude Code CLI logged in (`claude` resolvable on `PATH`; Pro / Max subscription required for AI routing)
 - A Lark account dedicated as bot
 
-## Install
+## First-time start
 
 ```bash
 git clone https://github.com/orime-org/multi-cc-im.git
 cd multi-cc-im
 pnpm install
 pnpm --filter multi-cc-im build
-```
-
-The bridge entry point is `./bin/multi-cc-im`. It auto-resolves to either `apps/multi-cc-im/dist/cli.js` (after `build`) or `tsx src/cli.ts` (dev fallback).
-
-Optional: symlink to `PATH`:
-
-```bash
-ln -s "$(pwd)/bin/multi-cc-im" ~/.local/bin/multi-cc-im
-```
-
-## Run
-
-```bash
 ./bin/multi-cc-im start
 ```
 
-That's it. On first run the daemon detects no `~/.multi-cc-im/credentials/lark.json` and walks you through an interactive setup wizard backed by [`docs/setup-feishu.md`](docs/setup-feishu.md):
+That's it. On first run a setup wizard pops up — pick `lark`, follow the inline guide to create a self-built Feishu app, paste in `App ID` + `App Secret`, the daemon validates them against Feishu and continues into normal run mode.
 
-1. Pick an IM adapter from the arrow-key menu (only `lark` today; cursor defaults to whichever one already has saved credentials).
-2. Read the inline configuration guide — it links to the Feishu Open Platform pages where you create the self-built app, enable bot capability, set event subscription to WebSocket, and copy the `App ID` + `App Secret`.
-3. Enter `App ID` (visible) and `App Secret` (masked input). The wizard validates them against Feishu's `auth.v3.tenantAccessToken.internal` endpoint live before persisting.
-4. Daemon continues into normal run mode in the same process.
-
-To skip the menu and go straight to a specific adapter: `./bin/multi-cc-im start lark`.
-
-For non-interactive / scripted setup (CI / dotfile sync / re-running setup):
+To re-configure later, or for non-interactive / headless setup:
 
 ```bash
 ./bin/multi-cc-im login lark --app-id cli_xxxxxxxxxxxx --app-secret xxxxxxxxxxxxxxxx
-# or via env vars:
-LARK_APP_ID=cli_xxx LARK_APP_SECRET=xxx ./bin/multi-cc-im login lark
 ```
 
-`login` runs the same validate + persist path the wizard uses — the on-disk JSON is identical regardless of entry point. After it succeeds, `multi-cc-im start` skips the wizard.
+The daemon runs in the foreground. Ctrl+C stops it. Only one daemon per machine — re-running `start` while one is alive prints the existing PID and exits.
 
-cc hooks are auto-registered by `start` — no separate setup step. The first `start` writes a timestamped `.bak.<iso>` backup of `~/.claude/settings.json` before merging the `PreToolUse` and `Stop` hook entries. Existing hooks from other tools are preserved.
+## Name your cc tabs
 
-Daemon runs in the foreground. Stderr carries log output. Ctrl+C stops the daemon and clears `state/IMWork`, `state/IMOrigin`, `state/daemon.pid`.
+Inside any cc TUI, run `/rename frontend`. The wezterm tab title becomes `frontend`, and IM can address it as `@frontend`. Tabs with no `/rename` show up in `/list` but are **not addressable**.
 
-Only one daemon per machine. Re-running `start` while one is alive exits with code 1 and prints the existing PID.
+> Avoid pure-numeric tab titles (they collide with wezterm pane IDs). `/start` echoes a warning if any are present.
 
-## Daemon commands (sent from Lark)
+## What to send in IM
 
-Every command is a single message sent to the bot's Lark thread.
+### Just talk — AI picks the tab
+
+```
+give the frontend one a login page
+```
+
+No `@` needed. The daemon asks cc itself to triage: cc picks the most relevant tab, strips routing cue words (`give the frontend one` / `给前端` / etc.), and forwards the cleaned task. You'll see an echo:
+
+```
+target: frontend
+content: a login page
+```
+
+Tolerates speech-to-text typos, case / hyphen / whitespace variants, and mixed-language input. If cc's pick misses, the daemon falls back to a deterministic substring match against tab names.
+
+> Each plain message costs one short cc API call — counts against your cc subscription / Pro / Max usage.
+
+### Name the tab explicitly with `@`
+
+```
+@frontend hello              # send to the frontend tab; becomes the sticky default
+@frontend @api sync          # multi-target dispatch (doesn't change the default)
+@all stop everything         # broadcast to every named cc
+```
+
+Fuzzy matching is supported (`@front` → `frontend` if unique). Ambiguous prefixes list candidates and ask you to disambiguate.
+
+### Control a cc from IM
+
+```
+@frontend /clear             # forwards /clear as cc's own slash command
+@frontend /1                 # allow a pending tool call (ask mode only)
+@frontend /2                 # deny it
+```
+
+### Control the daemon
 
 | Command | Effect |
 |---|---|
-| `/list` | List wezterm tabs and which are addressable (have a `/rename`'d title) |
+| `/start` | Enable IM mode, **auto-approve** — cc tool calls proceed without asking you |
+| `/start off` | Enable IM mode, **ask** — every tool call asks in IM first (`/1` / `/2`) |
+| `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts use cc's native menu) |
+| `/list` | Which wezterm tabs are addressable from IM |
+| `/current` | Current sticky default + IM-mode status |
 | `/help` | Routing examples |
-| `/current` | Show current sticky target + IMWork status |
-| `/start` | Enable IM mode with **auto-approve** (cc tool calls auto-pass) |
-| `/start off` | Enable IM mode with **ask** mode (every tool call forwards to Lark for `/1` / `/2`) |
-| `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts handled in cc native menu) |
 
-`IMWork` resets to OFF on every daemon start. You must `/start` from Lark each session.
+> IM mode resets to OFF every time the daemon starts. Send `/start` from IM once per session.
 
-## Routing (sent from Lark)
+## Tool permission flow (ask mode only)
 
-| Message | Effect |
-|---|---|
-| `@frontend hello` | Send to the cc whose tab title is `frontend`; sets it as sticky `current` |
-| `@front hello` | Fuzzy match (4-level fallback: `=exact` → exact → prefix → glob); ambiguity lists candidates and rejects |
-| `@frontend @api sync` | Multi-target dispatch; does **not** change `current` |
-| `@all stop everything` | Broadcast to every named cc |
-| `@frontend /clear` | Forward `/clear` into the cc TUI as cc's own slash command |
-| `@frontend /1` | Permission allow (only if there's a pending PreToolUse) |
-| `@frontend /2` | Permission deny |
-| `给前端写个登录页` | **Plain message** (no `@`): daemon asks **cc itself** to triage the message — cc picks the most relevant tab and strips routing cue words ("给前端" / "the frontend one" / etc.) to extract a clean task. Echoes back `target: frontend / content: 写个登录页`. Tolerates speech-to-text typos, case / hyphen / whitespace variants, and Chinese-English mixed input. Falls back to deterministic substring match when cc's pick misses. Costs one short cc API call per plain message (counts against your cc subscription / Pro / Max usage). |
+When `/start off` is active, every cc tool call asks you first:
 
-**Naming a cc:** in a cc TUI, run `/rename <name>`. The wezterm tab title becomes `<name>` and IM can address it as `@<name>`. Tabs with no `/rename` are listed by `/list` but are **not addressable** from IM.
+```
+[frontend] About to run:
+  Bash(rm -rf node_modules)
 
-**Tab title constraints:** avoid pure-numeric titles (they collide with wezterm pane IDs). `/start` echo warns when any are present.
+⏳ Reply within 10s, else auto-allow:
+  @frontend /1   = allow
+  @frontend /2   = deny
+```
+
+Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) auto-allow without bothering IM.
 
 ## cc replies → IM rendering
 
-Feishu text messages don't render markdown, so cc replies get simplified before sending — you see clean text instead of raw `**` / backticks:
+Feishu doesn't render markdown, so cc replies are simplified before sending — you see clean text instead of raw `**` / backticks:
 
 | cc output | IM displays |
 |---|---|
@@ -110,61 +120,28 @@ Feishu text messages don't render markdown, so cc replies get simplified before 
 | ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` annotation + content unchanged |
 | `[text](url)` | `text (url)` |
 
-## Tool permission flow (ask mode only)
+## Where things live
 
-When `/start off` is active and you address a cc from Lark, cc tool calls trigger this round-trip:
+- `~/.multi-cc-im/credentials/lark.json` — your Feishu credentials (mode 0600)
+- `~/.multi-cc-im/state/` — runtime state, daemon self-manages
 
-```
-[frontend] 准备跑工具:
-  Bash(rm -rf node_modules)
-
-⏳ 10 秒内回复，否则默认放行:
-  @frontend /1   = 允许
-  @frontend /2   = 拒绝
-```
-
-| Reply | Effect |
-|---|---|
-| `@frontend /1` | Allow — cc proceeds |
-| `@frontend /2` | Deny — cc cancels and asks for an alternative |
-| (no reply within 10s) | Default allow |
-
-Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) are auto-allowed without IM forward.
-
-## Files
-
-| Path | Purpose |
-|---|---|
-| `~/.multi-cc-im/config.toml` | Daemon config (external paths like `wezterm`, cached at runtime) |
-| `~/.multi-cc-im/credentials/lark.json` | `{ appId, appSecret, savedAt }` (mode 0600) |
-| `~/.multi-cc-im/state/IMWork` | `{auto:bool}` — IM mode toggle (file existence = ON) |
-| `~/.multi-cc-im/state/IMOrigin` | Latest IM reply context (overwritten on every inbound) |
-| `~/.multi-cc-im/state/daemon.pid` | Daemon liveness lock |
-| `~/.multi-cc-im/state/<paneId>_<sid>.Stop.<ts>` | cc reply event (consumed by daemon) |
-| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionRequest.<id>.json` | In-flight tool approval |
-| `~/.multi-cc-im/state/<paneId>_<sid>.PermissionResponse.<id>.json` | Approval result |
-
-Override the root with `MULTI_CC_IM_HOME` env.
+Override the root with the `MULTI_CC_IM_HOME` env var.
 
 ## CLI reference
 
 | Command | Description |
 |---|---|
-| `multi-cc-im start` | Start the daemon (long-running, foreground). No-arg renders an adapter-selection menu; falls through to the wizard if the chosen adapter isn't configured yet. Auto-registers cc hooks on first run (idempotent merge). |
-| `multi-cc-im start <adapter>` | Skip the menu and start with the named adapter (e.g. `start lark`). Falls through to the wizard if its credentials are missing. |
-| `multi-cc-im login <adapter> [--<field> <value>...]` | Non-interactive credential setup. Field flags are derived from the adapter's schema (e.g. lark: `--app-id` `--app-secret`); env vars `<ADAPTER>_<FIELD>` (e.g. `LARK_APP_ID`) are also recognized. Routes through the same validate + persist path as the wizard. |
-| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files; safe while daemon is running. |
-| `multi-cc-im hook <event>` | cc-internal hook entrypoint (called by `~/.claude/settings.json`). |
+| `multi-cc-im start [adapter]` | Start the daemon (foreground). No arg → adapter-selection menu. First run auto-registers cc hooks after writing a `.bak.<iso>` of `~/.claude/settings.json`. |
+| `multi-cc-im login <adapter> [--<field> <value>...]` | Non-interactive credential setup. Same validate + persist path as the wizard. Env vars like `LARK_APP_ID` are also recognized. |
+| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files. Safe while the daemon is running. |
 | `multi-cc-im --help` / `-h` | Print help. |
 | `multi-cc-im --version` / `-v` | Print version. |
 
 Exit codes: `0` success, `1` runtime failure, `2` usage error.
 
-Headless guards: `multi-cc-im start` (no arg) needs a TTY for the adapter menu. Headless callers must specify the adapter — `multi-cc-im start lark`. Same applies if creds are missing: the wizard needs a TTY; headless callers should run `multi-cc-im login lark --app-id ... --app-secret ...` first.
-
 ## Troubleshooting
 
-### `multi-cc-im start` fails with "wezterm CLI not found"
+### `multi-cc-im start` says "wezterm CLI not found"
 
 ```bash
 which wezterm   # must resolve
@@ -176,53 +153,40 @@ echo 'path = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-
 ### `multi-cc-im start` says "another daemon already running"
 
 ```bash
-# Show the locking PID:
 cat ~/.multi-cc-im/state/daemon.pid
-
-# If it's a real running daemon, kill it normally (Ctrl+C in its terminal,
-# or `kill <pid>`).
-# If the PID is stale (process was SIGKILL'd), remove the lock:
+# Real running daemon → Ctrl+C in its terminal, or `kill <pid>`.
+# Stale PID (process was SIGKILL'd) → remove the lock:
 rm ~/.multi-cc-im/state/daemon.pid
 ```
 
-### Daemon runs but Lark doesn't receive my messages
+### Daemon runs but IM doesn't receive my messages
 
-```bash
-# 1. WSClient connected? Look for "[lark] WS connected" + "ws client ready"
-#    in the daemon's stderr log when it started up. If missing, the long-
-#    connection didn't establish — usually a credential / event-subscription
-#    config issue. Re-run setup to validate against Feishu live:
-./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>
+Check, in order:
 
-# 2. cc hook actually firing? Stop files should appear when cc finishes a reply:
-ls -la ~/.multi-cc-im/state/*.Stop.*
-
-# 3. Feishu app published? Permissions + WebSocket event subscription
-#    won't take effect until you publish a version in 飞书开放平台 →
-#    版本管理与发布 → 创建版本 → 提交发布. See docs/setup-feishu.md.
-```
+1. Re-run setup so credentials are validated live: `./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>`.
+2. Did you publish the Feishu app? Permissions + event subscription only take effect after 飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布. See [`docs/setup-feishu.md`](docs/setup-feishu.md).
 
 ### `@frontend` says "not found"
 
-- Run `/rename frontend` inside the cc TUI.
-- Send `/list` from Lark to see which tabs are addressable.
+- Inside the cc TUI, run `/rename frontend`.
+- Send `/list` from IM to see which tabs are addressable.
 
-### IM doesn't receive tool permission prompts
+### IM doesn't get tool permission prompts
 
-1. Did you `/start off`? (default `/start` is auto-approve, no prompts forward.)
-2. Did you address that cc from Lark first? (no `IMOrigin` → no thread to forward into).
-3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`).
+1. Are you in `/start off`? (default `/start` is auto-approve — no prompts forward.)
+2. Did you address that cc from IM at least once first? (no IM thread → nowhere to forward to.)
+3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`.)
 
-### Hook registration (auto-run by `start`) complains about existing hooks
+### Hook registration complains about existing hooks
 
-Restore from the backup `start` wrote before the merge:
+Restore the backup `start` wrote before merging:
 
 ```bash
 ls -la ~/.claude/settings.json.bak.*
 cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json
 ```
 
-### After Ctrl+C, IM still receives stale forwards
+### After Ctrl+C, IM still gets stale forwards
 
 ```bash
 ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
@@ -285,6 +249,10 @@ multi-cc-im/
 | `pnpm --filter multi-cc-im smoke` | Run the bundled CLI (`node dist/cli.js`) |
 
 Coverage threshold: ≥ 80% line coverage workspace-wide. CI enforces.
+
+## Internal CLI commands (used by hooks, not for direct invocation)
+
+- `multi-cc-im hook <event>` — invoked by `~/.claude/settings.json` PreToolUse / Stop hooks. Auto-registered by `start`; not for manual use.
 
 ## TDD rhythm
 
