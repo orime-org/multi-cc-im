@@ -268,7 +268,7 @@ describe('createLarkAdapter', () => {
   // ============================================================================
 
   describe('inbound msgId dedup', () => {
-    it('duplicate message_id → second fire is silently dropped + emits drop log', async () => {
+    it('duplicate message_id → second fire silently dropped (no handler.onMessage, no console noise)', async () => {
       const dispatcher = makeStubDispatcher();
       const handler = makeHandler();
       const logs: string[] = [];
@@ -294,11 +294,11 @@ describe('createLarkAdapter', () => {
       await dispatcher.fire('im.message.receive_v1', baseInboundEvent);
 
       expect(handler.received).toHaveLength(1);
+      // Silent dedup — SDK redelivery is normal protocol behavior, not
+      // worth surfacing in daemon stderr. Per user feedback 2026-05-11.
       expect(
-        logs.some((l) =>
-          /\[lark\] dropping duplicate inbound msg_id=om_msg_1/.test(l),
-        ),
-      ).toBe(true);
+        logs.some((l) => /dropping duplicate/.test(l)),
+      ).toBe(false);
     });
 
     it('different message_id → each is processed independently (no false-positive dedup)', async () => {

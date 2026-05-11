@@ -208,10 +208,13 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
           // ping loss, ack timeout, etc. Without this gate, the bridge
           // dispatches the same IM message to the same cc tab multiple
           // times. Per user smoke 2026-05-11.
+          //
+          // Silent drop: SDK redelivery is normal protocol behavior, not
+          // an event the user needs to see. Logging every redelivery
+          // floods stderr without actionable signal. The dedup contract
+          // is asserted by unit tests (`adapter.test.ts` dedup describe
+          // block).
           if (!rememberOrDropMsgId(data.message.message_id)) {
-            log(
-              `[lark] dropping duplicate inbound msg_id=${data.message.message_id} (Feishu at-least-once redelivery)`,
-            );
             return;
           }
 
