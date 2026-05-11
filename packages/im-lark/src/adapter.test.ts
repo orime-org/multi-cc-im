@@ -260,6 +260,127 @@ describe('createLarkAdapter', () => {
     });
   });
 
+  // ============================================================================
+  // Inbound msgId dedup — Feishu WS event delivery is at-least-once; the
+  // SDK / server may redeliver after a reconnect or ack-loss, and without
+  // dedup the bridge dispatches the same IM message multiple times. Per
+  // user smoke 2026-05-11.
+  // ============================================================================
+
+  describe('inbound msgId dedup', () => {
+    it('duplicate message_id → second fire is silently dropped + emits drop log', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const logs: string[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        log: (line) => logs.push(line),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      // First fire processes normally.
+      await dispatcher.fire('im.message.receive_v1', baseInboundEvent);
+      // Second fire with same message_id is the redelivery scenario.
+      await dispatcher.fire('im.message.receive_v1', baseInboundEvent);
+
+      expect(handler.received).toHaveLength(1);
+      expect(
+        logs.some((l) =>
+          /\[lark\] dropping duplicate inbound msg_id=om_msg_1/.test(l),
+        ),
+      ).toBe(true);
+    });
+
+    it('different message_id → each is processed independently (no false-positive dedup)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: { ...baseInboundEvent.message, message_id: 'om_msg_A' },
+      });
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: { ...baseInboundEvent.message, message_id: 'om_msg_B' },
+      });
+
+      expect(handler.received).toHaveLength(2);
+      expect(handler.received[0]?.msgId).toBe('om_msg_A');
+      expect(handler.received[1]?.msgId).toBe('om_msg_B');
+    });
+
+    it('LRU evicts oldest after exceeding cap so very old redeliveries are still possible', async () => {
+      // Guards against unbounded memory growth: after the cap is breached,
+      // the oldest msgId is forgotten, and a redelivery of THAT specific
+      // ancient message would be processed again. This is fine — Feishu
+      // doesn't redeliver after hours, only seconds after a reconnect.
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      // Fire SEEN_MSGID_MAX + 1 unique msgs to push the first one out.
+      // SEEN_MSGID_MAX is 200 (constant in adapter.ts); we don't import it
+      // here to avoid coupling — pick 201 fires.
+      for (let i = 0; i < 201; i++) {
+        await dispatcher.fire('im.message.receive_v1', {
+          ...baseInboundEvent,
+          message: { ...baseInboundEvent.message, message_id: `om_lru_${i}` },
+        });
+      }
+      expect(handler.received).toHaveLength(201);
+      // Now re-fire the very first one — it was evicted, so it's processed
+      // again (not deduped).
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: { ...baseInboundEvent.message, message_id: 'om_lru_0' },
+      });
+      expect(handler.received).toHaveLength(202);
+      // But the LATEST messages should still dedup correctly.
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: { ...baseInboundEvent.message, message_id: 'om_lru_200' },
+      });
+      expect(handler.received).toHaveLength(202);
+    });
+  });
+
   describe('send()', () => {
     it('calls client.im.v1.message.create with correct shape (chat_id + text msg_type + JSON-wrapped content)', async () => {
       const dispatcher = makeStubDispatcher();
