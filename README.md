@@ -91,7 +91,7 @@ Every command is a single message sent to the bot's Lark thread.
 | `@frontend /clear` | Forward `/clear` into the cc TUI as cc's own slash command |
 | `@frontend /1` | Permission allow (only if there's a pending PreToolUse) |
 | `@frontend /2` | Permission deny |
-| `给前端写个登录页` | **Plain message** (no `@`): daemon auto-routes to the most relevant cc tab. Echoes back the picked tab + cleaned task: `target: frontend / content: 写个登录页`. Tolerates speech-to-text typos, case / hyphen / whitespace variants, and Chinese-English mixed input. Falls back to deterministic substring match if AI misses. |
+| `给前端写个登录页` | **Plain message** (no `@`): daemon asks **cc itself** to triage the message — cc picks the most relevant tab and strips routing cue words ("给前端" / "the frontend one" / etc.) to extract a clean task. Echoes back `target: frontend / content: 写个登录页`. Tolerates speech-to-text typos, case / hyphen / whitespace variants, and Chinese-English mixed input. Falls back to deterministic substring match when cc's pick misses. Costs one short cc API call per plain message (counts against your cc subscription / Pro / Max usage). |
 
 **Naming a cc:** in a cc TUI, run `/rename <name>`. The wezterm tab title becomes `<name>` and IM can address it as `@<name>`. Tabs with no `/rename` are listed by `/list` but are **not addressable** from IM.
 
