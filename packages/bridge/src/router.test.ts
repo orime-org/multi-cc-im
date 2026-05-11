@@ -1132,3 +1132,262 @@ describe('router — AI-routed echo format', () => {
     expect(result.echo).toContain('可用：@frontend, @api');
   });
 });
+
+// ============================================================================
+// P3 — natural-language permission reply integration
+// (DD 2026-05-11 §9.1 P3)
+// ============================================================================
+
+describe('router — AI permission reply integration (DD 2026-05-11)', () => {
+  // Concrete shape used by the cli-cc helper, mirrored locally for test
+  // independence — we don't want the bridge tests to depend on cli-cc.
+  interface FakePending {
+    paneId: PaneId;
+    sessionId: string;
+    requestId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    createdAt: number;
+  }
+
+  const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+  function fakePending(
+    overrides: Partial<FakePending> & Pick<FakePending, 'paneId'>,
+  ): FakePending {
+    return {
+      sessionId: SID,
+      requestId: 'aabbcc',
+      toolName: 'Bash',
+      toolInput: { command: 'rm -rf node_modules' },
+      createdAt: 1700000000000,
+      ...overrides,
+    };
+  }
+
+  it('no listPendingPermissionRequests opt → aiRouter called WITHOUT pendingRequests (backward compat)', async () => {
+    let observed: { pendingRequests?: readonly unknown[] } | null = null;
+    await route(incoming('给前端写个登录页'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      aiRouter: async (o) => {
+        observed = o;
+        return {
+          target: 'frontend',
+          intent: '写个登录页',
+          reason: 'r',
+          permissionResponse: null,
+        };
+      },
+    });
+    expect(observed).not.toBeNull();
+    expect(observed!.pendingRequests).toBeUndefined();
+  });
+
+  it('listPendingPermissionRequests returns [] → aiRouter called with empty pendingRequests', async () => {
+    let observedPending: readonly unknown[] | undefined;
+    await route(incoming('给前端写个登录页'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [],
+      aiRouter: async (o) => {
+        observedPending = o.pendingRequests;
+        return {
+          target: 'frontend',
+          intent: '写个登录页',
+          reason: 'r',
+          permissionResponse: null,
+        };
+      },
+    });
+    expect(observedPending).toEqual([]);
+  });
+
+  it('pending mapped paneId → tabName for aiRouter (router translates the IPC representation into a prompt representation)', async () => {
+    let observed: readonly { tabName: string; toolName: string; toolInput: Record<string, unknown> }[] | undefined;
+    await route(incoming('multi-cc-im 那个 rm 同意'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async (o) => {
+        observed = o.pendingRequests as typeof observed;
+        return {
+          target: null,
+          intent: null,
+          reason: 'permission reply',
+          permissionResponse: {
+            target: 'frontend',
+            decision: 'allow',
+            reason: '用户同意 rm node_modules',
+          },
+        };
+      },
+    });
+    expect(observed).toEqual([
+      {
+        tabName: 'frontend',
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf node_modules' },
+      },
+    ]);
+  });
+
+  it('pending whose paneId is not in current sessions (dead pane) is filtered out of the prompt', async () => {
+    let observed: readonly { tabName: string }[] | undefined;
+    await route(incoming('hi'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+        fakePending({ paneId: 9999 as PaneId, requestId: 'deadbe' }),
+      ],
+      aiRouter: async (o) => {
+        observed = o.pendingRequests as typeof observed;
+        return {
+          target: 'frontend',
+          intent: 'hi',
+          reason: 'r',
+          permissionResponse: null,
+        };
+      },
+    });
+    expect(observed).toHaveLength(1);
+    expect(observed![0]?.tabName).toBe('frontend');
+  });
+
+  it('AI returns permissionResponse → RouterResult.permissionResponse populated; no dispatches; aiTrace carries the AI decision', async () => {
+    const result = await route(incoming('multi-cc-im 那个 rm 同意'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'allow',
+          reason: '用户同意 rm node_modules',
+        },
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.permissionResponse).toEqual({
+      session: FRONTEND,
+      decision: 'allow',
+      reason: '用户同意 rm node_modules',
+    });
+    expect(result.aiTrace).toMatchObject({
+      permissionResponse: {
+        target: 'frontend',
+        decision: 'allow',
+        reason: '用户同意 rm node_modules',
+      },
+    });
+  });
+
+  it('AI permissionResponse deny → RouterResult.permissionResponse.decision is "deny"', async () => {
+    const result = await route(incoming('node 那个 rm 拒绝'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: API.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'api',
+          decision: 'deny',
+          reason: '用户拒绝',
+        },
+      }),
+    });
+    expect(result.permissionResponse?.decision).toBe('deny');
+    expect(result.permissionResponse?.session).toBe(API);
+  });
+
+  it('AI permissionResponse.target is an unknown tab → echo error; no dispatches; no permissionResponse field', async () => {
+    const result = await route(incoming('mobile 那个同意'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'mobile',
+          decision: 'allow',
+          reason: 'r',
+        },
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.echo).toContain('mobile');
+    expect(result.echo).toContain('tab 不存在');
+  });
+
+  it('does NOT change sticky current_pane on permission-reply path (decision is independent of routing default)', async () => {
+    const state = memState(API.paneId);
+    await route(incoming('multi-cc-im 那个同意'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'permission reply',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'allow',
+          reason: 'r',
+        },
+      }),
+    });
+    // current_pane unchanged — permission replies don't move the routing
+    // default (mirrors the @<tab> /1 /2 rigid syntax behavior).
+    expect(state.getCurrent()).toBe(API.paneId);
+  });
+
+  it('AI returns BOTH a target AND a permissionResponse → permission path wins (prompt says they\'re mutually exclusive)', async () => {
+    const result = await route(incoming('multi-cc-im 同意'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: 'api',
+        intent: 'should not be dispatched',
+        reason: 'AI gave both',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'allow',
+          reason: 'permission won',
+        },
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.permissionResponse?.session).toBe(FRONTEND);
+    expect(result.permissionResponse?.decision).toBe('allow');
+  });
+});
