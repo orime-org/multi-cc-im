@@ -396,6 +396,84 @@ export async function listPermissionResponseFiles(
     .map((name) => join(opts.stateDir, name));
 }
 
+/**
+ * One pending PreToolUse approval awaiting IM-side response. Returned by
+ * `listPendingPermissionRequests`. Combines parsed-filename metadata
+ * (paneId / sessionId — needed to dispatch a Response back) with the
+ * Request body fields.
+ */
+export interface PendingPermissionRequest {
+  paneId: number;
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  createdAt: number;
+}
+
+/**
+ * Scan `<stateDir>` for all `<paneId>_<sid>.PermissionRequest.<id>.json`
+ * files that do **not** yet have a matching
+ * `<paneId>_<sid>.PermissionResponse.<id>.json` sibling — i.e. PreToolUse
+ * prompts that are still waiting for the IM user to allow / deny.
+ *
+ * Used by the AI-routed plain-message path (DD §9.1 P1, 2026-05-11): the
+ * daemon enumerates pending prompts before forwarding a plain IM message to
+ * cc-triage, so cc can decide whether the message is a natural-language
+ * permission reply ("multi-cc-im 那个我同意") instead of a routing request.
+ *
+ * Returns the list sorted by `createdAt` ascending (oldest pending first,
+ * matches a human's mental model of "the prompt I've been staring at the
+ * longest"). ENOENT on the state dir resolves to `[]` so daemon startup
+ * before any state file has been written doesn't throw.
+ *
+ * Match key is the `(paneId, sessionId, requestId)` triple — collision-free
+ * because the Response file is named after its Request and only the daemon
+ * (or hook itself) ever writes the Response.
+ */
+export async function listPendingPermissionRequests(
+  stateDir: string,
+): Promise<PendingPermissionRequest[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+
+  const responseKeys = new Set<string>();
+  for (const name of entries) {
+    const parsed = parsePermissionFilename(name);
+    if (parsed && parsed.kind === 'response') {
+      responseKeys.add(
+        `${parsed.paneId}_${parsed.sessionId}.${parsed.requestId}`,
+      );
+    }
+  }
+
+  const pending: PendingPermissionRequest[] = [];
+  for (const name of entries) {
+    const parsed = parsePermissionFilename(name);
+    if (!parsed || parsed.kind !== 'request') continue;
+    const key = `${parsed.paneId}_${parsed.sessionId}.${parsed.requestId}`;
+    if (responseKeys.has(key)) continue;
+    const body = await readPermissionRequestFile(join(stateDir, name));
+    if (body === null) continue;
+    pending.push({
+      paneId: parsed.paneId,
+      sessionId: parsed.sessionId,
+      requestId: parsed.requestId,
+      toolName: body.toolName,
+      toolInput: body.toolInput,
+      createdAt: body.createdAt,
+    });
+  }
+
+  pending.sort((a, b) => a.createdAt - b.createdAt);
+  return pending;
+}
+
 // ============================================================================
 // IMWork: global IM-mode flag — file exists ⇔ user is in IM mode (manual
 // switch via `@multi-cc-im /start /stop`).

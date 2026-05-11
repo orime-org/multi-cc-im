@@ -25,6 +25,7 @@ import {
   imOriginPath,
   imWorkPath,
   isDaemonAlive,
+  listPendingPermissionRequests,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
   listStopFiles,
@@ -407,6 +408,163 @@ describe('state-files', () => {
       });
       expect(reqs).toHaveLength(1);
       expect(ress).toHaveLength(1);
+    });
+  });
+
+  describe('listPendingPermissionRequests (daemon-wide)', () => {
+    it('returns [] for an empty state dir', async () => {
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toEqual([]);
+    });
+
+    it('returns [] when state dir is missing (ENOENT)', async () => {
+      const got = await listPendingPermissionRequests(
+        join(stateDir, 'does-not-exist'),
+      );
+      expect(got).toEqual([]);
+    });
+
+    it('returns a single pending request with all metadata', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'aabbccdd',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        createdAt: 1700000000000,
+      });
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toEqual([
+        {
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'aabbccdd',
+          toolName: 'Bash',
+          toolInput: { command: 'ls' },
+          createdAt: 1700000000000,
+        },
+      ]);
+    });
+
+    it('excludes requests that already have a matching response (answered)', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'answered1',
+        toolName: 'Bash',
+        toolInput: { command: 'rm' },
+        createdAt: 1,
+      });
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'answered1',
+        decision: 'allow',
+        reason: 'ok',
+      });
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toEqual([]);
+    });
+
+    it('matches response by (paneId, sessionId, requestId) triple — different pane keeps its request pending', async () => {
+      // pane A has Request + Response → answered
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: '5ba51d',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 1,
+      });
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: '5ba51d',
+        decision: 'allow',
+        reason: 'ok',
+      });
+      // pane B has Request only with the same requestId → still pending
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID2,
+        sessionId: SID2,
+        requestId: '5ba51d',
+        toolName: 'Edit',
+        toolInput: {},
+        createdAt: 2,
+      });
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toHaveLength(1);
+      expect(got[0]).toMatchObject({
+        paneId: PANE_ID2,
+        sessionId: SID2,
+        requestId: '5ba51d',
+        toolName: 'Edit',
+      });
+    });
+
+    it('returns multiple pending requests sorted by createdAt ascending', async () => {
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: '07ee4',
+        toolName: 'Edit',
+        toolInput: {},
+        createdAt: 2000,
+      });
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID2,
+        sessionId: SID2,
+        requestId: '01de4',
+        toolName: 'Bash',
+        toolInput: {},
+        createdAt: 1000,
+      });
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toHaveLength(2);
+      expect(got[0]?.requestId).toBe('01de4');
+      expect(got[1]?.requestId).toBe('07ee4');
+    });
+
+    it('ignores unrelated files (Stop, IMWork, IMOrigin, daemon.pid, legacy)', async () => {
+      // unrelated files
+      await writeStopFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        timestamp: '2026-05-11T00-00-00-000Z',
+        last_assistant_message: 'hi',
+      });
+      await writeIMWorkFile(stateDir, { auto: false });
+      await writeIMOriginFile(stateDir, LARK_CTX);
+      await writeDaemonPidFile({
+        stateDir,
+        pid: 12345,
+        startedAt: 'Mon May 11 12:00:00 2026',
+      });
+      // one pending request
+      await writePermissionRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'fee15',
+        toolName: 'WebFetch',
+        toolInput: { url: 'https://example.com' },
+        createdAt: 42,
+      });
+      // Plus a stray file with a numeric-ish but non-matching name
+      await writeFile(join(stateDir, 'random.txt'), 'noise');
+
+      const got = await listPendingPermissionRequests(stateDir);
+      expect(got).toHaveLength(1);
+      expect(got[0]?.requestId).toBe('fee15');
     });
   });
 
