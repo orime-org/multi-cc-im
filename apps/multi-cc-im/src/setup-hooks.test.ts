@@ -84,58 +84,65 @@ describe('runSetupHooksCommand', () => {
       expect(r.settings.hooks).not.toBeNull();
     });
 
-    it('all 2 event keys present, each with exactly one matcher group containing one command handler', async () => {
+    it('all 2 event keys present (Stop: 1 group, PreToolUse: 2 groups)', async () => {
       // Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
       // (DD #61), SessionStart + SessionEnd were dropped — daemon no longer
       // needs WEZTERM_PANE snapshot or cc-death signal from cc hooks.
+      //
+      // Per [DD: AskUserQuestion IM bridge](docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md)
+      // §6 P1: PreToolUse now has 2 matcher groups — one for AskUserQuestion
+      // (long timeout for IM-reply hold), one for everything else (current
+      // 20s). Stop is unchanged (1 group, no tool concept).
       const r = await run();
       const hooks = r.settings.hooks!;
       const expectedEvents = ['PreToolUse', 'Stop'];
       expect(Object.keys(hooks).sort()).toEqual([...expectedEvents].sort());
-      for (const event of expectedEvents) {
-        const groups = hooks[event] as Array<{
-          matcher: string;
-          hooks: Array<{ type: string; command: string }>;
-        }>;
-        expect(groups).toHaveLength(1);
-        expect(groups[0]!.hooks).toHaveLength(1);
-        expect(groups[0]!.hooks[0]!.type).toBe('command');
-        expect(groups[0]!.hooks[0]!.command).toBe(
-          `${repoRoot}/bin/multi-cc-im hook ${event}`,
-        );
+      const stopGroups = hooks.Stop as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+      expect(stopGroups).toHaveLength(1);
+      expect(stopGroups[0]!.hooks[0]!.command).toBe(`${repoRoot}/bin/multi-cc-im hook Stop`);
+      const preGroups = hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+      expect(preGroups).toHaveLength(2);
+      for (const g of preGroups) {
+        expect(g.hooks).toHaveLength(1);
+        expect(g.hooks[0]!.type).toBe('command');
+        expect(g.hooks[0]!.command).toBe(`${repoRoot}/bin/multi-cc-im hook PreToolUse`);
       }
     });
 
-    it('matcher per event: PreToolUse uses "*", Stop uses empty matcher', async () => {
-      // PreToolUse (IM permission gate per DD #51/#52) carries a tool concept,
-      // so it uses `matcher: "*"` (match all tools). Stop has no tool concept
-      // and uses `matcher: ""` (matches every invocation).
+    it('PreToolUse group 1: matcher="AskUserQuestion", timeout=300 (5 min for IM-reply hold)', async () => {
+      // AskUserQuestion holds the hook subprocess polling for an IM-side
+      // natural-language reply (DD §6 P1). 5 min covers user briefly away
+      // from phone. Literal string matcher per cc docs (letters/digits/_/|
+      // only → literal exact match).
       const r = await run();
-      const hooks = r.settings.hooks as Record<
-        string,
-        Array<{ matcher: string }>
-      >;
-      const expectedMatcher: Record<string, string> = {
-        PreToolUse: '*',
-        Stop: '',
-      };
-      for (const [event, matcher] of Object.entries(expectedMatcher)) {
-        expect(hooks[event]![0]!.matcher).toBe(matcher);
-      }
+      const groups = r.settings.hooks!.PreToolUse as Array<{
+        matcher: string;
+        hooks: Array<{ timeout?: number }>;
+      }>;
+      const askGroup = groups.find((g) => g.matcher === 'AskUserQuestion');
+      expect(askGroup).toBeDefined();
+      expect(askGroup!.hooks[0]!.timeout).toBe(300);
     });
 
-    it('PreToolUse hook entry includes timeout: 20 (IM permission gate RTT budget + daemon retry margin)', async () => {
-      // Per PR-G race fix: 20s = 10s IM-reply window for user
-      // (PERMISSION_TIMEOUT_MS) + 10s margin for hook stdout write + daemon
-      // apiPostFetch transient retry budget. cc-side timeout > hook internal
-      // poll deadline is mandatory (CLAUDE.md "Hook 内部 timeout < cc-side
-      // hook timeout") to avoid SIGKILL-vs-stdout race.
+    it('PreToolUse group 2: matcher="^(?!AskUserQuestion$).+$" (negative lookahead), timeout=20', async () => {
+      // Disjoint from AskUserQuestion entry — cc fires "all matching hooks",
+      // so a wildcard `*` here would double-fire on AskUserQuestion. Negative
+      // lookahead keeps the entry future-proof (any new tool except
+      // AskUserQuestion auto-covered).
       const r = await run();
-      const hooks = r.settings.hooks as Record<
-        string,
-        Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
-      >;
-      expect(hooks.PreToolUse![0]!.hooks[0]!.timeout).toBe(20);
+      const groups = r.settings.hooks!.PreToolUse as Array<{
+        matcher: string;
+        hooks: Array<{ timeout?: number }>;
+      }>;
+      const otherGroup = groups.find((g) => g.matcher === '^(?!AskUserQuestion$).+$');
+      expect(otherGroup).toBeDefined();
+      expect(otherGroup!.hooks[0]!.timeout).toBe(20);
+    });
+
+    it('Stop uses empty matcher (no tool concept)', async () => {
+      const r = await run();
+      const groups = r.settings.hooks!.Stop as Array<{ matcher: string }>;
+      expect(groups[0]!.matcher).toBe('');
     });
 
     it('Stop hook entry does NOT include timeout field', async () => {
@@ -178,10 +185,13 @@ describe('runSetupHooksCommand', () => {
         matcher: string;
         hooks: Array<{ type: string; command: string; timeout?: number }>;
       }>;
-      expect(groups).toHaveLength(1);
-      expect(groups[0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
-      );
+      // Per DD AskUserQuestion §6 P1: 2 disjoint matcher groups now.
+      expect(groups).toHaveLength(2);
+      for (const g of groups) {
+        expect(g.hooks[0]!.command).toBe(
+          `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
+        );
+      }
     });
   });
 
@@ -531,10 +541,14 @@ describe('runSetupHooksCommand', () => {
         string,
         Array<{ matcher: string; hooks: Array<{ command: string }> }>
       >;
-      expect(hooks.PreToolUse).toHaveLength(1);
-      expect(hooks.PreToolUse![0]!.hooks[0]!.command).toBe(
-        `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
-      );
+      // Stale single PreToolUse group replaced with fresh 2 disjoint groups
+      // (AskUserQuestion + negative-lookahead per DD AskUserQuestion §6 P1).
+      expect(hooks.PreToolUse).toHaveLength(2);
+      for (const g of hooks.PreToolUse!) {
+        expect(g.hooks[0]!.command).toBe(
+          `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
+        );
+      }
       expect(hooks.Stop).toHaveLength(1);
       expect(hooks.Stop![0]!.hooks[0]!.command).toBe(
         `${repoRoot}/bin/multi-cc-im hook Stop`,
