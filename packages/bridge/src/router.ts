@@ -1208,18 +1208,25 @@ function normalizeForSubstring(s: string): string {
 }
 
 /**
- * Deterministic substring match: returns the unique tab whose
+ * Deterministic substring match: returns the most-specific tab whose
  * (normalized) name appears in the (normalized) message text, or
- * `null` if zero / multiple tabs match.
+ * `null` if zero or truly ambiguous (non-nested) multi-match.
  *
  * Used as a fallback when the AI router returns `target: null` —
  * recovers cases where the AI bailed on topic-word mentions
  * (e.g. message "multi-cc-im 合并了" + tab "multi-cc-im"). Per user
  * smoke 2026-05-11.
  *
- * Multi-match ambiguity is deliberately NOT resolved here — if two
- * tab names both appear in the message, deferring to the user's
- * `#<tab>` picker is safer than guessing.
+ * **Nested multi-match tie-break** (2026-05-12 fix): when a short tab
+ * name is itself a substring of a longer matching tab name (e.g.
+ * `breatic` is nested in `breatic_frontend`, both appear in
+ * normalized "你跟 breatic frontend 说..."), the longer / more-specific
+ * tab wins. Without this tie-break, multi-match would bail to null
+ * even when the user clearly addressed the more specific tab.
+ *
+ * Truly ambiguous multi-match (matches NOT in a nested-substring
+ * relation — e.g. `frontend` + `backend` both literal) still returns
+ * null so the user picks explicitly via `#<tab>`.
  */
 function findTabBySubstring(
   message: string,
@@ -1232,5 +1239,25 @@ function findTabBySubstring(
     if (normTab.length < SUBSTRING_FALLBACK_MIN_LEN) continue;
     if (normMsg.includes(normTab)) matches.push(session);
   }
-  return matches.length === 1 ? matches[0]! : null;
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0]!;
+
+  // Multi-match — resolve via "longest contains all others (normalized)"
+  // nested-substring rule. Sort by normalized length descending so the
+  // longest is at index 0; then verify every other match's normalized
+  // name is a substring of the longest's normalized name. If so, the
+  // longest is unambiguously the most specific. Otherwise truly
+  // ambiguous → return null.
+  const sorted = [...matches].sort(
+    (a, b) =>
+      normalizeForSubstring(b.tabTitle).length -
+      normalizeForSubstring(a.tabTitle).length,
+  );
+  const longest = sorted[0]!;
+  const normLongest = normalizeForSubstring(longest.tabTitle);
+  for (let i = 1; i < sorted.length; i++) {
+    const normOther = normalizeForSubstring(sorted[i]!.tabTitle);
+    if (!normLongest.includes(normOther)) return null;
+  }
+  return longest;
 }

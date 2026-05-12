@@ -1037,6 +1037,40 @@ describe('router — AI-routed echo format', () => {
     expect(result.echo).toContain('无法识别目标');
   });
 
+  it('substring fallback: nested multi-match picks the most specific tab (longer wins) — real case 2026-05-12 breatic_frontend', async () => {
+    // Real smoke: user said "你跟 breatic frontend 说 ...", tabs included
+    // both `breatic` and `breatic_frontend`. Old fallback bailed because
+    // both normalized substrings appeared in the message; new fix picks
+    // the most specific tab when the shorter is nested inside the longer.
+    const BREATIC = s('breatic', 10);
+    const BREATIC_FRONTEND = s('breatic_frontend', 20);
+    const BREATIC_BUGS = s('breatic_bugs', 30);
+    const BREATIC_TEST = s('breatic_test', 40);
+    const state = memState(null);
+    const result = await route(incoming('你跟 breatic frontend 说 71 合并了，继续'), {
+      registry: fixedRegistry([BREATIC, BREATIC_FRONTEND, BREATIC_BUGS, BREATIC_TEST]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: 'ambiguous', permissionResponse: null }),
+    });
+    expect(result.dispatches.length).toBe(1);
+    expect(result.dispatches[0]!.session.tabTitle).toBe('breatic_frontend');
+  });
+
+  it('substring fallback: truly ambiguous (non-nested) multi-match still returns null', async () => {
+    // `frontend` and `api` are NOT in a nested relation; both literally
+    // appear in the message → bail (user picks explicitly).
+    const state = memState(null);
+    const result = await route(incoming('frontend 和 api 都看看'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state,
+      imWorkOn: true,
+      aiRouter: async () => ({ target: null, intent: null, reason: '模糊', permissionResponse: null }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.echo).toContain('无法识别目标');
+  });
+
   it('substring fallback: skips tab names shorter than 3 chars (defensive — minimizes false positives)', async () => {
     const state = memState(null);
     const SHORT = s('ai', 60);  // 2 chars — would match "the AI is broken" etc.
