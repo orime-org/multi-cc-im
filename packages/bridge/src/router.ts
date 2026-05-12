@@ -768,7 +768,7 @@ function handleBridgeCommand(
           '  - IM 路由只用 tab title (cc /rename 设的)',
           '  - 没 /rename 的 cc 只能在 cc TUI 里用，IM 寻址不到',
           '  - 建议 tab title 用字母/单词，**不要用纯数字** (易混淆)',
-          '  - 直接说人话（无 `#`）会让 cc 帮你分诊到最匹配的 tab；要精确点名才用 `#<tab>`',
+          '  - 直接输入想说的话告诉 daemon 想让哪个 cc 干活（不带 `#`），daemon 会自动分诊到最匹配的 tab；要精确点名才用 `#<tab>`',
           '  - cc 回复转发到 IM (Stop hook)',
           autoTipLine,
           '  - ask 模式下也能用自然语言回审批：「<tab> 同意」/「<tab> 拒绝」/「deny the bash one」之类（AI 找匹配的 pending）',

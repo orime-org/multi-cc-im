@@ -105,7 +105,7 @@ content: 写个登录页
   #frontend /2   = 拒绝
 ```
 
-也可以直接说人话，cc 会自己分诊到哪个 pending：
+也可以直接输入想说的话，cc 会自己分诊到哪个 pending：
 
 ```
 multi-cc-im 那个 rm 同意
