@@ -1,8 +1,16 @@
-import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
 import type {
+  AskUserQuestionToolInput,
+  IncomingMessage,
+  PaneId,
+} from '@multi-cc-im/shared';
+import { AskUserQuestionToolInputSchema } from '@multi-cc-im/shared';
+import type {
+  AIAskUserQuestionResult,
   AIPermissionResponse,
   AIRoutingOpts,
   AIRoutingResult,
+  AskUserQuestionViaAIOpts,
+  PendingAskUserQuestion,
   PendingRequestForPrompt,
 } from './ai-router.js';
 import { matchSession, type SessionInfo } from './matcher.js';
@@ -109,6 +117,22 @@ export interface RouterOpts {
    * existing tests that don't care about the permission flow.
    */
   listPendingPermissionRequests?: () => Promise<readonly RouterPendingRequest[]>;
+  /**
+   * AskUserQuestion-specific AI router callback. Invoked when at least one
+   * pending PreToolUse has `toolName === 'AskUserQuestion'` — the regular
+   * routing / force-permission prompts don't handle AUQ (D5-D answer-
+   * inject channel uses a separate `{questions, answers}` schema).
+   *
+   * Bridge orchestrator wires this to `routeAskUserQuestionViaAI` from
+   * the ai-router module. Per [DD §9.6 R7](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#96-implementation-plan-single-pr-after-this-dd-revision-lands).
+   *
+   * **When omitted**: AUQ branch falls back to writing an empty-answers
+   * PermissionResponse so cc doesn't stall (defensive — tests without an
+   * AUQ router still cover the orchestrator's response-write path).
+   */
+  aiAskUserQuestionRouter?: (
+    opts: import('./ai-router.js').AskUserQuestionViaAIOpts,
+  ) => Promise<import('./ai-router.js').AIAskUserQuestionResult | null>;
 }
 
 export interface RouterDispatch {
@@ -136,6 +160,15 @@ export interface RouterPermissionResponse {
   session: SessionInfo;
   decision: 'allow' | 'deny';
   reason?: string;
+  /**
+   * Optional `{questions, answers}` payload for the AskUserQuestion
+   * answer-inject path (DD §9.3). Orchestrator passes through to
+   * `writePermissionResponseFile` so cc's PreToolUse hook output
+   * carries `updatedInput` and treats the tool as completed
+   * successfully with the user's answers. Undefined for all other
+   * paths (generic allow/deny, AI-routed allow with just a reason).
+   */
+  updatedInput?: Record<string, unknown>;
 }
 
 export interface RouterResult {
@@ -267,14 +300,18 @@ export async function route(
       // Per [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md):
       // when an aiRouter callback is wired (production default), all plain
       // messages go through it. Without an aiRouter (tests / degraded
-      // fallback), use the legacy sticky-current logic.
-      return opts.aiRouter
+      // fallback), use the legacy sticky-current logic. The AUQ-specific
+      // branch (DD §9 R7) is reached via handlePlainWithAI as well, so we
+      // also route through it whenever `aiAskUserQuestionRouter` is set
+      // (e.g. tests that exercise only the AUQ path without the routing AI).
+      return opts.aiRouter || opts.aiAskUserQuestionRouter
         ? handlePlainWithAI(
             parsed.body,
             sessions,
             opts.state,
             opts.aiRouter,
             opts.listPendingPermissionRequests,
+            opts.aiAskUserQuestionRouter,
           )
         : handlePlain(parsed.body, sessions, opts.state);
 
@@ -373,9 +410,14 @@ async function handlePlainWithAI(
   body: string,
   sessions: readonly SessionInfo[],
   state: RouterState,
-  aiRouter: (opts: AIRoutingOpts) => Promise<AIRoutingResult>,
+  aiRouter:
+    | ((opts: AIRoutingOpts) => Promise<AIRoutingResult>)
+    | undefined,
   listPendingPermissionRequests:
     | (() => Promise<readonly RouterPendingRequest[]>)
+    | undefined,
+  aiAskUserQuestionRouter:
+    | ((opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
     | undefined,
 ): Promise<RouterResult> {
   const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
@@ -407,19 +449,51 @@ async function handlePlainWithAI(
         )
       : undefined;
 
-  // Force-permission mode (v1.10, 2026-05-12): when ANY pending PreToolUse
-  // is on disk, cc's protocol won't accept a new task prompt — routing is
-  // moot. Pass forcePermissionMode=true to ai-router so it skips routing
-  // rules entirely; router below ignores top-level target/intent in this
-  // mode (uses ONLY permissionResponse for dispatch).
+  // Partition AUQ pendings out — they flow through a separate AI path
+  // (`aiAskUserQuestionRouter`) with a structured per-question answer
+  // schema. Per DD §9.6 R7: when an AUQ is pending, the user's plain
+  // message MUST be an AUQ answer (cc's protocol doesn't accept new
+  // task prompts while AUQ is in-flight); we never mix AUQ pendings
+  // into the routing / force-permission prompt body.
+  const auqPendings: readonly PendingAskUserQuestion[] = pendingForPrompt
+    ? mapPendingToAskUserQuestion(pendingForPrompt)
+    : [];
+  const regularPendingForPrompt: readonly PendingRequestForPrompt[] | undefined =
+    pendingForPrompt === undefined
+      ? undefined
+      : pendingForPrompt.filter((p) => p.toolName !== 'AskUserQuestion');
+
+  if (auqPendings.length > 0) {
+    return handleAskUserQuestionReply(
+      body,
+      auqPendings,
+      namedSessions,
+      aiAskUserQuestionRouter,
+    );
+  }
+
+  // No AUQ pending → need the regular aiRouter to handle routing /
+  // force-permission. If only the AUQ router was wired, fall back to
+  // legacy sticky-current routing for non-AUQ pendings.
+  if (!aiRouter) {
+    return handlePlain(body, sessions, state);
+  }
+
+  // Force-permission mode (v1.10, 2026-05-12): when ANY regular tool
+  // pending is on disk, cc's protocol won't accept a new task prompt —
+  // routing is moot. Pass forcePermissionMode=true to ai-router so it
+  // skips routing rules entirely; router below ignores top-level
+  // target/intent in this mode (uses ONLY permissionResponse for
+  // dispatch). AUQ pendings already partitioned above never reach here.
   const isForcePermissionMode =
-    pendingForPrompt !== undefined && pendingForPrompt.length > 0;
+    regularPendingForPrompt !== undefined &&
+    regularPendingForPrompt.length > 0;
 
   const result = await aiRouter({
     userMsg: body,
     tabs: namedSessions.map((s) => s.tabTitle),
     currentTab,
-    pendingRequests: pendingForPrompt,
+    pendingRequests: regularPendingForPrompt,
     forcePermissionMode: isForcePermissionMode,
   });
 
@@ -557,6 +631,212 @@ function mapPendingToPrompt(
     });
   }
   return out;
+}
+
+/**
+ * Extract every AskUserQuestion pending and parse its `tool_input`
+ * against the official schema. Malformed entries (missing/invalid
+ * `questions[]`) are silently dropped — the AUQ path needs a valid
+ * `questions[]` to build the `answers` map; malformed pendings fall
+ * through to the daemon-side reaper.
+ */
+function mapPendingToAskUserQuestion(
+  pendings: readonly PendingRequestForPrompt[],
+): readonly PendingAskUserQuestion[] {
+  const out: PendingAskUserQuestion[] = [];
+  for (const p of pendings) {
+    if (p.toolName !== 'AskUserQuestion') continue;
+    const parsed = AskUserQuestionToolInputSchema.safeParse(p.toolInput);
+    if (!parsed.success) continue;
+    out.push({ tabName: p.tabName, questions: parsed.data.questions });
+  }
+  return out;
+}
+
+/**
+ * AUQ branch of the plain-message path (DD §9 R7). Dispatches to the
+ * AUQ-specific AI router (`aiAskUserQuestionRouter`), assembles the
+ * `{questions, answers}` map (looking up `options[i-1].label` for
+ * option-kind entries), emits a `RouterPermissionResponse` with
+ * `decision:'allow'` + `updatedInput` so cc treats the tool as
+ * completed successfully with the user's answers.
+ *
+ * Failure modes:
+ *   - No AI router wired → fallback: emit empty-answers updatedInput
+ *     for the first pending so cc doesn't stall (defensive — primarily
+ *     for tests that exercise the orchestrator write path without a
+ *     real AI subprocess).
+ *   - AI returned null (timeout / parse error) → same fallback.
+ *   - AI's matched `target` doesn't exist among live tabs → echo
+ *     error, do NOT emit permissionResponse (let user retry).
+ */
+async function handleAskUserQuestionReply(
+  body: string,
+  pendings: readonly PendingAskUserQuestion[],
+  namedSessions: readonly SessionInfo[],
+  aiAskUserQuestionRouter:
+    | ((opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
+    | undefined,
+): Promise<RouterResult> {
+  // No AI wire OR AI returned null → fallback to empty answers on the
+  // first pending so cc proceeds (model sees empty answers and decides).
+  const fallback = (
+    matched: PendingAskUserQuestion,
+    reason: string,
+  ): RouterResult => {
+    const target = namedSessions.find((s) => s.tabTitle === matched.tabName);
+    if (!target) {
+      return {
+        echo: `❌ AUQ tab \`${matched.tabName}\` 不存在；请用 cc TUI 回答`,
+        dispatches: [],
+      };
+    }
+    const answers: Record<string, string> = {};
+    for (const q of matched.questions) answers[q.question] = '';
+    return {
+      echo:
+        `target: ${displayName(target)}\n` +
+        `你说: ${truncate(body, ECHO_EXCERPT_MAX)}\n` +
+        `⚠️ AI 分诊失败（${reason}），已注入空答案让 cc 决定`,
+      dispatches: [],
+      permissionResponse: {
+        session: target,
+        decision: 'allow',
+        updatedInput: { questions: matched.questions, answers },
+      },
+    };
+  };
+
+  if (!aiAskUserQuestionRouter) {
+    return fallback(pendings[0]!, 'no AI router wired');
+  }
+
+  const aiResult = await aiAskUserQuestionRouter({ userMsg: body, pendings });
+  if (aiResult === null) {
+    return fallback(pendings[0]!, 'AI returned null');
+  }
+
+  // Match AI's `target` against the pending list. If mismatch, pick the
+  // first listed pending (user can re-issue if wrong).
+  const matched =
+    pendings.find((p) => p.tabName === aiResult.target) ?? pendings[0]!;
+  const target = namedSessions.find((s) => s.tabTitle === matched.tabName);
+  if (!target) {
+    return {
+      echo: `❌ AUQ tab \`${matched.tabName}\` 不存在；请用 cc TUI 回答`,
+      dispatches: [],
+      aiTrace: { target: aiResult.target, intent: null, reason: aiResult.reason },
+    };
+  }
+
+  const { answers, echoLines } = buildAnswersAndEcho(
+    matched.questions,
+    aiResult.answers,
+  );
+
+  return {
+    echo:
+      `target: ${displayName(target)}\n` +
+      `你说: ${truncate(body, ECHO_EXCERPT_MAX)}\n` +
+      `${echoLines.join('\n')}`,
+    dispatches: [],
+    permissionResponse: {
+      session: target,
+      decision: 'allow',
+      updatedInput: { questions: matched.questions, answers },
+    },
+    aiTrace: { target: aiResult.target, intent: null, reason: aiResult.reason },
+  };
+}
+
+/**
+ * Resolve the AI's per-question `answers` entries into the
+ * `{question.question → label/text}` map cc expects on
+ * `updatedInput.answers`, and a parallel array of IM echo lines that
+ * surface the user's answer in option-vs-text form.
+ *
+ * Option-kind entries are mapped through `options[optionIndex-1].label`
+ * — daemon-side label lookup means the AI doesn't have to re-emit the
+ * label string (less drift). Multi-select option arrays are joined with
+ * `, ` for both the cc-side answer value and the IM echo line.
+ *
+ * Any question without a matching answer entry defaults to an empty
+ * string so cc receives a complete `answers` map (one entry per
+ * question) per the agent-sdk docs' contract.
+ */
+function buildAnswersAndEcho(
+  questions: readonly AskUserQuestionToolInput['questions'][number][],
+  aiAnswers: AIAskUserQuestionResult['answers'],
+): {
+  answers: Record<string, string>;
+  echoLines: string[];
+} {
+  const answers: Record<string, string> = {};
+  const echoLines: string[] = [];
+  // Track which question indices have been answered so we can default
+  // the unanswered ones to empty.
+  const seen = new Set<number>();
+
+  for (const a of aiAnswers) {
+    const q = questions[a.questionIndex];
+    if (!q) continue;
+    seen.add(a.questionIndex);
+    const numberedHeader = `Q${a.questionIndex + 1}`;
+    if (a.kind === 'option') {
+      const indices = Array.isArray(a.optionIndex) ? a.optionIndex : [a.optionIndex];
+      const labels = indices
+        .map((i) => q.options[i - 1]?.label)
+        .filter((l): l is string => typeof l === 'string' && l.length > 0);
+      const valueStr = labels.join(', ');
+      answers[q.question] = valueStr;
+      const numberedOptions = indices
+        .map((i, k) => {
+          const label = labels[k];
+          return label !== undefined ? `${optionNumberGlyph(i)} ${label}` : '';
+        })
+        .filter((s) => s.length > 0)
+        .join(' / ');
+      echoLines.push(`${numberedHeader} 你答 ${numberedOptions}`);
+    } else {
+      answers[q.question] = a.text;
+      echoLines.push(
+        `${numberedHeader} 自由回答: ${truncate(a.text, ECHO_EXCERPT_MAX)}`,
+      );
+    }
+  }
+
+  // Fill missing questions with empty answers (cc requires one entry per
+  // question per agent-sdk docs; missing key = malformed tool result).
+  for (let i = 0; i < questions.length; i++) {
+    if (seen.has(i)) continue;
+    const q = questions[i]!;
+    answers[q.question] = '';
+    echoLines.push(`Q${i + 1} (no answer)`);
+  }
+
+  return { answers, echoLines };
+}
+
+/**
+ * Decorate a small 1-based number with circled-digit glyph (①②③④...)
+ * for the IM echo. Falls back to `[N]` notation for N > 10 (rare —
+ * AUQ caps at 4 options per question per official docs).
+ */
+function optionNumberGlyph(n: number): string {
+  const circled = [
+    '',
+    '①',
+    '②',
+    '③',
+    '④',
+    '⑤',
+    '⑥',
+    '⑦',
+    '⑧',
+    '⑨',
+    '⑩',
+  ];
+  return n >= 1 && n < circled.length ? circled[n]! : `[${n}]`;
 }
 
 /**

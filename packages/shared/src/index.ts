@@ -1,6 +1,21 @@
 // Common types + zod schemas
 export * from './types.js';
 
+// AskUserQuestion tool I/O schemas (cc's built-in clarifying-question tool)
+export {
+  AskUserQuestionToolInputSchema,
+  AskUserQuestionAnswerSchema,
+  AskUserQuestionAIOutputSchema,
+} from './ask-user-question.js';
+export type {
+  AskUserQuestionToolInput,
+  AskUserQuestionItem,
+  AskUserQuestionOption,
+  AskUserQuestionAnswer,
+  AskUserQuestionAnswerEntry,
+  AskUserQuestionAIOutput,
+} from './ask-user-question.js';
+
 // IM adapter (re-exported with category prefixes for flat top-level API)
 export type {
   Adapter as IMAdapter,

@@ -69,6 +69,7 @@ export {
   deleteDaemonPidFile,
   captureProcessLstart,
   isDaemonAlive,
+  PermissionResponseFileSchema,
 } from './state-files.js';
 export type {
   PerPaneIO,

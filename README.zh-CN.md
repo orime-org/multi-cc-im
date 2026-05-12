@@ -141,9 +141,9 @@ Pick a database
 - 自然语言 —— `我选第二个` / `the mongo one` / `选第 2 个加个 google login`
 - 不匹配任何选项的自由文本 —— 你的回复原文直接传给 cc
 
-daemon 把你的回复交给 cc，cc 接着干。cc TUI widget 不会卡着 —— 5 分钟内 IM 没回复，widget fallback 回 TUI 你可以本地点选。
+daemon 把你的回复作为正常的 `AskUserQuestion` 工具结果交给 cc（走 cc 官方 agent-sdk 通道：`permissionDecision: 'allow'` + `updatedInput: {questions, answers}`），cc 把工具记成正常 succeeded with answers。2 分钟内 IM 没回复，hook 自己 inject 空字符 answers 让 cc 不卡住自己决定下一步；超时后才回的 IM 会收到「⏱ cc 已超时，本轮不再等待你的回复」提示。
 
-**多问题** AskUserQuestion（少见 —— cc 一次问 2+ 个问题）：IM 只显示第 1 题；剩下的去 cc TUI 答。
+**多问题** AskUserQuestion（少见 —— cc 一次问 2+ 个问题）：每个 question 在注入的 `answers` map 里都有对应 entry。
 
 ## cc 回复 → IM 显示
 

@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import {
+  AskUserQuestionAIOutputSchema,
+  type AskUserQuestionAnswerEntry,
+  type AskUserQuestionItem,
+} from '@multi-cc-im/shared';
 
 /**
  * AI-routed IM dispatch — daemon spawns an independent `claude --print`
@@ -404,21 +409,14 @@ function renderPendingBlock(
 ): string {
   if (!pendingRequests || pendingRequests.length === 0) return '';
 
+  // Router filters AskUserQuestion pendings out of this list before
+  // dispatching to the routing / force-permission prompt — AUQ has a
+  // separate AI path (`renderAskUserQuestionPrompt`) with a structured
+  // answers schema. Everything reaching here is a regular tool (Bash /
+  // Edit / WebFetch / etc.) permission request.
   const bullets = pendingRequests
-    .map((p) =>
-      p.toolName === 'AskUserQuestion'
-        ? formatAskUserQuestionPendingBullet(p)
-        : formatRegularPendingBullet(p),
-    )
+    .map((p) => formatRegularPendingBullet(p))
     .join('\n\n');
-
-  // The "SPECIAL RULE for AskUserQuestion" sub-section only fires when at
-  // least one AskUserQuestion entry is present — keeps the prompt lean
-  // for the common case (Bash/Edit-only pendings) and avoids priming AI
-  // for AskUserQuestion semantics that don't apply.
-  const hasAskUserQuestion = pendingRequests.some(
-    (p) => p.toolName === 'AskUserQuestion',
-  );
 
   return `
 ==================================================================
@@ -457,47 +455,8 @@ ASYMMETRIC TRUST RULE (D5-3) — applies to "allow" only:
 
 Multiple pending requests + ambiguous reply → degrade to deny on
 the best-guess target (user can re-issue).
-${hasAskUserQuestion ? ASK_USER_QUESTION_RULES : ''}`;
-}
-
-/**
- * Special prompt rules for AskUserQuestion entries — cc widget questions
- * use the deny+reason channel as the answer transport, NOT as an
- * allow/deny gate. Per [DD AskUserQuestion IM bridge §6 P4](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md).
- *
- * Only appended to the prompt when at least one AskUserQuestion entry
- * is in \`pendingRequests\` — keeps the prompt lean otherwise.
- */
-const ASK_USER_QUESTION_RULES = `
-SPECIAL RULE for AskUserQuestion (widget question) entries:
-
-  These cc widget questions are NOT permission gates. The user's IM
-  reply names one of the listed options (by number, by exact label,
-  by paraphrase) OR provides free text. The output for an
-  AskUserQuestion entry MUST be:
-
-    permissionResponse: {
-      target: "<tab name from the AskUserQuestion entry>",
-      decision: "deny",          ← ALWAYS deny for AskUserQuestion
-      reason: "<picked option's EXACT label OR user's verbatim free text>"
-    }
-
-  - If the user matched one of the listed options: reason = that
-    option's EXACT label string from the list (clean — cc parses
-    cleanly from the transcript). NOT the description, NOT a
-    paraphrase — the literal label.
-  - If the user's reply doesn't clearly match any option: reason =
-    the user's verbatim message (cleaned of routing prefix like
-    "#<tab>"). Pass through unchanged so cc gets the raw text.
-  - decision MUST always be "deny" for AskUserQuestion entries. The
-    cc-side hook interprets deny+reason as the user's answer;
-    "allow" would let cc proceed with the tool with no answer in
-    transcript (broken).
-
-  The ASYMMETRIC TRUST RULE (D5-3) above applies ONLY to regular tool
-  permission entries — AskUserQuestion is exempt. There is no "allow"
-  for AskUserQuestion that could be downgraded, so the rule is moot.
 `;
+}
 
 /**
  * Render a regular tool permission pending entry — one line, compact.
@@ -506,60 +465,6 @@ SPECIAL RULE for AskUserQuestion (widget question) entries:
 function formatRegularPendingBullet(p: PendingRequestForPrompt): string {
   const inputStr = formatToolInputForPrompt(p.toolInput);
   return `  - tab=${p.tabName}  tool=${p.toolName}  input=${inputStr}`;
-}
-
-/**
- * Render an AskUserQuestion pending entry — multi-line with the question
- * text + each option's label + (optional) description. Per [DD AskUserQuestion
- * IM bridge §6 P4](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md):
- * AI needs to see what the options are to map user's reply to one.
- *
- * Single-question rendering: first \`questions[0]\` only. Multi-question is
- * rare; if questions.length > 1 the bullet emits a note pointing the user
- * to cc TUI for the rest. Mirrors orchestrator P3 IM-side behavior.
- *
- * Defensive on shape mismatch (missing/wrong \`questions\`): returns a
- * minimal bullet with a "malformed" placeholder so AI knows there's a
- * pending entry it can't fully parse but doesn't crash the prompt
- * rendering.
- */
-function formatAskUserQuestionPendingBullet(
-  p: PendingRequestForPrompt,
-): string {
-  const questionsRaw = p.toolInput.questions;
-  if (!Array.isArray(questionsRaw) || questionsRaw.length === 0) {
-    return `  - tab=${p.tabName}  tool=AskUserQuestion  (malformed — no questions array; bail to cc TUI)`;
-  }
-  const first = questionsRaw[0] as {
-    question?: unknown;
-    options?: unknown;
-  };
-  const questionText =
-    typeof first.question === 'string'
-      ? first.question
-      : '<question text missing>';
-  const options = Array.isArray(first.options) ? first.options : [];
-
-  const lines = [
-    `  - tab=${p.tabName}  tool=AskUserQuestion`,
-    `    question: "${questionText}"`,
-    `    options:`,
-  ];
-  options.forEach((opt, i) => {
-    const o = opt as { label?: unknown; description?: unknown };
-    const label = typeof o.label === 'string' ? o.label : `option ${i + 1}`;
-    const desc =
-      typeof o.description === 'string' && o.description.length > 0
-        ? ` — ${o.description}`
-        : '';
-    lines.push(`      ${i + 1}. ${label}${desc}`);
-  });
-  if (questionsRaw.length > 1) {
-    lines.push(
-      `    (cc asked ${questionsRaw.length} questions; only #1 shown — additional questions answered in cc TUI)`,
-    );
-  }
-  return lines.join('\n');
 }
 
 /**
@@ -826,4 +731,251 @@ export function explainExecError(err: unknown, timeoutMs: number): string {
   const codeRepr = e.code != null ? String(e.code) : 'unknown';
   const sigSuffix = e.signal ? ` signal=${e.signal}` : '';
   return `cc exec failed: ${codeRepr}${sigSuffix}${stderrSuffix}`;
+}
+
+// ============================================================================
+// AskUserQuestion AI path (DD §9 — D5-D allow + updatedInput.answers)
+//
+// AUQ has its own AI prompt + parser independent of the routing /
+// force-permission path. Router dispatches to it when pending contains
+// any AskUserQuestion entry — output is `AskUserQuestionAnswerSchema`
+// (per-question option index or free text), which the daemon then
+// resolves to a `{questions, answers}` map via `toolInput.questions[i]
+// .options[j-1].label`.
+// ============================================================================
+
+/**
+ * One pending AskUserQuestion visible to the AI router. Caller (router)
+ * resolves `paneId → tab title` and passes the full `questions[]` array
+ * verbatim from the PreToolUse Request file (so the AI sees the same
+ * question text + option labels the user saw in IM).
+ */
+export interface PendingAskUserQuestion {
+  /** Tab title — used both for prompt clarity and the AI's `target` output. */
+  tabName: string;
+  /** Verbatim `tool_input.questions[]` (validated by AskUserQuestionToolInputSchema upstream). */
+  questions: readonly AskUserQuestionItem[];
+}
+
+/**
+ * Resolved AI answer for one AUQ request. The router maps `answers` into
+ * cc's `updatedInput.answers` record (key = `questions[i].question`, value
+ * = option label string OR free text OR joined multi-select labels).
+ */
+export interface AIAskUserQuestionResult {
+  /** Matched tab (must be one of the input `pendings[].tabName`). */
+  target: string;
+  /** Short trace explanation (≤15 words) — daemon log + IM echo. */
+  reason: string | null;
+  /** Per-question answer entries (validated by AskUserQuestionAnswerSchema). */
+  answers: readonly AskUserQuestionAnswerEntry[];
+}
+
+/**
+ * Render the AskUserQuestion-only AI prompt. AUQ has a different output
+ * shape than the routing / force-permission prompts (structured per-
+ * question answers, no allow/deny), so it lives in its own prompt path
+ * to keep the model's job focused.
+ *
+ * Per [DD §9.3](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#93-d5-d-protocol-shape):
+ * each `answers[]` entry is either
+ *   `{questionIndex, kind:'option', optionIndex}` (1-based, single or array)
+ * or
+ *   `{questionIndex, kind:'text', text}` (free-text or "Other"-style reply).
+ *
+ * The AI is told to prefer `option` when the user's IM message clearly
+ * matches one of the listed labels (by number, exact label, paraphrase);
+ * fall back to `text` for free-form / "your thoughts" answers.
+ */
+export function renderAskUserQuestionPrompt(opts: {
+  userMsg: string;
+  pendings: readonly PendingAskUserQuestion[];
+}): string {
+  const pendingBlock = renderAskUserQuestionPendings(opts.pendings);
+
+  return `You are the IM AskUserQuestion-answer extractor for multi-cc-im.
+
+==================================================================
+ASK-USER-QUESTION MODE
+==================================================================
+
+cc has called the built-in \`AskUserQuestion\` tool — it asked the user
+one or more multiple-choice questions and is waiting for the answer to
+be injected back via the hook's \`updatedInput.answers\` field. Your
+only job is to extract the user's answer(s) from the IM message below
+in a structured form the daemon can convert into that injection.
+
+The user's current IM message:
+"${opts.userMsg}"
+${pendingBlock}
+==================================================================
+ANSWER EXTRACTION RULES
+==================================================================
+
+For EACH question listed under the matched pending, produce one entry
+in the OUTPUT \`answers\` array:
+
+  - If the user's message clearly picks one of the listed options (by
+    number, exact label match, or a clear paraphrase) → emit
+    \`{questionIndex, kind:"option", optionIndex}\` where \`optionIndex\`
+    is 1-based. For multiSelect=true questions when the user picks
+    multiple, \`optionIndex\` is an array (e.g. \`[1, 3]\`).
+  - If the user wrote free text that doesn't map to any listed option
+    (or chose the "your thoughts" / "Other" trailing option) → emit
+    \`{questionIndex, kind:"text", text}\` where \`text\` is the user's
+    verbatim message (cleaned of any \`#<tab>\` prefix, but otherwise
+    unchanged — pass through, do NOT paraphrase).
+
+Constraints:
+
+  - \`questionIndex\` is 0-based and refers to the question's position in
+    the matched pending's listed questions.
+  - You must produce one entry per question listed (one entry per
+    \`questions[i]\`).
+  - If multiple AUQ pendings are listed (rare — multiple cc tabs each
+    asked at the same time), set \`target\` to the tab whose question(s)
+    the user's message most plausibly answers. If truly ambiguous,
+    pick the first listed pending.
+
+==================================================================
+OUTPUT
+==================================================================
+
+Output JSON, no markdown wrapping:
+${OUTPUT_SPEC_ASK_USER_QUESTION}`;
+}
+
+const OUTPUT_SPEC_ASK_USER_QUESTION = `{
+  "target": "<exact tab name from the listed AUQ pendings>",
+  "reason": "<short internal explanation, ≤15 words — daemon log + IM echo>",
+  "answers": [
+    {
+      "questionIndex": <0-based question index>,
+      "kind": "option",
+      "optionIndex": <1-based option index OR array for multi-select>
+    }
+    | {
+      "questionIndex": <0-based question index>,
+      "kind": "text",
+      "text": "<user's verbatim answer text>"
+    }
+  ]
+}`;
+
+function renderAskUserQuestionPendings(
+  pendings: readonly PendingAskUserQuestion[],
+): string {
+  if (pendings.length === 0) return '';
+  const bullets = pendings
+    .map((p) => {
+      const lines: string[] = [`  - tab=${p.tabName}`];
+      p.questions.forEach((q, qi) => {
+        lines.push(
+          `    question[${qi}]: "${q.question}"${q.multiSelect ? '  (multiSelect)' : ''}`,
+        );
+        q.options.forEach((opt, oi) => {
+          const desc = opt.description.length > 0 ? ` — ${opt.description}` : '';
+          lines.push(`      ${oi + 1}. ${opt.label}${desc}`);
+        });
+      });
+      return lines.join('\n');
+    })
+    .join('\n\n');
+  return `
+==================================================================
+PENDING AskUserQuestion REQUESTS
+==================================================================
+
+${bullets}
+`;
+}
+
+/**
+ * Parse the cc envelope output for an AskUserQuestion-mode call. Returns
+ * `null` (with a diagnostic stub for the caller to log) on any failure
+ * mode — caller treats null as "AI couldn't extract; fall back to a
+ * default empty-answer write to keep cc unstuck".
+ */
+export function parseAskUserQuestionOutput(
+  stdout: string,
+): AIAskUserQuestionResult | null {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (
+    typeof envelope !== 'object' ||
+    envelope === null ||
+    !('result' in envelope) ||
+    typeof (envelope as { result: unknown }).result !== 'string'
+  ) {
+    return null;
+  }
+  let inner = (envelope as { result: string }).result.trim();
+  if (inner.startsWith('```')) {
+    const firstNewline = inner.indexOf('\n');
+    if (firstNewline > 0) inner = inner.slice(firstNewline + 1);
+    if (inner.endsWith('```')) inner = inner.slice(0, -3).trim();
+    else if (inner.endsWith('```\n')) inner = inner.slice(0, -4).trim();
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(inner);
+  } catch {
+    return null;
+  }
+  const validated = AskUserQuestionAIOutputSchema.safeParse(parsed);
+  if (!validated.success) return null;
+  return {
+    target: validated.data.target,
+    reason: validated.data.reason ?? null,
+    answers: validated.data.answers,
+  };
+}
+
+export interface AskUserQuestionViaAIOpts {
+  userMsg: string;
+  pendings: readonly PendingAskUserQuestion[];
+  claudeBinary?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * Spawn `claude --print` for AUQ extraction. Returns null on any failure
+ * (timeout / non-zero exit / parse error) — caller writes a fallback
+ * empty-answers PermissionResponse so cc doesn't stall.
+ */
+export async function routeAskUserQuestionViaAI(
+  opts: AskUserQuestionViaAIOpts,
+): Promise<AIAskUserQuestionResult | null> {
+  const claudeBinary = opts.claudeBinary ?? DEFAULT_CLAUDE_BINARY;
+  const model = opts.model ?? DEFAULT_MODEL;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const prompt = renderAskUserQuestionPrompt({
+    userMsg: opts.userMsg,
+    pendings: opts.pendings,
+  });
+  const args = buildClaudeArgs({ model, prompt });
+
+  const childEnv = { ...process.env };
+  delete childEnv.WEZTERM_PANE;
+
+  let stdout: string;
+  try {
+    const result = await execFileAsync(claudeBinary, args, {
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+      env: childEnv,
+    });
+    stdout = result.stdout;
+  } catch {
+    return null;
+  }
+
+  return parseAskUserQuestionOutput(stdout);
 }
