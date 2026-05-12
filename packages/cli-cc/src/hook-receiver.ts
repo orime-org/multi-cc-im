@@ -78,6 +78,29 @@ const PERMISSION_POLL_INTERVAL_MS = 200;
 const PERMISSION_TIMEOUT_MS = 10_000;
 
 /**
+ * AskUserQuestion-specific hook internal poll deadline. Per
+ * [DD AskUserQuestion IM bridge](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md) §6 P2:
+ * AskUserQuestion holds the hook polling for an IM-side natural-language
+ * reply (D2-B "hook holds until IM reply"). User may take minutes to
+ * answer — single hook timeout doesn't fit all tools, hence the
+ * `setup-hooks.ts` per-matcher cc-side timeout split (P1) + per-tool
+ * internal poll deadline split here.
+ *
+ * **290s internal vs 300s cc-side**: same 10s margin model as the
+ * regular flow (10s internal vs 20s cc-side) — preserves the
+ * `hook stdout deterministic` + daemon retry budget + network jitter
+ * envelope (CLAUDE.md "Hook 内部 timeout < cc-side hook timeout").
+ *
+ * On timeout (user never replied): default to ALLOW (NOT deny) so cc
+ * renders the TUI widget as a graceful fallback (DD §7). Defaulting to
+ * deny would cancel the tool with no useful reason; allow lets the user
+ * still answer in cc TUI.
+ */
+const ASK_USER_QUESTION_TIMEOUT_MS = 290_000;
+
+const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
+
+/**
  * cc tools that are read-only by design — Read / Grep / Glob / NotebookRead.
  * cc itself does NOT show a TUI permission menu for these, so forwarding a
  * PreToolUse approval prompt to IM for these is pure noise. Per
@@ -112,6 +135,12 @@ export interface RunHookReceiverOpts {
   permissionPollIntervalMs?: number;
   /** Override PreToolUse total wait budget (ms). Tests use a small value. */
   permissionTimeoutMs?: number;
+  /**
+   * Override the AskUserQuestion-specific poll deadline (ms). Default
+   * `ASK_USER_QUESTION_TIMEOUT_MS` (290s). Tests use a small value to
+   * exercise the timeout branch without waiting 5 min.
+   */
+  askUserQuestionTimeoutMs?: number;
 }
 
 /**
@@ -218,7 +247,13 @@ export async function runHookReceiver(
       if (imWork === null) {
         return; // E2: silent exit, defer to cc native permission flow
       }
-      if (imWork.auto) {
+      // AskUserQuestion special-case (DD AskUserQuestion §6 P2, D1-B): the
+      // auto-allow short-circuit applies to every other tool but NOT to
+      // AskUserQuestion. cc widget questions must reach IM in both auto and
+      // ask modes — auto-allow would render the widget in cc TUI without IM
+      // visibility, which is exactly the UX failure the DD fixes.
+      const isAskUserQuestion = payload.tool_name === ASK_USER_QUESTION_TOOL_NAME;
+      if (!isAskUserQuestion && imWork.auto) {
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
@@ -281,8 +316,16 @@ export async function runHookReceiver(
       });
       const pollMs =
         opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
-      const timeoutMs = opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS;
+      // AskUserQuestion gets the longer poll deadline (P1 settings.json
+      // matched a 300s cc-side timeout for this tool — internal 290s leaves
+      // the same 10s margin as the regular path's 20s/10s split).
+      const timeoutMs = isAskUserQuestion
+        ? opts.askUserQuestionTimeoutMs ?? ASK_USER_QUESTION_TIMEOUT_MS
+        : opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS;
       const deadline = Date.now() + timeoutMs;
+      // Default-allow on timeout for BOTH paths (regular tools: existing
+      // behavior; AskUserQuestion: per DD §7, allow → cc renders widget in
+      // TUI as fallback when IM didn't reply).
       let decision: 'allow' | 'deny' = 'allow';
       let reason = `${Math.round(timeoutMs / 1000)}s timeout, default allow`;
       // Delete-always semantics (user policy 2026-05-11): wrap the entire
@@ -299,8 +342,22 @@ export async function runHookReceiver(
             await stat(respPath);
             const resp = await readPermissionResponseFile(respPath);
             if (resp && resp.requestId === requestId) {
-              decision = resp.decision;
-              reason = resp.reason || `IM user ${decision}`;
+              if (isAskUserQuestion) {
+                // D5-C invariant: AskUserQuestion always returns to cc as
+                // `deny + reason=<user's answer>` regardless of what the
+                // daemon's response.decision says. Defensive: a buggy router
+                // could write decision='allow' (e.g., AI prompt regression);
+                // forcing deny here keeps the contract — cc transcript
+                // records the user's answer in the reason field, cc
+                // continues with that as context.
+                decision = 'deny';
+                reason =
+                  resp.reason ||
+                  '[multi-cc-im] AskUserQuestion answered via IM (empty reason)';
+              } else {
+                decision = resp.decision;
+                reason = resp.reason || `IM user ${decision}`;
+              }
               break;
             }
           } catch (err) {
