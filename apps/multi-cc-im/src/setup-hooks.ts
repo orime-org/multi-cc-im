@@ -34,21 +34,45 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  */
 const HOOK_EVENTS = ['PreToolUse', 'Stop'] as const;
 
-/** Hook entries for these events match all tool names (`matcher: "*"`). */
-const TOOL_MATCHED_EVENTS = new Set<(typeof HOOK_EVENTS)[number]>(['PreToolUse']);
-
 /**
- * Hook entries for these events get a custom `timeout` (seconds).
+ * Per-event matcher groups to emit into `~/.claude/settings.json`. Each spec
+ * becomes one `{matcher, hooks: [{command, timeout?}]}` group under the
+ * event key; all groups share the same `multi-cc-im hook <event>` command.
  *
- * **PreToolUse: 20s** = 10s IM-reply window for the user (`PERMISSION_TIMEOUT_MS`
- * in `cli-cc/hook-receiver.ts`) + 10s margin for: (a) hook subprocess to write
- * its decision JSON to stdout deterministically, (b) daemon-side `apiPostFetch`
- * transient retry budget when iLink LB hits an unhealthy backend IP, and (c)
- * any network jitter. Race-free: cc only SIGKILLs hook at 20s, well after
- * hook's 10s internal poll has finished + written stdout.
+ * Why per-event arrays (not a single matcher per event):
+ * `PreToolUse` needs DISJOINT matcher groups so different tools get
+ * different timeouts. cc fires "all matching hooks in parallel and
+ * deduplicates identical handlers" — but identity is by full handler
+ * object (including `timeout`), so overlapping matchers with different
+ * timeouts double-fire the same script. Disjoint matchers avoid that.
+ *
+ * Per [DD: AskUserQuestion IM bridge](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md) §6 P1:
+ * - `AskUserQuestion` → timeout 300 (5 min) — hook holds polling for an
+ *   IM-side natural-language reply (D2-B "hook holds until IM reply").
+ *   5 min covers user briefly away from phone; after that cc default-
+ *   allows and renders widget in TUI (graceful fallback).
+ * - Everything else → timeout 20 — original IM permission gate RTT
+ *   budget: 10s internal poll (`PERMISSION_TIMEOUT_MS` in
+ *   `cli-cc/hook-receiver.ts`) + 10s margin for stdout write + daemon
+ *   transient retry. Negative lookahead `^(?!AskUserQuestion$).+$` keeps
+ *   this entry future-proof — any tool except `AskUserQuestion` auto-
+ *   covered (incl. new cc tools we haven't enumerated).
+ * - `Stop` → no tool concept, single matcher `""`, no custom timeout.
  */
-const HOOK_TIMEOUTS: Partial<Record<(typeof HOOK_EVENTS)[number], number>> = {
-  PreToolUse: 20,
+interface MatcherSpec {
+  matcher: string;
+  timeout?: number;
+}
+
+const EVENT_MATCHER_SPECS: Record<
+  (typeof HOOK_EVENTS)[number],
+  readonly MatcherSpec[]
+> = {
+  PreToolUse: [
+    { matcher: 'AskUserQuestion', timeout: 300 },
+    { matcher: '^(?!AskUserQuestion$).+$', timeout: 20 },
+  ],
+  Stop: [{ matcher: '' }],
 };
 
 interface HookHandler {
@@ -183,18 +207,17 @@ export async function runSetupHooksCommand(
     existing.hooks,
   );
   for (const event of HOOK_EVENTS) {
-    const handler: HookHandler = {
-      type: 'command',
-      command: `${wrapperPath} hook ${event}`,
-      ...(HOOK_TIMEOUTS[event] !== undefined
-        ? { timeout: HOOK_TIMEOUTS[event] }
-        : {}),
-    };
-    // PreToolUse uses `matcher: "*"` (match all tools); other events have
-    // no tool concept and use `matcher: ""` (match every invocation).
-    const matcher = TOOL_MATCHED_EVENTS.has(event) ? '*' : '';
     const groups = hooksMap[event] ?? [];
-    hooksMap[event] = [...groups, { matcher, hooks: [handler] }];
+    const newGroups: MatcherGroup[] = [];
+    for (const spec of EVENT_MATCHER_SPECS[event]) {
+      const handler: HookHandler = {
+        type: 'command',
+        command: `${wrapperPath} hook ${event}`,
+        ...(spec.timeout !== undefined ? { timeout: spec.timeout } : {}),
+      };
+      newGroups.push({ matcher: spec.matcher, hooks: [handler] });
+    }
+    hooksMap[event] = [...groups, ...newGroups];
   }
 
   const newSettings: Record<string, unknown> = {
@@ -252,11 +275,18 @@ export async function runSetupHooksCommand(
       `  ✓ removed ${removedCount} stale multi-cc-im hook handler(s) (likely from previous repo path)`,
     );
   }
+  // Sum every matcher spec multi-cc-im owns across all managed events.
+  // Note: != HOOK_EVENTS.length now that PreToolUse split into 2 disjoint
+  // matcher groups (AskUserQuestion + everything-else) per DD AskUserQuestion §6 P1.
+  const ownHandlerCount = Object.values(EVENT_MATCHER_SPECS).reduce(
+    (sum, specs) => sum + specs.length,
+    0,
+  );
   log(
-    `  ✓ added ${HOOK_EVENTS.length} multi-cc-im hooks (events: ${HOOK_EVENTS.join(', ')})`,
+    `  ✓ added ${ownHandlerCount} multi-cc-im hooks (events: ${HOOK_EVENTS.join(', ')})`,
   );
   const totalHandlers = countHandlers(hooksMap);
-  const otherHandlers = totalHandlers - HOOK_EVENTS.length;
+  const otherHandlers = totalHandlers - ownHandlerCount;
   if (otherHandlers > 0) {
     log(
       `  ✓ total handlers now: ${totalHandlers} (${otherHandlers} from other tools preserved)`,
