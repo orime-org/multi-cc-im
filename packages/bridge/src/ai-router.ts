@@ -237,10 +237,31 @@ Rule 1 — IF A TAB NAME APPEARS IN THE MESSAGE → PICK THAT TAB.
     - Ignore whitespace / hyphens / underscores —
       "multi cc im" / "multiccim" / "multi_cc_im" all match
       "multi-cc-im"
+      "breatic frontend" / "breatic-frontend" both match "breatic_frontend"
+      "work temp" matches "work_temp"
     - Tolerate speech-to-text typos — "CRM" / "I'm" / "Aim" may all
       be typos of "IM"; "front and" may be typo of "frontend"
     - Tolerate Chinese-English code mixing — "frontend那个" / "给后端"
       / "那个 api" / "Multiccrm" (voice-typo for multi-cc-im)
+
+  TIE-BREAK — MOST-SPECIFIC TAB WINS when several candidates match:
+
+    If two or more tab names lenient-match the message, AND one is a
+    "more specific" version of the other (longer name / nested within
+    the longer one after normalization), PICK THE MORE SPECIFIC one.
+
+      Tabs:    "breatic" / "breatic_frontend" / "breatic_bugs"
+      Message: "你跟 breatic frontend 说 ..."
+      → PICK "breatic_frontend" (not "breatic"; the message names the
+        more specific tab).
+
+      Tabs:    "node" / "node_test"
+      Message: "node test 跑挂了"
+      → PICK "node_test".
+
+    Only fall back to "none" via Rule 3 when matches are NOT in a
+    nested relation (e.g. both "frontend" and "backend" literally
+    appear with no specificity ordering).
 
   If you find ANY tab-name match (lenient), PICK that tab. Defaulting
   to "none" is a routing failure — the daemon falls back to a literal

@@ -255,6 +255,32 @@ describe('ai-router — renderRoutingPrompt', () => {
       });
       expect(out).toMatch(/cannot distinguish|default to keeping|extra wording is better/i);
     });
+
+    it('Rule 1 has MOST-SPECIFIC tie-break for nested tab-name matches (2026-05-12 breatic_frontend fix)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['breatic', 'breatic_frontend'],
+        currentTab: null,
+      });
+      // Tie-break section header / instruction:
+      expect(out).toMatch(/MOST-SPECIFIC|most specific|TIE-BREAK/i);
+      // Anchor example with the real-case tabs:
+      expect(out).toMatch(/breatic_frontend/);
+      expect(out).toMatch(/breatic frontend/);
+    });
+
+    it('Rule 1 also adds the underscore↔space leniency example (work_temp / breatic_frontend)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // Lenient matching list now includes underscore-to-space examples
+      // so AI knows "work temp" matches "work_temp" and "breatic frontend"
+      // matches "breatic_frontend".
+      expect(out).toMatch(/work temp.*work_temp/);
+      expect(out).toMatch(/breatic frontend.*breatic_frontend/);
+    });
   });
 
   // P2 — natural-language permission reply (DD 2026-05-11)
