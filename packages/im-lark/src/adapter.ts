@@ -218,10 +218,40 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
             return;
           }
 
-          // Filter to text only in v1 MVP (DD §8.4). Other message_type
-          // values drop silently — bridge router already logs visible echo
-          // for "no addressable cc" / "not found" so users won't be left
-          // confused; non-text input simply isn't routed.
+          // Audio messages get a friendly echo pointing users to the mobile
+          // keyboard's mic-to-text feature (system-level STT, runs on the
+          // user's device before sending — produces msg_type='text' which
+          // the daemon handles normally). Per [DD: lark audio msg handling](../../../docs/superpowers/specs/2026-05-12-lark-audio-msg-handling-dd.md)
+          // §5 — daemon stays text-only; this echo replaces silent drop so
+          // a user who hits the audio-msg button by mistake sees what to do
+          // instead of "did my message disappear?".
+          if (data.message.message_type === 'audio') {
+            log(
+              `[lark] received audio message from ${data.sender.sender_id?.open_id ?? '<unknown>'}, replying with keyboard-mic hint (per DD 2026-05-12 D1-1: not handling audio msgs)`,
+            );
+            try {
+              await client!.im.v1.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: {
+                  receive_id: data.message.chat_id,
+                  msg_type: 'text',
+                  content: JSON.stringify({
+                    text: '❌ 暂不支持音频消息，请用键盘 🎤 麦克风转文字后发送',
+                  }),
+                },
+              });
+            } catch (err) {
+              log(
+                `[lark] failed to echo audio-unsupported hint: ${formatErrorWithCause(err)}`,
+              );
+            }
+            return;
+          }
+
+          // Other non-text types (image / file / sticker / etc.) still drop
+          // silently — out of scope for the audio DD. Re-evaluate per type
+          // if user reports the "did my message disappear?" symptom for
+          // those too.
           if (data.message.message_type !== 'text') {
             log(
               `[lark] dropping non-text message_type=${data.message.message_type} (v1 MVP text only)`,
