@@ -436,6 +436,115 @@ describe('ai-router — renderRoutingPrompt', () => {
       expect(out).toContain('AskUserQuestion');
       expect(out).toMatch(/malformed|unknown|no questions/i);
     });
+
+    // -------------------------------------------------------------------
+    // forcePermissionMode (v1.10) — when daemon detects ANY pending, the
+    // prompt is rendered in a simplified variant: AI is told the message
+    // MUST be a permission reply (cc protocol won't accept new tasks
+    // during pending PreToolUse), so routing rules are stripped and the
+    // output spec forbids top-level target/intent (must fill
+    // permissionResponse).
+    // -------------------------------------------------------------------
+
+    it('forcePermissionMode=true → prompt has FORCE PERMISSION MODE marker', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'I pick option 2',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'AskUserQuestion',
+            toolInput: {
+              questions: [
+                {
+                  question: 'Pick',
+                  options: [{ label: 'A' }, { label: 'B' }],
+                },
+              ],
+            },
+          },
+        ],
+        forcePermissionMode: true,
+      });
+      expect(out).toMatch(/FORCE PERMISSION MODE|forced permission|must be a reply/i);
+    });
+
+    it('forcePermissionMode=true → prompt OUTPUT spec REQUIRES permissionResponse, forbids routing target/intent', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'I pick A',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm' },
+          },
+        ],
+        forcePermissionMode: true,
+      });
+      // OUTPUT block must say target / intent are always null in this mode.
+      expect(out).toMatch(/"target":\s*null/);
+      expect(out).toMatch(/"intent":\s*null/);
+      // permissionResponse must be marked required (not "| null"):
+      expect(out).toContain('"permissionResponse"');
+      // Must explicitly say "REQUIRED" or similar — not "optional / null":
+      expect(out).toMatch(/required|MUST fill|always fill/i);
+    });
+
+    it('forcePermissionMode=true → routing rules (Rule 1/2/3) are STRIPPED from prompt', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'I pick A',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm' },
+          },
+        ],
+        forcePermissionMode: true,
+      });
+      // Routing rules irrelevant when force-permission — should be absent.
+      expect(out).not.toMatch(/Rule 1.*IF A TAB NAME APPEARS/i);
+      expect(out).not.toMatch(/MATCHING RULES \(in priority order\)/i);
+      // But PENDING section + SPECIAL RULE (AskUserQuestion) + ASYMMETRIC
+      // TRUST (regular tools) should still be present.
+      expect(out).toMatch(/PENDING TOOL PERMISSION/i);
+      expect(out).toMatch(/ASYMMETRIC TRUST|match[-\s]signal/i);
+    });
+
+    it('forcePermissionMode=false (or undefined) → behaves as before (routing rules present)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'hi frontend',
+        tabs: ['frontend'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'frontend',
+            toolName: 'Bash',
+            toolInput: { command: 'ls' },
+          },
+        ],
+        // No forcePermissionMode — defaults to false
+      });
+      expect(out).not.toMatch(/FORCE PERMISSION MODE/i);
+      // Routing rules still in place:
+      expect(out).toMatch(/Rule 1.*IF A TAB NAME APPEARS/i);
+    });
+
+    it('forcePermissionMode=true without pending → still strips routing (defensive — caller decides when force)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'hi',
+        tabs: ['frontend'],
+        currentTab: null,
+        forcePermissionMode: true,
+      });
+      // No routing rules even without pending — caller chose force mode.
+      expect(out).not.toMatch(/MATCHING RULES \(in priority order\)/i);
+    });
   });
 });
 
