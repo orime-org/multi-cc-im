@@ -407,11 +407,20 @@ async function handlePlainWithAI(
         )
       : undefined;
 
+  // Force-permission mode (v1.10, 2026-05-12): when ANY pending PreToolUse
+  // is on disk, cc's protocol won't accept a new task prompt — routing is
+  // moot. Pass forcePermissionMode=true to ai-router so it skips routing
+  // rules entirely; router below ignores top-level target/intent in this
+  // mode (uses ONLY permissionResponse for dispatch).
+  const isForcePermissionMode =
+    pendingForPrompt !== undefined && pendingForPrompt.length > 0;
+
   const result = await aiRouter({
     userMsg: body,
     tabs: namedSessions.map((s) => s.tabTitle),
     currentTab,
     pendingRequests: pendingForPrompt,
+    forcePermissionMode: isForcePermissionMode,
   });
 
   // Capture AI decision for the orchestrator to log. Per user smoke
@@ -430,10 +439,36 @@ async function handlePlainWithAI(
         reason: result.reason,
       };
 
-  // Permission-reply path (DD §9.1 P3). Short-circuit before routing —
-  // even if AI also set top-level target/intent, treat the message as a
-  // permission reply since the prompt declares the two outputs mutually
-  // exclusive (permissionResponse wins on protocol mismatch).
+  // Force-permission mode: AI MUST have emitted `permissionResponse`. If
+  // not (AI bug / prompt mis-follow), echo a defensive error rather than
+  // fall through to routing — routing during pending PreToolUse would
+  // write user's msg as a NEW task while cc is waiting on its tool call,
+  // out-of-protocol. Top-level target/intent are NEVER consulted in this
+  // mode (v1.10, 2026-05-12 DD).
+  if (isForcePermissionMode) {
+    if (result.permissionResponse === null) {
+      return {
+        echo:
+          `❌ AI 未正确识别回复 (force-permission mode 期望 permissionResponse 但未填)\n` +
+          `   原话: 「${truncate(body, ECHO_EXCERPT_MAX)}」\n` +
+          `   请再试一次，或用 #<tab> /1 /2 显式审批`,
+        dispatches: [],
+        aiTrace: baseTrace,
+      };
+    }
+    return handleAIPermissionReply(
+      body,
+      result.permissionResponse,
+      namedSessions,
+      baseTrace,
+    );
+  }
+
+  // Permission-reply path (DD §9.1 P3, non-force). Short-circuit before
+  // routing — even if AI also set top-level target/intent, treat the
+  // message as a permission reply since the prompt declares the two
+  // outputs mutually exclusive (permissionResponse wins on protocol
+  // mismatch).
   if (result.permissionResponse !== null) {
     return handleAIPermissionReply(
       body,
@@ -563,12 +598,19 @@ function handleAIPermissionReply(
       aiTrace: baseTrace,
     };
   }
-  const verb = permissionResponse.decision === 'allow' ? '允许' : '拒绝';
+  // Echo format (v1.10, 2026-05-12 force-permission DD §3):
+  //   target: <tab>
+  //   你说: <user's raw IM msg, truncated>
+  //   选择: <AI's extracted answer — option label / allow/deny paraphrase>
+  // Unified label across regular tools + AskUserQuestion so the user can
+  // visually confirm daemon understood correctly. The previous
+  // "permission: 允许/拒绝 + reason: ..." format leaked an allow/deny
+  // vocabulary that doesn't fit AskUserQuestion answer-extraction.
   return {
     echo:
       `target: ${displayName(target)}\n` +
-      `permission: ${verb}\n` +
-      `reason: ${truncate(permissionResponse.reason, ECHO_EXCERPT_MAX)}`,
+      `你说: ${truncate(body, ECHO_EXCERPT_MAX)}\n` +
+      `选择: ${truncate(permissionResponse.reason, ECHO_EXCERPT_MAX)}`,
     dispatches: [],
     permissionResponse: {
       session: target,

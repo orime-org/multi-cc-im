@@ -341,7 +341,10 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
     expect(term.sendKeystrokeCalls).toEqual([
       { paneId: FRONTEND_PANE, key: '\r' },
     ]);
-    expect(im.sent[0]?.content).toMatch(/→.*frontend/);
+    // Pre-ack 'AI 分诊中' fires first for plain msgs (v1.10); the route
+    // echo comes after — find the non-pre-ack message.
+    const routeEcho = im.sent.find((s) => !s.content.includes('AI 分诊中'));
+    expect(routeEcho?.content).toMatch(/→.*frontend/);
     await orch.stop();
   });
 
@@ -821,7 +824,9 @@ describe('createOrchestrator — error handling', () => {
     await orch.start();
     await im.handler!.onMessage(incoming('hello'));
     expect(term.sendKeystrokeCalls).toEqual([]);
-    expect(im.sent[0]?.content).toMatch(/send failed|not found/i);
+    // Pre-ack 'AI 分诊中' fires first (v1.10); the error echo comes after.
+    const errEcho = im.sent.find((s) => !s.content.includes('AI 分诊中'));
+    expect(errEcho?.content).toMatch(/send failed|not found/i);
     expect(errors.length).toBeGreaterThan(0);
     await orch.stop();
   });
@@ -2068,6 +2073,155 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
     expect(resp?.decision).toBe('allow');
     // Default reason is preserved when router didn't provide one.
     expect(resp?.reason).toContain('/1');
+    await orch.stop();
+  });
+});
+
+// ============================================================================
+// Pre-ack for AI router (v1.10, 2026-05-12)
+// Plain msgs trigger 3-7s AI subprocess; pre-ack tells the user daemon's
+// working so they don't think the message dropped.
+// ============================================================================
+
+describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
+  let preAckStateDir: string;
+  beforeEach(async () => {
+    preAckStateDir = mkdtempSync(join(tmpdir(), 'orch-preack-'));
+    await writeIMWorkFile(preAckStateDir, { auto: true });
+  });
+
+  it('plain msg → IM gets "🔍 AI 分诊中" pre-ack BEFORE the route result', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: '写个登录页',
+        reason: 'r',
+        permissionResponse: null,
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('给前端写个登录页'));
+
+    // First sent message is pre-ack; the next is the route echo.
+    expect(im.sent.length).toBeGreaterThanOrEqual(2);
+    expect(im.sent[0]!.content).toMatch(/AI 分诊中/);
+    expect(im.sent[0]!.content).toContain('给前端写个登录页');
+    // Subsequent echoes (target/content) come AFTER pre-ack:
+    const restJoined = im.sent
+      .slice(1)
+      .map((s) => s.content)
+      .join('\n');
+    expect(restJoined).toContain('frontend');
+    await orch.stop();
+  });
+
+  it('bridge command (/list) → no pre-ack (fast path)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('/list'));
+    const sentJoined = im.sent.map((s) => s.content).join('\n');
+    expect(sentJoined).not.toMatch(/AI 分诊中/);
+    await orch.stop();
+  });
+
+  it('mention (#frontend hi) → no pre-ack (fast path)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend hi'));
+    const sentJoined = im.sent.map((s) => s.content).join('\n');
+    expect(sentJoined).not.toMatch(/AI 分诊中/);
+    await orch.stop();
+  });
+
+  it('IMWork off → no pre-ack (no IM dispatch at all)', async () => {
+    // beforeEach put IMWork on (auto). Switch to OFF by deleting the file
+    // (file existence ⇔ IM mode ON per IMWork+IMOrigin DD).
+    await unlink(join(preAckStateDir, 'IMWork')).catch(() => {});
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hello'));
+    const sentJoined = im.sent.map((s) => s.content).join('\n');
+    expect(sentJoined).not.toMatch(/AI 分诊中/);
+    await orch.stop();
+  });
+
+  it('pre-ack send failure does NOT break route() — route still runs', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const errSeen: Array<{ phase: string }> = [];
+    let sendCallCount = 0;
+    im.send = async (content, replyCtx) => {
+      sendCallCount++;
+      if (sendCallCount === 1) {
+        // First call is pre-ack — fail it.
+        throw new Error('lark API down');
+      }
+      im.sent.push({ content, replyCtx });
+    };
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'hi',
+        reason: 'r',
+        permissionResponse: null,
+      }),
+      onError: (_err, ctx) => {
+        if (ctx && typeof ctx === 'object' && 'phase' in ctx) {
+          errSeen.push({ phase: String((ctx as { phase: unknown }).phase) });
+        }
+      },
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('hi'));
+    // Pre-ack failure recorded:
+    expect(errSeen.some((e) => e.phase === 'preAck')).toBe(true);
+    // Route still ran — sent at least one (real echo, the failed pre-ack
+    // never made it into im.sent).
+    expect(im.sent.length).toBeGreaterThanOrEqual(1);
     await orch.stop();
   });
 });

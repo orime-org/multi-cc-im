@@ -205,6 +205,36 @@ export function createOrchestrator(
     const imWorkOn = imWork !== null;
     const imWorkAuto = imWork?.auto ?? false;
 
+    // Pre-ack for plain messages (v1.10, 2026-05-12): plain msgs trigger
+    // an AI subprocess (cc cold-start ~2-5 s + Haiku inference ~1-2 s),
+    // total 3-7 s wait. Without a visible signal users assume the IM
+    // message was dropped. Fire a one-line "AI 处理中: <excerpt>" before
+    // route() so the user sees daemon is working. Bridge commands
+    // (`/...`) and mentions (`#...`) get fast echoes and don't need the
+    // pre-ack. Fire-and-forget: pre-ack send failure must NOT block the
+    // real route() — log and continue. Only gated on IMWork on (off
+    // means no IM dispatch at all, pre-ack would be misleading).
+    if (imWorkOn) {
+      const trimmed = (msg.text ?? '').trim();
+      if (
+        trimmed.length > 0 &&
+        !trimmed.startsWith('/') &&
+        !trimmed.startsWith('#')
+      ) {
+        const excerpt = truncate(trimmed, 30);
+        log(`[AI router pre-ack] msg="${excerpt}"`);
+        try {
+          await opts.imAdapter.send(
+            `🔍 AI 分诊中: "${excerpt}"`,
+            msg.replyCtx as IMReplyContext,
+          );
+        } catch (err) {
+          onError(err, { phase: 'preAck' });
+          // intentionally continue — route() must still run
+        }
+      }
+    }
+
     const result = await route(msg, {
       registry: paneRegistry,
       state: opts.state,

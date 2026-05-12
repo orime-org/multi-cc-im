@@ -1390,4 +1390,138 @@ describe('router — AI permission reply integration (DD 2026-05-11)', () => {
     expect(result.permissionResponse?.session).toBe(FRONTEND);
     expect(result.permissionResponse?.decision).toBe('allow');
   });
+
+  // -------------------------------------------------------------------
+  // Force-permission mode (v1.10, 2026-05-12) — pending exists ⇒ AI
+  // never given the choice to route. Caller flips forcePermissionMode
+  // to true; router ignores top-level target/intent regardless of
+  // what AI returned.
+  // -------------------------------------------------------------------
+
+  it('pending exists + plain msg → aiRouter called with forcePermissionMode=true', async () => {
+    let observedForce: boolean | undefined;
+    await route(incoming('我选第一个'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async (o) => {
+        observedForce = o.forcePermissionMode;
+        return {
+          target: null,
+          intent: null,
+          reason: 'force',
+          permissionResponse: {
+            target: 'frontend',
+            decision: 'deny',
+            reason: 'option 1',
+          },
+        };
+      },
+    });
+    expect(observedForce).toBe(true);
+  });
+
+  it('no pending + plain msg → aiRouter called WITHOUT forcePermissionMode (or undefined)', async () => {
+    let observedForce: boolean | undefined;
+    await route(incoming('hi frontend'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [],
+      aiRouter: async (o) => {
+        observedForce = o.forcePermissionMode;
+        return {
+          target: 'frontend',
+          intent: 'hi',
+          reason: 'r',
+          permissionResponse: null,
+        };
+      },
+    });
+    expect(observedForce).toBeFalsy();
+  });
+
+  it('force-permission + AI also outputs top-level target/intent → router IGNORES them, only uses permissionResponse', async () => {
+    const result = await route(incoming('rogue routing-looking reply'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        // AI mis-fills these (shouldn't in force-mode, but defensive):
+        target: 'api',
+        intent: 'hack into routing',
+        reason: 'AI got confused',
+        // Real permission output:
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'deny',
+          reason: '用户选项 1',
+        },
+      }),
+    });
+    // No dispatches — top-level target=api MUST NOT trigger routing.
+    expect(result.dispatches).toEqual([]);
+    // permissionResponse populated correctly.
+    expect(result.permissionResponse?.session).toBe(FRONTEND);
+    expect(result.permissionResponse?.decision).toBe('deny');
+    expect(result.permissionResponse?.reason).toBe('用户选项 1');
+  });
+
+  it('force-permission echo format: target / 你说 / 选择', async () => {
+    const result = await route(incoming('I pick the first one please'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'matched option A',
+        permissionResponse: {
+          target: 'frontend',
+          decision: 'deny',
+          reason: 'Postgres',
+        },
+      }),
+    });
+    expect(result.echo).toContain('target: frontend');
+    expect(result.echo).toMatch(/你说:.*pick the first/);
+    expect(result.echo).toMatch(/选择:.*Postgres/);
+    // Old format must be gone:
+    expect(result.echo).not.toContain('permission: 允许');
+    expect(result.echo).not.toContain('permission: 拒绝');
+    expect(result.echo).not.toContain('reason: ');
+  });
+
+  it('force-permission + AI fails to emit permissionResponse → defensive error echo, no dispatch', async () => {
+    // AI broke contract (force mode requires permissionResponse). Don't
+    // crash; echo a "ai failed" line so user knows to retry, and DON'T
+    // fall through to routing (would write user msg as new task to a
+    // tab while cc is mid-tool — wrong).
+    const result = await route(incoming('whatever'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        fakePending({ paneId: FRONTEND.paneId }),
+      ],
+      aiRouter: async () => ({
+        target: null,
+        intent: null,
+        reason: 'AI bug',
+        permissionResponse: null, // <-- AI didn't follow the rule
+      }),
+    });
+    expect(result.dispatches).toEqual([]);
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.echo).toMatch(/AI.*未.*正确|失败|无法识别|请再试/);
+  });
 });

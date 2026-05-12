@@ -78,6 +78,20 @@ export interface AIRoutingOpts {
    */
   pendingRequests?: readonly PendingRequestForPrompt[];
   /**
+   * When `true`, render the prompt in **force-permission mode**: AI's job
+   * is reduced from "decide routing vs permission" to "extract the
+   * answer from a known-to-be-a-permission-reply message". Routing rules
+   * (lenient tab matching / topic-mention / Rule 1-3) are stripped from
+   * the prompt; OUTPUT spec mandates `permissionResponse` and forbids
+   * top-level `target`/`intent`.
+   *
+   * Caller invariant (router-level): set to `true` whenever
+   * `pendingRequests.length > 0`. cc protocol fact: while ANY
+   * PreToolUse is pending, cc cannot accept new task prompts —
+   * routing is moot. Per v1.10 force-permission DD (2026-05-12).
+   */
+  forcePermissionMode?: boolean;
+  /**
    * Path to the `claude` CLI binary. Default: `'claude'` (resolved via PATH).
    * Tests override to a stub script for deterministic output.
    */
@@ -136,7 +150,12 @@ export function renderRoutingPrompt(opts: {
   tabs: readonly string[];
   currentTab: string | null;
   pendingRequests?: readonly PendingRequestForPrompt[];
+  forcePermissionMode?: boolean;
 }): string {
+  if (opts.forcePermissionMode) {
+    return renderForcePermissionPrompt(opts);
+  }
+
   const tabList = opts.tabs.length === 0
     ? '(no active tabs)'
     : opts.tabs.map((t) => `  - ${t}`).join('\n');
@@ -290,6 +309,96 @@ set "permissionResponse" to null and route normally.`;
  * primed to look for "permission reply" semantics in plain task
  * messages.
  */
+/**
+ * Force-permission prompt variant (v1.10, 2026-05-12). When the daemon
+ * detects ANY pending PreToolUse PermissionRequest at the moment of
+ * routing, the user's plain IM message CAN ONLY be a permission reply —
+ * cc's tool protocol won't accept a new task prompt while a tool call
+ * is mid-execution (PreToolUse blocks the cc turn). So routing is moot.
+ *
+ * This prompt is the deterministic counterpart: strip all routing-vs-
+ * permission decision logic, give the AI a focused job:
+ *
+ *   1. Identify which pending the message answers (target → tab name)
+ *   2. Apply the appropriate extraction rule:
+ *      - Regular tool (Bash / Edit / etc.) → ASYMMETRIC TRUST D5-3
+ *      - AskUserQuestion → option-label match or free-text passthrough
+ *   3. Output `permissionResponse` (top-level target/intent forbidden)
+ *
+ * Why a separate prompt body instead of conditional sections: stripping
+ * routing rules unconditionally makes the AI's path through the prompt
+ * shorter, reducing both inference latency AND ambiguity. The v1.7/v1.9
+ * prompt's routing rules ("Rule 1: if a tab name appears, PICK") were
+ * winning over permission-reply intent when the user's IM reply
+ * contained a tab name (real smoke 2026-05-12: "跟 multi-cc-im 说 瘦身吧"
+ * got routed instead of treated as an AskUserQuestion answer). The fix
+ * is structural — at this point we KNOW the reply is a permission
+ * answer, so don't pretend the AI has a choice.
+ */
+function renderForcePermissionPrompt(opts: {
+  userMsg: string;
+  tabs: readonly string[];
+  currentTab: string | null;
+  pendingRequests?: readonly PendingRequestForPrompt[];
+}): string {
+  const tabList =
+    opts.tabs.length === 0
+      ? '(no active tabs)'
+      : opts.tabs.map((t) => `  - ${t}`).join('\n');
+  const currentLine = opts.currentTab ?? 'none';
+  // The pending block is reused as-is — it carries the AskUserQuestion
+  // SPECIAL RULE + ASYMMETRIC TRUST (D5-3) for regular tools. Both stay
+  // relevant in force mode; only routing rules get stripped.
+  const pendingBlock = renderPendingBlock(opts.pendingRequests);
+
+  return `You are the IM permission-reply extractor for multi-cc-im.
+
+==================================================================
+FORCE PERMISSION MODE
+==================================================================
+
+The user's current IM message MUST be a reply to one of the pending
+PreToolUse calls below. cc's protocol does not accept new task prompts
+while a tool call is mid-execution, so the daemon knows for certain
+this is a permission reply — your only job is to extract the answer.
+
+Active Claude Code tabs (for context — DO NOT route to them):
+${tabList}
+
+current (last #-mentioned tab; informational, NOT a routing target):
+${currentLine}
+
+The user's current IM message:
+"${opts.userMsg}"
+${pendingBlock}
+==================================================================
+OUTPUT
+==================================================================
+
+You MUST fill \`permissionResponse\`. Top-level \`target\` / \`intent\` are
+ALWAYS null in this mode — there is no routing decision to make.
+
+Output JSON, no markdown wrapping:
+${OUTPUT_SPEC_FORCE_PERMISSION}`;
+}
+
+const OUTPUT_SPEC_FORCE_PERMISSION = `{
+  "target": null,
+  "intent": null,
+  "reason": "<short internal explanation, ≤15 words — used for debugging>",
+  "permissionResponse": {
+    "target": "<exact tab name from the PENDING list above>",
+    "decision": "allow" | "deny",
+    "reason": "<picked option's exact label OR user's verbatim free text OR allow/deny paraphrase per tool's SPECIAL RULE>"
+  }
+}
+
+\`permissionResponse\` is REQUIRED in this mode — do NOT output \`null\`.
+If no pending entry plausibly matches the user's message, still emit
+\`permissionResponse\` with the best-guess pending's target and
+\`decision: "deny"\` + \`reason: "<user's verbatim message>"\` — the user
+can re-issue if mismatched, never silently drop.`;
+
 function renderPendingBlock(
   pendingRequests: readonly PendingRequestForPrompt[] | undefined,
 ): string {
@@ -606,6 +715,7 @@ export async function routeViaAI(
     tabs: opts.tabs,
     currentTab: opts.currentTab,
     pendingRequests: opts.pendingRequests,
+    forcePermissionMode: opts.forcePermissionMode,
   });
   const args = buildClaudeArgs({ model, prompt });
 
