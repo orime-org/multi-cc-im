@@ -202,7 +202,7 @@ async function branchOnCredentials(
 
   ctx.io.info(`${entry.setupSchema.displayName} 未配置`);
   const choice = await ctx.io.select({
-    message: `Configure ${entry.id} now?`,
+    message: `Configure ${entry.id} now?  (↑↓ 选择 / Enter 确认 / Ctrl+C 取消)`,
     options: [
       { value: 'configure', label: '开始配置' },
       { value: 'back', label: '返回' },
@@ -274,7 +274,7 @@ async function runAdapterMenu(
   }));
 
   const pick = await io.select({
-    message: 'Pick an IM adapter to start',
+    message: 'Pick an IM adapter to start  (↑↓ 选择 / Enter 确认 / Ctrl+C 取消)',
     options,
     initialValue: firstConfigured,
   });
