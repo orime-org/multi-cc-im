@@ -296,24 +296,34 @@ function renderPendingBlock(
   if (!pendingRequests || pendingRequests.length === 0) return '';
 
   const bullets = pendingRequests
-    .map((p) => {
-      const inputStr = formatToolInputForPrompt(p.toolInput);
-      return `  - tab=${p.tabName}  tool=${p.toolName}  input=${inputStr}`;
-    })
-    .join('\n');
+    .map((p) =>
+      p.toolName === 'AskUserQuestion'
+        ? formatAskUserQuestionPendingBullet(p)
+        : formatRegularPendingBullet(p),
+    )
+    .join('\n\n');
+
+  // The "SPECIAL RULE for AskUserQuestion" sub-section only fires when at
+  // least one AskUserQuestion entry is present — keeps the prompt lean
+  // for the common case (Bash/Edit-only pendings) and avoids priming AI
+  // for AskUserQuestion semantics that don't apply.
+  const hasAskUserQuestion = pendingRequests.some(
+    (p) => p.toolName === 'AskUserQuestion',
+  );
 
   return `
 ==================================================================
 PENDING TOOL PERMISSION REQUESTS
 ==================================================================
 
-These cc tool calls are waiting for an IM-side allow / deny decision:
+These cc tool calls are waiting for an IM-side reply:
 
 ${bullets}
 
 If the user's current IM message is a natural-language reply to one of
-these (e.g. "multi-cc-im 那个我同意", "node 的拒绝", "deny the rm one"),
-fill the OUTPUT \`permissionResponse\` field instead of routing.
+these (e.g. "multi-cc-im 那个我同意", "node 的拒绝", "deny the rm one",
+"1", "I pick Postgres", "我选第二个"), fill the OUTPUT
+\`permissionResponse\` field instead of routing.
 
 ASYMMETRIC TRUST RULE (D5-3) — applies to "allow" only:
 
@@ -338,7 +348,109 @@ ASYMMETRIC TRUST RULE (D5-3) — applies to "allow" only:
 
 Multiple pending requests + ambiguous reply → degrade to deny on
 the best-guess target (user can re-issue).
+${hasAskUserQuestion ? ASK_USER_QUESTION_RULES : ''}`;
+}
+
+/**
+ * Special prompt rules for AskUserQuestion entries — cc widget questions
+ * use the deny+reason channel as the answer transport, NOT as an
+ * allow/deny gate. Per [DD AskUserQuestion IM bridge §6 P4](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md).
+ *
+ * Only appended to the prompt when at least one AskUserQuestion entry
+ * is in \`pendingRequests\` — keeps the prompt lean otherwise.
+ */
+const ASK_USER_QUESTION_RULES = `
+SPECIAL RULE for AskUserQuestion (widget question) entries:
+
+  These cc widget questions are NOT permission gates. The user's IM
+  reply names one of the listed options (by number, by exact label,
+  by paraphrase) OR provides free text. The output for an
+  AskUserQuestion entry MUST be:
+
+    permissionResponse: {
+      target: "<tab name from the AskUserQuestion entry>",
+      decision: "deny",          ← ALWAYS deny for AskUserQuestion
+      reason: "<picked option's EXACT label OR user's verbatim free text>"
+    }
+
+  - If the user matched one of the listed options: reason = that
+    option's EXACT label string from the list (clean — cc parses
+    cleanly from the transcript). NOT the description, NOT a
+    paraphrase — the literal label.
+  - If the user's reply doesn't clearly match any option: reason =
+    the user's verbatim message (cleaned of routing prefix like
+    "#<tab>"). Pass through unchanged so cc gets the raw text.
+  - decision MUST always be "deny" for AskUserQuestion entries. The
+    cc-side hook interprets deny+reason as the user's answer;
+    "allow" would let cc proceed with the tool with no answer in
+    transcript (broken).
+
+  The ASYMMETRIC TRUST RULE (D5-3) above applies ONLY to regular tool
+  permission entries — AskUserQuestion is exempt. There is no "allow"
+  for AskUserQuestion that could be downgraded, so the rule is moot.
 `;
+
+/**
+ * Render a regular tool permission pending entry — one line, compact.
+ * Pre-existing format from DD v1.7 P2.
+ */
+function formatRegularPendingBullet(p: PendingRequestForPrompt): string {
+  const inputStr = formatToolInputForPrompt(p.toolInput);
+  return `  - tab=${p.tabName}  tool=${p.toolName}  input=${inputStr}`;
+}
+
+/**
+ * Render an AskUserQuestion pending entry — multi-line with the question
+ * text + each option's label + (optional) description. Per [DD AskUserQuestion
+ * IM bridge §6 P4](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md):
+ * AI needs to see what the options are to map user's reply to one.
+ *
+ * Single-question rendering: first \`questions[0]\` only. Multi-question is
+ * rare; if questions.length > 1 the bullet emits a note pointing the user
+ * to cc TUI for the rest. Mirrors orchestrator P3 IM-side behavior.
+ *
+ * Defensive on shape mismatch (missing/wrong \`questions\`): returns a
+ * minimal bullet with a "malformed" placeholder so AI knows there's a
+ * pending entry it can't fully parse but doesn't crash the prompt
+ * rendering.
+ */
+function formatAskUserQuestionPendingBullet(
+  p: PendingRequestForPrompt,
+): string {
+  const questionsRaw = p.toolInput.questions;
+  if (!Array.isArray(questionsRaw) || questionsRaw.length === 0) {
+    return `  - tab=${p.tabName}  tool=AskUserQuestion  (malformed — no questions array; bail to cc TUI)`;
+  }
+  const first = questionsRaw[0] as {
+    question?: unknown;
+    options?: unknown;
+  };
+  const questionText =
+    typeof first.question === 'string'
+      ? first.question
+      : '<question text missing>';
+  const options = Array.isArray(first.options) ? first.options : [];
+
+  const lines = [
+    `  - tab=${p.tabName}  tool=AskUserQuestion`,
+    `    question: "${questionText}"`,
+    `    options:`,
+  ];
+  options.forEach((opt, i) => {
+    const o = opt as { label?: unknown; description?: unknown };
+    const label = typeof o.label === 'string' ? o.label : `option ${i + 1}`;
+    const desc =
+      typeof o.description === 'string' && o.description.length > 0
+        ? ` — ${o.description}`
+        : '';
+    lines.push(`      ${i + 1}. ${label}${desc}`);
+  });
+  if (questionsRaw.length > 1) {
+    lines.push(
+      `    (cc asked ${questionsRaw.length} questions; only #1 shown — additional questions answered in cc TUI)`,
+    );
+  }
+  return lines.join('\n');
 }
 
 /**

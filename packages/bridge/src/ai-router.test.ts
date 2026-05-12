@@ -264,6 +264,178 @@ describe('ai-router — renderRoutingPrompt', () => {
       expect(out).toContain('"permissionResponse"');
       expect(out).toMatch(/"decision":\s*"allow"\s*\|\s*"deny"/);
     });
+
+    // -------------------------------------------------------------------
+    // AskUserQuestion-specific bullet + rules (v1.9 DD §6 P4)
+    // -------------------------------------------------------------------
+
+    it('AskUserQuestion entry renders question + numbered options (NOT raw JSON dump)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: '1',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'AskUserQuestion',
+            toolInput: {
+              questions: [
+                {
+                  question: 'Pick a database',
+                  header: 'DB',
+                  multiSelect: false,
+                  options: [
+                    { label: 'Postgres', description: 'mature relational' },
+                    { label: 'MongoDB', description: 'doc store' },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      });
+      // Question text visible (not just raw `tool_input` JSON):
+      expect(out).toContain('Pick a database');
+      // Options rendered as a numbered list:
+      expect(out).toMatch(/1\..*Postgres/);
+      expect(out).toMatch(/2\..*MongoDB/);
+      // Descriptions present (so AI can match against "the mature one" etc.):
+      expect(out).toContain('mature relational');
+      expect(out).toContain('doc store');
+      // Bullet must NOT show the raw `questions=[...]` blob — that's
+      // unreadable and confuses the AI:
+      expect(out).not.toMatch(/input=questions=\[/);
+    });
+
+    it('AskUserQuestion entry triggers the SPECIAL RULE section (always deny + reason = picked option or free text)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: '我选 Postgres',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'AskUserQuestion',
+            toolInput: {
+              questions: [
+                {
+                  question: 'Pick a DB',
+                  header: '',
+                  multiSelect: false,
+                  options: [
+                    { label: 'Postgres', description: '' },
+                    { label: 'MongoDB', description: '' },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      });
+      // Section header:
+      expect(out).toMatch(/AskUserQuestion|widget question/i);
+      // Always-deny instruction:
+      expect(out).toMatch(/always.*deny|decision.*always.*"deny"/i);
+      // Reason = picked option's label, or free-text passthrough:
+      expect(out).toMatch(/label|option label|exact label/i);
+      expect(out).toMatch(/free text|verbatim|pass through/i);
+      // D5-3 asymmetric trust should NOT apply to AskUserQuestion (it's
+      // about allow/deny gating for regular tools).
+      expect(out).toMatch(
+        /D5-3.*regular|asymmetric trust.*not apply|only.*regular tools|AskUserQuestion.*exempt/i,
+      );
+    });
+
+    it('mixed pending (regular + AskUserQuestion) — both rendered correctly side by side', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'do option 2',
+        tabs: ['multi-cc-im', 'frontend'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf node_modules' },
+          },
+          {
+            tabName: 'frontend',
+            toolName: 'AskUserQuestion',
+            toolInput: {
+              questions: [
+                {
+                  question: 'Style?',
+                  header: '',
+                  multiSelect: false,
+                  options: [
+                    { label: 'Tailwind', description: '' },
+                    { label: 'CSS Modules', description: '' },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      });
+      // Regular Bash entry still rendered with input= prefix (existing format):
+      expect(out).toMatch(/tool=Bash.*input=command=/);
+      // AskUserQuestion still has its question + options visible:
+      expect(out).toContain('Style?');
+      expect(out).toContain('Tailwind');
+      expect(out).toContain('CSS Modules');
+    });
+
+    it('AskUserQuestion multi-question (>= 2 questions) — first question options rendered + note about the rest', () => {
+      const out = renderRoutingPrompt({
+        userMsg: '1',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'AskUserQuestion',
+            toolInput: {
+              questions: [
+                {
+                  question: 'Q1',
+                  header: '',
+                  multiSelect: false,
+                  options: [{ label: 'A', description: '' }],
+                },
+                {
+                  question: 'Q2',
+                  header: '',
+                  multiSelect: false,
+                  options: [{ label: 'B', description: '' }],
+                },
+              ],
+            },
+          },
+        ],
+      });
+      expect(out).toContain('Q1');
+      // Multi-question note (mirrors orchestrator P3 behavior):
+      expect(out).toMatch(/2 question|additional question|cc TUI/);
+    });
+
+    it('AskUserQuestion with malformed toolInput (no questions array) — defensive: bullet still emitted with safe placeholder', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+        pendingRequests: [
+          {
+            tabName: 'multi-cc-im',
+            toolName: 'AskUserQuestion',
+            toolInput: { something_else: 'oops' },
+          },
+        ],
+      });
+      // Must NOT crash — output must include the tab name + tool name + a
+      // placeholder so AI knows there's a pending it can't fully parse.
+      expect(out).toContain('multi-cc-im');
+      expect(out).toContain('AskUserQuestion');
+      expect(out).toMatch(/malformed|unknown|no questions/i);
+    });
   });
 });
 
