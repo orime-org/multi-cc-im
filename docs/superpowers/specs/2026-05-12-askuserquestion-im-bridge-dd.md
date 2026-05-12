@@ -1,7 +1,7 @@
 # DD: AskUserQuestion IM bridge (cc widget → IM 双向)
 
 **Date**: 2026-05-12
-**Status**: ✅ LOCKED 2026-05-12 — user decided all 6 dimensions
+**Status**: 🔄 REVISED 2026-05-12 — D5 retracted; see [§9 Revision](#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel) below. Original D5-C `deny + reason` replaced with D5-D `allow + updatedInput.answers` (official documented path; was missed during candidate enumeration).
 
 ---
 
@@ -102,7 +102,7 @@ The current `permissionResponse` shape returned by the AI is `{ target, decision
 | **D2 — cc TUI behavior** | **B** — hook holds (poll for response file) until IM reply arrives; cc TUI never renders the widget | User directive: TUI 一直显示是问题 — hook hold + deny 后 cc 就不渲染 widget |
 | **D3 — IM format** | Numbered options + label + description excerpt + "N+1. 你的考虑（自由文本）" trailing option | User directive: `1 XXXX 2XXXX 3XXX 4 你的考虑` 风格 |
 | **D4 — IM reply parsing** | **B** — AI router maps natural language ("我同意第二个" / "deny the bash one" / "do option 3 with X tweak") to an option OR passes free text through | User directive: 不限定数字 |
-| **D5 — IM reply → cc injection** | **C** — `permissionDecision: 'deny'` + `reason: <user's answer or AI-paraphrased option>` | User directive: daemon 给 cc 的是 deny + reason，cc 自己理解 |
+| **D5 — IM reply → cc injection** | ~~**C** — `permissionDecision: 'deny'` + `reason: <user's answer or AI-paraphrased option>`~~<br>**Revised to D — `permissionDecision: 'allow'` + `updatedInput: {questions, answers}`** (see [§9](#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel)) | Original: daemon 给 cc 的是 deny + reason。<br>Revised: official agent-sdk docs document `allow + updatedInput.answers` as the standard AUQ answer channel; transcript records tool success not denial. |
 | **D6 — Free text** | **B** — supported; any IM text gets routed back as the reason | User directive: 用户在 IM 输入文本就行，不用限定必须是数字 |
 
 ---
@@ -157,10 +157,10 @@ Combined behavior:
 | D2 | B — hook holds until IM reply | ✅ accepted 2026-05-12 |
 | D3 | numbered options + 你的考虑 | ✅ accepted 2026-05-12 |
 | D4 | B — AI natural-language parsing | ✅ accepted 2026-05-12 |
-| D5 | C — deny + reason | ✅ accepted 2026-05-12 |
+| D5 | ~~C — deny + reason~~ → **D — allow + updatedInput.answers** | ⚠️ C retracted 2026-05-12 — see [§9](#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel) |
 | D6 | B — free text supported | ✅ accepted 2026-05-12 |
 
-DD is **LOCKED**.
+DD was originally **LOCKED** 2026-05-12. **D5 retracted same day after post-smoke docs review** — see [§9](#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel).
 
 ---
 
@@ -191,3 +191,106 @@ Each milestone = one PR (mirrors v1.7's P1-P6 cadence). Total ~5-6 PRs.
 ## 8. Review log
 
 - **2026-05-12 (a)** — DD drafted after live smoke confirmed `AskUserQuestion` fires `PreToolUse` (cc docs were right; earlier "doesn't fire" diagnosis was wrong, root cause was auto-mode silent-allow short-circuit). User locked all 6 dimensions in the same conversation: D1-B / D2-B / D3-numbered / D4-B / D5-C / D6-B. Status flipped to ✅ LOCKED. P1-P6 milestones move into [`docs/conventions.md`](../../conventions.md) status table.
+- **2026-05-12 (b)** — D5 retracted after post-smoke docs re-verification: user pushed back on `deny + reason` channel pointing to AUQ semantic mismatch (transcript shows `denied` not `succeeded`). Official [agent-sdk/user-input docs](https://code.claude.com/docs/en/agent-sdk/user-input#handle-clarifying-questions) document `allow + updatedInput.answers` as the standard AUQ channel — candidate that was missed during original D5 enumeration. New §9 added; D5 replaced with D-D; timeouts shortened (290s→110s hook, 300_000→120_000 matcher, 310_000→130_000 reaper); timeout path self-constructs empty answers (no deny channel); late-reply dead-drop IM notice added. v1.10 / v1.11 implementations (deny-mode + reaper bumps) flagged for rewrite under new R1-R10 milestones.
+
+---
+
+## 9. Revision: D5 retracted — `allow + updatedInput.answers` is the correct channel
+
+**Date**: 2026-05-12 (post-P5 smoke + docs re-verification)
+**Trigger**: After v1.10 / v1.11 made the working smoke pass, the user pushed back: "you keep returning deny — go look up what AskUserQuestion is supposed to return." Re-fetching official docs confirmed a missed candidate.
+
+### 9.1 Missing candidate D5-D
+
+Original D5 enumeration in [§3](#3-dimensions--user-decisions):
+
+- D5-A — `allow` (cc renders widget in TUI) — rejected
+- D5-B — keystroke injection — rejected
+- D5-C — `deny + reason` — selected (implemented in P1-P4 + v1.10 / v1.11)
+
+Missing candidate **D5-D — `allow + updatedInput.answers`**. The PreToolUse hook output supports a top-level `updatedInput` field that rewrites tool input before execution (per [hooks reference](https://code.claude.com/docs/en/hooks#pretooluse) and demonstrated in [hooks guide](https://code.claude.com/docs/en/hooks-guide#structured-json-output)). For `AskUserQuestion` specifically, the [Agent SDK user-input docs](https://code.claude.com/docs/en/agent-sdk/user-input#handle-clarifying-questions) document this as **the** standard response shape:
+
+> Build the `answers` object as a record where each key is the `question` text and each value is the selected option's `label`.
+>
+> ```typescript
+> return {
+>   behavior: "allow",
+>   updatedInput: {
+>     questions: input.questions,
+>     answers: {
+>       "How should I format the output?": "Summary"
+>     }
+>   }
+> };
+> ```
+
+With this channel cc treats the tool as completed successfully and records `{questions, answers}` as the tool result in the transcript — not a denial.
+
+### 9.2 Root cause: incomplete docs review
+
+The original DD only checked the [hooks docs](https://code.claude.com/docs/en/hooks) page (PreToolUse `permissionDecision` enum) and never opened the [agent-sdk/user-input docs](https://code.claude.com/docs/en/agent-sdk/user-input) page, where the AUQ response shape lives. Both pages must be read together to obtain the complete protocol — the hooks page lists `updatedInput` as a valid field but does not demonstrate the AUQ-specific shape; the agent-sdk page documents the AUQ shape but presents it through the `canUseTool` callback API. The protocol parity between `canUseTool` callbacks (Agent SDK) and PreToolUse hook output (cc CLI) is implicit, not spelled out.
+
+This violates two project rules:
+- [`feedback_dd_question_premise.md`](DD candidate enumeration must be exhaustive)
+- [`feedback_upstream_schema_real_smoke.md`](upstream schema must be sourced from official docs)
+
+### 9.3 D5-D protocol shape
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": {
+      "questions": [/* original toolInput.questions verbatim */],
+      "answers": {
+        "<question.question>": "<picked option.label OR free text>"
+      }
+    }
+  }
+}
+```
+
+- single-select: `answers[q.question] = "<label>"` (string)
+- multi-select: `answers[q.question] = ["<l1>", "<l2>"]` (array) or `"l1, l2"` joined string
+- free-text: `answers[q.question] = "<verbatim user text>"` (use user's literal input, not the word "Other")
+- timeout (110s without a PermissionResponse arriving): hook self-constructs `answers[q.question] = ""` (empty string) per question — cc reads empty answers and decides on its own; **deny channel is not used**
+
+### 9.4 Revised dimensions
+
+| Dim | Original | Revised | Rationale |
+|---|---|---|---|
+| **D5** | C (deny + reason) | **D (allow + updatedInput.answers)** | Official documented path; transcript records tool success, not denial; semantically aligned with AUQ as "user answered a question" rather than "user denied a tool call" |
+| D2 | B (hook holds) | B unchanged | Hook still internally polls PermissionResponse file; only the stdout output schema changes (`{allow, updatedInput}` instead of `{deny, reason}`) |
+| Other (D1 / D3 / D4 / D6) | — | unchanged | Channel-agnostic — IM forwarding, format, AI parsing, free-text support all reuse the same plumbing |
+
+### 9.5 Revised timeouts
+
+- hook internal poll: 290s → **110s** (2 min is sufficient per user; longer hold burns no-IM-activity time)
+- setup-hooks matcher timeout: 300_000ms → **120_000ms**
+- daemon reaper AUQ delay: 310_000ms → **130_000ms**
+- on timeout, hook self-constructs `answers[q.question] = ""` (per question) → cc decides; **no deny output**
+- late-reply (hook already exited when daemon receives the IM reply) → daemon sends IM message `"⏱ cc 已超时，本轮不再等待"` so the user knows the answer did not reach cc
+
+### 9.6 Implementation plan (single PR after this DD revision lands)
+
+| ID | Scope |
+|---|---|
+| **R1** | `packages/shared` — add `AskUserQuestionAnswerSchema` zod: `answers` array of `{questionIndex, kind: 'option' \| 'text', optionIndex \| text}` |
+| **R2** | `packages/cli-cc/src/state-files.ts` — `PermissionResponseFile` becomes a discriminated union: `{decision: 'allow', updatedInput?: Record<string, unknown>, reason?: string}` \| `{decision: 'deny', reason: string}` |
+| **R3** | `packages/cli-cc/src/hook-receiver.ts` — read PermissionResponseFile and output `{permissionDecision: 'allow', updatedInput}` on allow, `{permissionDecision: 'deny', permissionDecisionReason}` on deny. Remove v1.10's `isAskUserQuestion → force decision='deny'` hard-coded override. On AUQ-matcher timeout, self-construct empty-answers updatedInput and emit allow |
+| **R4** | `apps/multi-cc-im/src/setup-hooks.ts` — AUQ matcher `timeout: 120_000` |
+| **R5** | `packages/bridge/src/orchestrator.ts` — `ASK_USER_QUESTION_REAPER_DELAY_MS = 130_000` |
+| **R6** | `packages/bridge/src/ai-router.ts` — new `renderAskUserQuestionPrompt(opts)` that outputs `AskUserQuestionAnswerSchema` (option / text per question). Existing force-permission prompt restricted to non-AUQ pending only |
+| **R7** | `packages/bridge/src/router.ts` — AUQ branch in `handlePlainWithAI`: detect AUQ in pending, route to AUQ AI prompt, daemon looks up `toolInput.questions[idx].options[i-1].label` and builds `answers` map, writes `{decision: 'allow', updatedInput: {questions, answers}}` |
+| **R8** | IM echo two states (option: `target / 你答 ①: <label>`; text: `target / 自由回答: <text>`) + late-reply dead-drop IM notice |
+| **R9** | Tests for R1-R8 + real-account smoke (cc transcript MUST show AUQ tool succeeded with `answers`, NOT denied) |
+| **R10** | `docs/conventions.md` (status table + revision log) / `docs/architecture.md` AUQ section / READMEs |
+
+Single PR. Scope smaller than the original v1.9 P1-P6 split because no new infrastructure is needed (file IPC + AI router + IM echo all reuse v1.9 plumbing, just with different output shapes).
+
+### 9.7 Lessons captured (added to repo memory)
+
+- **Cross-page docs lookup**: tool-specific protocols often span multiple docs pages (hooks reference + Agent SDK user-input + tool-specific behavior). Fetch all related pages before locking schema. (Captured in `feedback_upstream_schema_real_smoke.md`.)
+- **DD candidate completeness**: candidates must include officially documented paths, even when those paths require reading docs outside the primary section.
+- **Smoke ≠ semantic correctness**: a passing smoke (cc consumes the response and continues) does not mean the transcript records the right thing. Inspect transcript literals as part of smoke validation, not just behavior.
