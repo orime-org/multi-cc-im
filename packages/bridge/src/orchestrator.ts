@@ -502,6 +502,26 @@ export function createOrchestrator(
       onError(err, { phase: 'preToolUseListPanes', paneId });
     }
 
+    // AskUserQuestion is special-cased per DD AskUserQuestion §6 P3:
+    // numbered-options format instead of allow/deny semantics (the
+    // /1 = 允许 /2 = 拒绝 vocabulary doesn't fit "pick option N"). The
+    // hook-receiver side (P2) makes sure we get here even in auto mode.
+    if (p.tool_name === 'AskUserQuestion') {
+      const { body, optionCount, questionCount } = formatAskUserQuestionPrompt({
+        tabName,
+        toolInput: p.tool_input,
+      });
+      log(
+        `[AskUserQuestion forward pane=${paneId} tab=${tabName}] questions=${questionCount} options=${optionCount}`,
+      );
+      try {
+        await opts.imAdapter.send(body, replyCtx);
+      } catch (err) {
+        onError(err, { phase: 'preToolUseAskQuestionForward', paneId });
+      }
+      return;
+    }
+
     const summary = summarizeToolInput(p.tool_name, p.tool_input);
     const body =
       `[${tabName}] 准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
@@ -515,6 +535,74 @@ export function createOrchestrator(
     } catch (err) {
       onError(err, { phase: 'preToolUseAsk', paneId });
     }
+  }
+
+  /**
+   * Format a cc AskUserQuestion `tool_input` into a numbered-options IM
+   * prompt per DD AskUserQuestion §6 P3 D3. Schema: `tool_input.questions`
+   * is an array of `{question, header?, multiSelect?, options: [{label,
+   * description?}]}`. We render the first question's options only — multi-
+   * question is rare and a clean numbered list per question would
+   * complicate IM reply parsing. Multi-question payloads emit a note
+   * pointing the user to cc TUI for the rest.
+   *
+   * Defensive: any shape mismatch (no `questions` array, empty array,
+   * missing `options`, etc.) returns a one-liner pointing to cc TUI. Throw-
+   * free; preserves the daemon's "no exception in event handler" contract.
+   */
+  function formatAskUserQuestionPrompt(opts: {
+    tabName: string;
+    toolInput: Record<string, unknown>;
+  }): { body: string; optionCount: number; questionCount: number } {
+    const questionsRaw = opts.toolInput.questions;
+    if (!Array.isArray(questionsRaw) || questionsRaw.length === 0) {
+      return {
+        body: `[${opts.tabName}] cc 想问你一个问题，但消息格式异常 — 请到 cc TUI 里直接回答。`,
+        optionCount: 0,
+        questionCount: 0,
+      };
+    }
+    const first = questionsRaw[0] as {
+      question?: unknown;
+      options?: unknown;
+    };
+    const questionText =
+      typeof first.question === 'string'
+        ? first.question
+        : '<question text missing>';
+    const options = Array.isArray(first.options) ? first.options : [];
+
+    const lines: string[] = [
+      `[${opts.tabName}] cc 想问你:`,
+      '',
+      questionText,
+      '',
+    ];
+    options.forEach((opt, i) => {
+      const o = opt as { label?: unknown; description?: unknown };
+      const label = typeof o.label === 'string' ? o.label : `option ${i + 1}`;
+      lines.push(`  ${i + 1}. ${label}`);
+      if (typeof o.description === 'string' && o.description.length > 0) {
+        lines.push(`     ${o.description}`);
+      }
+    });
+    // Free-text fallback option (D6 — any natural text accepted).
+    lines.push(`  ${options.length + 1}. 你的考虑（自由文本）`);
+    lines.push('');
+    lines.push('请回复你的选择（编号或自然语言都行）');
+
+    if (questionsRaw.length > 1) {
+      lines.push('');
+      lines.push(
+        `（cc 共问了 ${questionsRaw.length} 个问题，IM 只显示第 1 个；要全部回答请在 cc TUI 操作）`,
+      );
+    }
+
+    return {
+      body: lines.join('\n'),
+      optionCount: options.length,
+      questionCount: questionsRaw.length,
+    };
   }
 
   // ============================================================================

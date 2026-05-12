@@ -1134,6 +1134,150 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.stop();
   });
 
+  it('onPreToolUse for AskUserQuestion → IM gets numbered-options prompt + "你的考虑" trailing (DD §6 P3 D3)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+    im.sent.length = 0;
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            {
+              question: 'Pick a database',
+              header: 'DB choice',
+              multiSelect: false,
+              options: [
+                { label: 'Postgres', description: 'mature relational' },
+                { label: 'MongoDB', description: 'doc store' },
+              ],
+            },
+          ],
+        },
+        requestId: 'abcd1234',
+      }),
+    );
+
+    expect(im.sent).toHaveLength(1);
+    const body = im.sent[0]!.content;
+    // Numbered options:
+    expect(body).toMatch(/1\..*Postgres/);
+    expect(body).toMatch(/2\..*MongoDB/);
+    // Descriptions present (indented under each option):
+    expect(body).toContain('mature relational');
+    expect(body).toContain('doc store');
+    // Trailing "你的考虑" free-text option:
+    expect(body).toContain('你的考虑');
+    // Question text visible:
+    expect(body).toContain('Pick a database');
+    // Tab visible:
+    expect(body).toContain('frontend');
+    // NOT the regular "准备跑工具" format:
+    expect(body).not.toContain('准备跑工具');
+    // NOT the /1 /2 allow/deny prompt:
+    expect(body).not.toMatch(/#frontend\s*\/1\s*=\s*允许/);
+
+    // Audit log for the special path:
+    expect(
+      lines.some((l) => l.startsWith('[AskUserQuestion forward')),
+    ).toBe(true);
+    await orch.stop();
+  });
+
+  it('AskUserQuestion multi-question (>=2 questions) → only first shown + note about cc TUI for the rest', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+    im.sent.length = 0;
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            {
+              question: 'Q1',
+              header: '',
+              multiSelect: false,
+              options: [{ label: 'A', description: '' }],
+            },
+            {
+              question: 'Q2',
+              header: '',
+              multiSelect: false,
+              options: [{ label: 'B', description: '' }],
+            },
+          ],
+        },
+        requestId: 'abcd2222',
+      }),
+    );
+
+    const body = im.sent[0]!.content;
+    // Q1 shown:
+    expect(body).toContain('Q1');
+    // Note about the rest:
+    expect(body).toMatch(/2 个问题|cc TUI/);
+    await orch.stop();
+  });
+
+  it('AskUserQuestion with malformed toolInput (missing questions array) → defensive echo, no crash', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+    im.sent.length = 0;
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'AskUserQuestion',
+        toolInput: { not_questions: 'oops' },
+        requestId: 'abcd3333',
+      }),
+    );
+
+    // Doesn't crash, sends a defensive note pointing user to cc TUI.
+    expect(im.sent).toHaveLength(1);
+    expect(im.sent[0]!.content).toContain('cc TUI');
+    await orch.stop();
+  });
+
   it('onPreToolUse without IMOrigin → log only, no IM send (defensive race path)', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
