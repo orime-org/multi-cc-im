@@ -31,8 +31,13 @@ import {
   parsePermissionFilename,
 } from '@multi-cc-im/cli-cc';
 import { readdir } from 'node:fs/promises';
-import type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
-import { routeViaAI } from './ai-router.js';
+import type {
+  AIAskUserQuestionResult,
+  AIRoutingOpts,
+  AIRoutingResult,
+  AskUserQuestionViaAIOpts,
+} from './ai-router.js';
+import { routeAskUserQuestionViaAI, routeViaAI } from './ai-router.js';
 import type { SessionInfo } from './matcher.js';
 import { route, type RouterDispatch, type RouterState, type PaneRegistry } from './router.js';
 import { truncate } from './text.js';
@@ -76,7 +81,7 @@ const DEFAULT_REAPER_DELAY_MS = 30_000;
  * unaffected — orphans get reaped 5min later instead of 10s later,
  * which is fine for the rare SIGKILL case.
  */
-const ASK_USER_QUESTION_REAPER_DELAY_MS = 310_000;
+const ASK_USER_QUESTION_REAPER_DELAY_MS = 130_000;
 
 const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
@@ -114,10 +119,11 @@ export interface CreateOrchestratorOpts {
   reaperDelayMs?: number;
   /**
    * Reaper window (ms) specifically for AskUserQuestion's PermissionRequest
-   * files. Default `310_000` (cc-side AskUserQuestion hook timeout 300s
-   * + 10s margin). Required because AskUserQuestion holds the hook for
-   * up to 290s waiting for IM reply — reaping at the regular 30s would
-   * unlink the live Request file mid-flow. Tests inject a small value.
+   * files. Default `130_000` (cc-side AskUserQuestion hook timeout 120s
+   * + 10s margin per DD §9.5). Required because AskUserQuestion holds the
+   * hook for up to 110s waiting for IM reply — reaping at the regular
+   * 30s would unlink the live Request file mid-flow. Tests inject a small
+   * value.
    */
   askUserQuestionReaperDelayMs?: number;
   /** Non-fatal error sink. */
@@ -137,6 +143,17 @@ export interface CreateOrchestratorOpts {
    * degraded-mode fallback).
    */
   aiRouter?: ((opts: AIRoutingOpts) => Promise<AIRoutingResult>) | null;
+  /**
+   * AskUserQuestion AI router callback (DD §9.6 R7). Invoked when any
+   * pending PreToolUse has `toolName === 'AskUserQuestion'`. Default =
+   * the real `routeAskUserQuestionViaAI` (spawns `claude --print` with
+   * the AUQ-specific prompt). Tests pass a deterministic stub. Pass
+   * `null` to disable — router's AUQ branch falls back to writing
+   * empty-answers `updatedInput` so cc doesn't stall.
+   */
+  aiAskUserQuestionRouter?:
+    | ((opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
+    | null;
 }
 
 export interface BridgeOrchestrator {
@@ -185,6 +202,12 @@ export function createOrchestrator(
     opts.aiRouter === null
       ? undefined
       : (opts.aiRouter ?? routeViaAI);
+  const aiAskUserQuestionRouter:
+    | ((o: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
+    | undefined =
+    opts.aiAskUserQuestionRouter === null
+      ? undefined
+      : (opts.aiAskUserQuestionRouter ?? routeAskUserQuestionViaAI);
 
   // Reaper timers per (paneId, sid, requestId) tuple.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -305,6 +328,7 @@ export function createOrchestrator(
           paneId: p.paneId as unknown as PaneId,
         }));
       },
+      aiAskUserQuestionRouter,
     });
 
     // IMWork toggle from /start [auto] /stop
@@ -337,6 +361,7 @@ export function createOrchestrator(
         result.permissionResponse.decision,
         msg.replyCtx as IMReplyContext,
         result.permissionResponse.reason,
+        result.permissionResponse.updatedInput,
       );
     }
 
@@ -480,6 +505,13 @@ export function createOrchestrator(
      * omit it and we fall back to the historical default string.
      */
     reason?: string,
+    /**
+     * Optional `{questions, answers}` payload for the AskUserQuestion
+     * answer-inject channel (DD §9.3 R7). Only present on the AUQ AI
+     * path; forwarded verbatim to `writePermissionResponseFile` so cc's
+     * PreToolUse hook output carries `updatedInput`.
+     */
+    updatedInput?: Record<string, unknown>,
   ): Promise<void> {
     let entries: string[];
     try {
@@ -501,10 +533,15 @@ export function createOrchestrator(
       );
 
     if (pending.length === 0) {
-      log(`[PermissionResponse pane=${paneId}] no pending request — IM reply ignored`);
+      // Dead-drop case (DD §9.5): hook has already exited (timeout at
+      // 110s + reaper cleaned the Request file). User's IM reply arrived
+      // after cc gave up waiting. Tell the user explicitly so they don't
+      // assume the answer landed; the previous "❌ no pending tool" was
+      // ambiguous between "you never had a pending" and "cc timed out".
+      log(`[PermissionResponse pane=${paneId}] dead-drop — hook already exited`);
       try {
         await opts.imAdapter.send(
-          `❌ pane ${paneId} 当前没在等审批的工具，回复无效。`,
+          '⏱ cc 已超时，本轮不再等待你的回复（默认空答案已发给 cc）。',
           replyCtx,
         );
       } catch (err) {
@@ -515,19 +552,29 @@ export function createOrchestrator(
 
     for (const p of pending) {
       log(
-        `[PermissionResponse pane=${paneId} sid=${p.sessionId.slice(0, 8)}] ${decision} request ${p.requestId}`,
+        `[PermissionResponse pane=${paneId} sid=${p.sessionId.slice(0, 8)}] ${decision} request ${p.requestId}${updatedInput !== undefined ? ' +updatedInput' : ''}`,
       );
       try {
-        await writePermissionResponseFile({
-          stateDir: opts.stateDir,
-          paneId: p.paneId,
-          sessionId: p.sessionId,
-          requestId: p.requestId,
-          decision,
-          reason:
-            reason ??
-            `IM user replied /${decision === 'allow' ? '1' : '2'}`,
-        });
+        if (decision === 'allow') {
+          await writePermissionResponseFile({
+            stateDir: opts.stateDir,
+            paneId: p.paneId,
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+            decision: 'allow',
+            ...(updatedInput !== undefined ? { updatedInput } : {}),
+            ...(reason !== undefined ? { reason } : { reason: 'IM user replied /1' }),
+          });
+        } else {
+          await writePermissionResponseFile({
+            stateDir: opts.stateDir,
+            paneId: p.paneId,
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+            decision: 'deny',
+            reason: reason ?? 'IM user replied /2',
+          });
+        }
       } catch (err) {
         onError(err, {
           phase: 'permissionResponseWrite',

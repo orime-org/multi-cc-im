@@ -1525,3 +1525,291 @@ describe('router — AI permission reply integration (DD 2026-05-11)', () => {
     expect(result.echo).toMatch(/AI.*未.*正确|失败|无法识别|请再试/);
   });
 });
+
+describe('router — AskUserQuestion AI path (DD §9 R7)', () => {
+  const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+
+  function auqPending(
+    paneId: PaneId,
+    questions: Array<{
+      question: string;
+      header: string;
+      multiSelect: boolean;
+      options: Array<{ label: string; description: string }>;
+    }>,
+  ) {
+    return {
+      paneId,
+      sessionId: SID,
+      requestId: 'auq00001',
+      toolName: 'AskUserQuestion',
+      toolInput: { questions },
+      createdAt: 1700000000000,
+    };
+  }
+
+  const ONE_QUESTION = [
+    {
+      question: 'Pick a database',
+      header: 'DB',
+      multiSelect: false,
+      options: [
+        { label: 'Postgres', description: 'mature relational' },
+        { label: 'MongoDB', description: 'doc store' },
+      ],
+    },
+  ];
+
+  it('AUQ pending exists → routes to aiAskUserQuestionRouter, NOT the regular aiRouter', async () => {
+    let regularCalls = 0;
+    let auqCalls = 0;
+    const result = await route(incoming('我选 Postgres'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiRouter: async () => {
+        regularCalls += 1;
+        return {
+          target: null,
+          intent: null,
+          reason: 'should not be called',
+          permissionResponse: null,
+        };
+      },
+      aiAskUserQuestionRouter: async () => {
+        auqCalls += 1;
+        return {
+          target: 'frontend',
+          reason: 'matched Postgres',
+          answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+        };
+      },
+    });
+    expect(regularCalls).toBe(0);
+    expect(auqCalls).toBe(1);
+    expect(result.permissionResponse).toBeDefined();
+    expect(result.permissionResponse!.decision).toBe('allow');
+  });
+
+  it('option-kind answer → daemon assembles answers map from options[index-1].label (1-based)', async () => {
+    const result = await route(incoming('我选 Postgres'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiAskUserQuestionRouter: async () => ({
+        target: 'frontend',
+        reason: 'option 1',
+        answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+      }),
+    });
+    expect(result.permissionResponse?.updatedInput).toMatchObject({
+      answers: { 'Pick a database': 'Postgres' },
+    });
+  });
+
+  it('multi-select option (optionIndex array) → joined labels with comma', async () => {
+    const MULTI = [
+      {
+        question: 'Pick sections',
+        header: 'S',
+        multiSelect: true,
+        options: [
+          { label: 'Intro', description: '' },
+          { label: 'Methods', description: '' },
+          { label: 'Conclusion', description: '' },
+        ],
+      },
+    ];
+    const result = await route(incoming('intro and conclusion'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, MULTI),
+      ],
+      aiAskUserQuestionRouter: async () => ({
+        target: 'frontend',
+        reason: 'multi',
+        answers: [{ questionIndex: 0, kind: 'option', optionIndex: [1, 3] }],
+      }),
+    });
+    expect(result.permissionResponse?.updatedInput).toMatchObject({
+      answers: { 'Pick sections': 'Intro, Conclusion' },
+    });
+  });
+
+  it('text-kind answer → free text passed verbatim into answers map', async () => {
+    const result = await route(incoming('use TypeScript strict'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiAskUserQuestionRouter: async () => ({
+        target: 'frontend',
+        reason: 'free text',
+        answers: [
+          { questionIndex: 0, kind: 'text', text: 'use TypeScript strict' },
+        ],
+      }),
+    });
+    expect(result.permissionResponse?.updatedInput).toMatchObject({
+      answers: { 'Pick a database': 'use TypeScript strict' },
+    });
+  });
+
+  it('IM echo shows option-kind with circled glyph + label', async () => {
+    const result = await route(incoming('我选 Postgres'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiAskUserQuestionRouter: async () => ({
+        target: 'frontend',
+        reason: 'option',
+        answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+      }),
+    });
+    expect(result.echo).toContain('target: frontend');
+    expect(result.echo).toMatch(/你答 ①.*Postgres/);
+  });
+
+  it('IM echo shows text-kind as free-form answer line', async () => {
+    const result = await route(incoming('use ts'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiAskUserQuestionRouter: async () => ({
+        target: 'frontend',
+        reason: 'text',
+        answers: [{ questionIndex: 0, kind: 'text', text: 'use ts' }],
+      }),
+    });
+    expect(result.echo).toMatch(/自由回答:.*use ts/);
+  });
+
+  it('no AUQ AI router wired → fallback: empty-answers updatedInput (defensive, cc unstuck)', async () => {
+    // Regular aiRouter set so route() enters handlePlainWithAI, but it
+    // must never be called for AUQ pending — assert via throw stub.
+    const result = await route(incoming('whatever'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiRouter: async () => {
+        throw new Error('regular aiRouter must not be called for AUQ pending');
+      },
+      // No aiAskUserQuestionRouter
+    });
+    expect(result.permissionResponse?.decision).toBe('allow');
+    expect(result.permissionResponse?.updatedInput).toMatchObject({
+      answers: { 'Pick a database': '' },
+    });
+    expect(result.echo).toMatch(/AI 分诊失败/);
+  });
+
+  it('AI returns null → fallback same as no-router (empty answers)', async () => {
+    const result = await route(incoming('whatever'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+      ],
+      aiAskUserQuestionRouter: async () => null,
+    });
+    expect(result.permissionResponse?.decision).toBe('allow');
+    expect(result.permissionResponse?.updatedInput).toMatchObject({
+      answers: { 'Pick a database': '' },
+    });
+  });
+
+  it('AUQ pending coexists with regular Bash pending → only AUQ branch fires, regular pending ignored this turn', async () => {
+    let regularCalls = 0;
+    let auqCalls = 0;
+    const bashPending = {
+      paneId: API.paneId,
+      sessionId: SID,
+      requestId: 'bash0001',
+      toolName: 'Bash',
+      toolInput: { command: 'rm' },
+      createdAt: 1700000000000,
+    };
+    await route(incoming('我选 Postgres'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        auqPending(FRONTEND.paneId, ONE_QUESTION),
+        bashPending,
+      ],
+      aiRouter: async () => {
+        regularCalls += 1;
+        return {
+          target: null,
+          intent: null,
+          reason: 'no',
+          permissionResponse: null,
+        };
+      },
+      aiAskUserQuestionRouter: async () => {
+        auqCalls += 1;
+        return {
+          target: 'frontend',
+          reason: 'r',
+          answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+        };
+      },
+    });
+    expect(auqCalls).toBe(1);
+    expect(regularCalls).toBe(0);
+  });
+
+  it('malformed AUQ tool_input (no questions[]) → filtered out, falls through to routing', async () => {
+    let regularCalls = 0;
+    const result = await route(incoming('hello frontend'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [
+        {
+          paneId: FRONTEND.paneId,
+          sessionId: SID,
+          requestId: 'broken',
+          toolName: 'AskUserQuestion',
+          toolInput: { something: 'else' }, // invalid shape
+          createdAt: 1700000000000,
+        },
+      ],
+      aiRouter: async () => {
+        regularCalls += 1;
+        return {
+          target: 'frontend',
+          intent: 'hello frontend',
+          reason: 'r',
+          permissionResponse: null,
+        };
+      },
+      aiAskUserQuestionRouter: async () => {
+        throw new Error('should not be called for malformed AUQ pending');
+      },
+    });
+    // Routing path consumed the message (no AUQ branch hijack).
+    expect(regularCalls).toBe(1);
+    expect(result.dispatches.length).toBe(1);
+  });
+});

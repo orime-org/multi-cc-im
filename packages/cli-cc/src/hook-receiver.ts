@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { AskUserQuestionToolInputSchema } from '@multi-cc-im/shared';
 import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
@@ -36,23 +37,39 @@ export interface HookDecision {
 }
 
 /**
- * cc PreToolUse hook stdout shape:
+ * cc PreToolUse hook stdout shape. Per the official
+ * [hooks reference](https://code.claude.com/docs/en/hooks#pretooluse),
+ * `hookSpecificOutput` fields for PreToolUse are:
  *
- * ```json
- * { "hookSpecificOutput": {
- *     "hookEventName": "PreToolUse",
- *     "permissionDecision": "allow" | "deny" | "ask" | "defer",
- *     "permissionDecisionReason": "human-readable reason"
- *   } }
- * ```
+ * - `permissionDecision`: `'allow' | 'deny' | 'ask' | 'defer'`
+ * - `permissionDecisionReason`: optional (required when `deny`)
+ * - `updatedInput`: optional object that REWRITES the tool's input
+ *   before execution
+ *
+ * For AskUserQuestion specifically, the
+ * [agent-sdk/user-input docs](https://code.claude.com/docs/en/agent-sdk/user-input#handle-clarifying-questions)
+ * document `allow + updatedInput.answers` as the standard answer-inject
+ * path: cc treats the tool as completed successfully with the user's
+ * answers, transcript records `{questions, answers}` as the tool result.
+ *
+ * We split into a union to make the protocol invariants type-enforced:
+ * `deny` must carry a reason; `allow` may carry `updatedInput` and/or
+ * a reason (but neither is required for generic auto-allow).
  */
-export interface PreToolUseHookOutput {
-  hookSpecificOutput: {
-    hookEventName: 'PreToolUse';
-    permissionDecision: 'allow' | 'deny' | 'ask' | 'defer';
-    permissionDecisionReason: string;
-  };
-}
+export type PreToolUseHookOutput = {
+  hookSpecificOutput:
+    | {
+        hookEventName: 'PreToolUse';
+        permissionDecision: 'allow';
+        updatedInput?: Record<string, unknown>;
+        permissionDecisionReason?: string;
+      }
+    | {
+        hookEventName: 'PreToolUse';
+        permissionDecision: 'deny' | 'ask' | 'defer';
+        permissionDecisionReason: string;
+      };
+};
 
 /**
  * Polling cadence + max wait for the PermissionResponse file (= IM-reply
@@ -79,24 +96,23 @@ const PERMISSION_TIMEOUT_MS = 10_000;
 
 /**
  * AskUserQuestion-specific hook internal poll deadline. Per
- * [DD AskUserQuestion IM bridge](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md) §6 P2:
- * AskUserQuestion holds the hook polling for an IM-side natural-language
- * reply (D2-B "hook holds until IM reply"). User may take minutes to
- * answer — single hook timeout doesn't fit all tools, hence the
- * `setup-hooks.ts` per-matcher cc-side timeout split (P1) + per-tool
- * internal poll deadline split here.
+ * [DD AskUserQuestion IM bridge §9.5](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#95-revised-timeouts):
+ * AUQ holds the hook polling for an IM-side reply (D2-B "hook holds
+ * until IM reply"). User-side 2-min budget is enough per user direction
+ * (originally 5 min).
  *
- * **290s internal vs 300s cc-side**: same 10s margin model as the
- * regular flow (10s internal vs 20s cc-side) — preserves the
- * `hook stdout deterministic` + daemon retry budget + network jitter
- * envelope (CLAUDE.md "Hook 内部 timeout < cc-side hook timeout").
+ * **110s internal vs 120s cc-side**: same 10s margin model as the
+ * regular flow — preserves the `hook stdout deterministic` + daemon
+ * retry budget + network jitter envelope.
  *
- * On timeout (user never replied): default to ALLOW (NOT deny) so cc
- * renders the TUI widget as a graceful fallback (DD §7). Defaulting to
- * deny would cancel the tool with no useful reason; allow lets the user
- * still answer in cc TUI.
+ * On timeout (user never replied): hook **self-constructs** an
+ * `updatedInput` with empty `answers` per question and returns
+ * `permissionDecision: 'allow'` — cc records the tool as completed
+ * with empty answers; the model decides what to do next (retry,
+ * rephrase, give up). Crucially we **do NOT use the deny channel** for
+ * timeout; deny is not part of AUQ's documented response semantics.
  */
-const ASK_USER_QUESTION_TIMEOUT_MS = 290_000;
+const ASK_USER_QUESTION_TIMEOUT_MS = 110_000;
 
 const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
@@ -317,46 +333,53 @@ export async function runHookReceiver(
       const pollMs =
         opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
       // AskUserQuestion gets the longer poll deadline (P1 settings.json
-      // matched a 300s cc-side timeout for this tool — internal 290s leaves
+      // matched a 120s cc-side timeout for this tool — internal 110s leaves
       // the same 10s margin as the regular path's 20s/10s split).
       const timeoutMs = isAskUserQuestion
         ? opts.askUserQuestionTimeoutMs ?? ASK_USER_QUESTION_TIMEOUT_MS
         : opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS;
       const deadline = Date.now() + timeoutMs;
-      // Default-allow on timeout for BOTH paths (regular tools: existing
-      // behavior; AskUserQuestion: per DD §7, allow → cc renders widget in
-      // TUI as fallback when IM didn't reply).
-      let decision: 'allow' | 'deny' = 'allow';
-      let reason = `${Math.round(timeoutMs / 1000)}s timeout, default allow`;
+      // Holds the hook output once we either receive a PermissionResponse
+      // or finalize a timeout fallback. Stays undefined until the polling
+      // loop / timeout branch fills it in.
+      let hookOutput: PreToolUseHookOutput | undefined;
       // Delete-always semantics (user policy 2026-05-11): wrap the entire
       // polling loop in try/finally so the Request + Response files are
       // ALWAYS deleted on exit — success (break), timeout (deadline), or
-      // throw (non-ENOENT filesystem error). The previous code only
-      // cleaned up on the success / timeout paths; a non-ENOENT throw
-      // mid-poll left both files around for the next daemon-start sweep.
-      // The polling loop reads Response BEFORE finally runs, so this
-      // doesn't race the read.
+      // throw (non-ENOENT filesystem error). The polling loop reads
+      // Response BEFORE finally runs, so this doesn't race the read.
       try {
         while (Date.now() < deadline) {
           try {
             await stat(respPath);
             const resp = await readPermissionResponseFile(respPath);
             if (resp && resp.requestId === requestId) {
-              if (isAskUserQuestion) {
-                // D5-C invariant: AskUserQuestion always returns to cc as
-                // `deny + reason=<user's answer>` regardless of what the
-                // daemon's response.decision says. Defensive: a buggy router
-                // could write decision='allow' (e.g., AI prompt regression);
-                // forcing deny here keeps the contract — cc transcript
-                // records the user's answer in the reason field, cc
-                // continues with that as context.
-                decision = 'deny';
-                reason =
-                  resp.reason ||
-                  '[multi-cc-im] AskUserQuestion answered via IM (empty reason)';
+              if (resp.decision === 'allow') {
+                // Forward `updatedInput` and/or `reason` if present.
+                // AskUserQuestion answer-inject path sends `updatedInput:
+                // {questions, answers}` per DD §9.3; generic AI-routed
+                // allow may send just a reason. Neither is required.
+                hookOutput = {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'allow',
+                    ...(resp.updatedInput !== undefined
+                      ? { updatedInput: resp.updatedInput }
+                      : {}),
+                    ...(resp.reason !== undefined
+                      ? { permissionDecisionReason: resp.reason }
+                      : {}),
+                  },
+                };
               } else {
-                decision = resp.decision;
-                reason = resp.reason || `IM user ${decision}`;
+                // decision === 'deny' — reason is required by schema.
+                hookOutput = {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: resp.reason,
+                  },
+                };
               }
               break;
             }
@@ -380,11 +403,43 @@ export async function runHookReceiver(
         });
       }
 
+      if (hookOutput) return hookOutput;
+
+      // Timeout fallback. AskUserQuestion gets a structured allow +
+      // empty-answers updatedInput (per DD §9.5) so the tool records as
+      // completed with empty user answers and cc decides what to do next;
+      // generic tools default to a plain allow (existing v1.7 behavior).
+      if (isAskUserQuestion) {
+        const parsed = AskUserQuestionToolInputSchema.safeParse(
+          payload.tool_input,
+        );
+        if (parsed.success) {
+          const emptyAnswers: Record<string, string> = {};
+          for (const q of parsed.data.questions) {
+            emptyAnswers[q.question] = '';
+          }
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: {
+                questions: parsed.data.questions,
+                answers: emptyAnswers,
+              },
+              permissionDecisionReason:
+                '[multi-cc-im] AskUserQuestion timed out (no IM reply); empty answers',
+            },
+          };
+        }
+        // tool_input shape unexpected — fall through to plain allow; cc
+        // renders the widget in TUI as a defensive last resort.
+      }
+
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          permissionDecision: decision,
-          permissionDecisionReason: reason,
+          permissionDecision: 'allow',
+          permissionDecisionReason: `${Math.round(timeoutMs / 1000)}s timeout, default allow`,
         },
       };
     }

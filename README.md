@@ -141,9 +141,9 @@ Reply with anything that makes sense:
 - Natural language — `我选第二个` / `the mongo one` / `do option 2 with a side of fries`
 - Free text not matching any option — your reply goes through verbatim
 
-The daemon hands your answer back to cc; cc continues from there. The cc TUI widget never blocks — if you don't reply within 5 minutes the widget falls back to the TUI so you can still answer locally.
+The daemon hands your answer back to cc as a normal `AskUserQuestion` tool result (per cc's official agent-sdk channel: `permissionDecision: 'allow'` + `updatedInput: {questions, answers}`), so cc records the tool as completed successfully with your answers. If you don't reply within 2 minutes the hook self-injects empty answers so cc unblocks and decides what to do next; if you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的回复` in IM.
 
-**Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): only the first is shown in IM; finish the rest in cc TUI.
+**Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): each question gets one entry in the injected `answers` map.
 
 ## cc replies → IM rendering
 

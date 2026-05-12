@@ -1401,7 +1401,7 @@ describe('createOrchestrator — IM permission gate', () => {
     await orch.stop();
   });
 
-  it('inbound `#frontend /1` with no pending Request → IM echoes "no pending"', async () => {
+  it('inbound `#frontend /1` with no pending Request → IM echoes dead-drop timeout notice', async () => {
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: permStateDir,
@@ -1416,7 +1416,10 @@ describe('createOrchestrator — IM permission gate', () => {
     await im.handler!.onMessage(incoming('#frontend /1'));
 
     const allSent = im.sent.map((s) => s.content).join('\n');
-    expect(allSent).toMatch(/没在等审批|no pending|无效/);
+    // Per DD §9.5 R8: when daemon writes a PermissionResponse but the
+    // hook has already exited (timeout), surface the timeout to the
+    // user rather than the previous ambiguous "no pending" message.
+    expect(allSent).toMatch(/超时|timed? ?out|dead.?drop|不再等待/i);
     await orch.stop();
   });
 });

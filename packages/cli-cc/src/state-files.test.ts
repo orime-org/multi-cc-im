@@ -284,7 +284,7 @@ describe('state-files', () => {
       expect(got?.toolInput).toEqual({ command: 'ls' });
     });
 
-    it('writePermissionResponseFile + readPermissionResponseFile round-trip', async () => {
+    it('writePermissionResponseFile + readPermissionResponseFile round-trip (allow + reason)', async () => {
       await writePermissionResponseFile({
         stateDir,
         paneId: PANE_ID,
@@ -306,7 +306,80 @@ describe('state-files', () => {
       ).toBe(true);
       const got = await readPermissionResponseFile(path);
       expect(got?.decision).toBe('allow');
-      expect(got?.reason).toBe('IM user approved');
+      if (got?.decision !== 'allow') throw new Error('expected allow');
+      expect(got.reason).toBe('IM user approved');
+      expect(got.updatedInput).toBeUndefined();
+    });
+
+    it('round-trip allow + updatedInput (AskUserQuestion answer-inject path)', async () => {
+      const updatedInput = {
+        questions: [
+          {
+            question: 'How should I format the output?',
+            options: [{ label: 'Summary' }, { label: 'Detailed' }],
+          },
+        ],
+        answers: {
+          'How should I format the output?': 'Summary',
+        },
+      };
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'auq00001',
+        decision: 'allow',
+        updatedInput,
+      });
+      const got = await readPermissionResponseFile(
+        permissionResponsePath({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'auq00001',
+        }),
+      );
+      expect(got?.decision).toBe('allow');
+      if (got?.decision !== 'allow') throw new Error('expected allow');
+      expect(got.updatedInput).toEqual(updatedInput);
+      expect(got.reason).toBeUndefined();
+    });
+
+    it('round-trip deny + reason', async () => {
+      await writePermissionResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'denyfeed',
+        decision: 'deny',
+        reason: 'IM user rejected',
+      });
+      const got = await readPermissionResponseFile(
+        permissionResponsePath({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'denyfeed',
+        }),
+      );
+      expect(got?.decision).toBe('deny');
+      if (got?.decision !== 'deny') throw new Error('expected deny');
+      expect(got.reason).toBe('IM user rejected');
+    });
+
+    it('writePermissionResponseFile rejects deny without reason (zod parse error)', async () => {
+      // Deliberately bypass TS so we can verify the runtime zod guard.
+      // Without the cast, the union type rejects this at compile time —
+      // which is also a property we want, but we test runtime defense too
+      // (production code paths may receive untyped JSON from elsewhere).
+      const invalid = {
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'denybare',
+        decision: 'deny',
+      } as unknown as Parameters<typeof writePermissionResponseFile>[0];
+      await expect(writePermissionResponseFile(invalid)).rejects.toThrow();
     });
 
     it('deletePermissionRequestFile + deletePermissionResponseFile idempotent', async () => {

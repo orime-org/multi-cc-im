@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import {
   buildClaudeArgs,
   explainExecError,
+  parseAskUserQuestionOutput,
   parseRoutingOutput,
+  renderAskUserQuestionPrompt,
   renderRoutingPrompt,
   routeViaAI,
 } from './ai-router.js';
@@ -266,176 +268,11 @@ describe('ai-router — renderRoutingPrompt', () => {
     });
 
     // -------------------------------------------------------------------
-    // AskUserQuestion-specific bullet + rules (v1.9 DD §6 P4)
+    // AskUserQuestion pendings flow through a separate AI path
+    // (`renderAskUserQuestionPrompt`) per DD §9 revision. The router
+    // filters them out before invoking the routing / force-permission
+    // prompts. Tests for the AUQ-only path live further below.
     // -------------------------------------------------------------------
-
-    it('AskUserQuestion entry renders question + numbered options (NOT raw JSON dump)', () => {
-      const out = renderRoutingPrompt({
-        userMsg: '1',
-        tabs: ['multi-cc-im'],
-        currentTab: null,
-        pendingRequests: [
-          {
-            tabName: 'multi-cc-im',
-            toolName: 'AskUserQuestion',
-            toolInput: {
-              questions: [
-                {
-                  question: 'Pick a database',
-                  header: 'DB',
-                  multiSelect: false,
-                  options: [
-                    { label: 'Postgres', description: 'mature relational' },
-                    { label: 'MongoDB', description: 'doc store' },
-                  ],
-                },
-              ],
-            },
-          },
-        ],
-      });
-      // Question text visible (not just raw `tool_input` JSON):
-      expect(out).toContain('Pick a database');
-      // Options rendered as a numbered list:
-      expect(out).toMatch(/1\..*Postgres/);
-      expect(out).toMatch(/2\..*MongoDB/);
-      // Descriptions present (so AI can match against "the mature one" etc.):
-      expect(out).toContain('mature relational');
-      expect(out).toContain('doc store');
-      // Bullet must NOT show the raw `questions=[...]` blob — that's
-      // unreadable and confuses the AI:
-      expect(out).not.toMatch(/input=questions=\[/);
-    });
-
-    it('AskUserQuestion entry triggers the SPECIAL RULE section (always deny + reason = picked option or free text)', () => {
-      const out = renderRoutingPrompt({
-        userMsg: '我选 Postgres',
-        tabs: ['multi-cc-im'],
-        currentTab: null,
-        pendingRequests: [
-          {
-            tabName: 'multi-cc-im',
-            toolName: 'AskUserQuestion',
-            toolInput: {
-              questions: [
-                {
-                  question: 'Pick a DB',
-                  header: '',
-                  multiSelect: false,
-                  options: [
-                    { label: 'Postgres', description: '' },
-                    { label: 'MongoDB', description: '' },
-                  ],
-                },
-              ],
-            },
-          },
-        ],
-      });
-      // Section header:
-      expect(out).toMatch(/AskUserQuestion|widget question/i);
-      // Always-deny instruction:
-      expect(out).toMatch(/always.*deny|decision.*always.*"deny"/i);
-      // Reason = picked option's label, or free-text passthrough:
-      expect(out).toMatch(/label|option label|exact label/i);
-      expect(out).toMatch(/free text|verbatim|pass through/i);
-      // D5-3 asymmetric trust should NOT apply to AskUserQuestion (it's
-      // about allow/deny gating for regular tools).
-      expect(out).toMatch(
-        /D5-3.*regular|asymmetric trust.*not apply|only.*regular tools|AskUserQuestion.*exempt/i,
-      );
-    });
-
-    it('mixed pending (regular + AskUserQuestion) — both rendered correctly side by side', () => {
-      const out = renderRoutingPrompt({
-        userMsg: 'do option 2',
-        tabs: ['multi-cc-im', 'frontend'],
-        currentTab: null,
-        pendingRequests: [
-          {
-            tabName: 'multi-cc-im',
-            toolName: 'Bash',
-            toolInput: { command: 'rm -rf node_modules' },
-          },
-          {
-            tabName: 'frontend',
-            toolName: 'AskUserQuestion',
-            toolInput: {
-              questions: [
-                {
-                  question: 'Style?',
-                  header: '',
-                  multiSelect: false,
-                  options: [
-                    { label: 'Tailwind', description: '' },
-                    { label: 'CSS Modules', description: '' },
-                  ],
-                },
-              ],
-            },
-          },
-        ],
-      });
-      // Regular Bash entry still rendered with input= prefix (existing format):
-      expect(out).toMatch(/tool=Bash.*input=command=/);
-      // AskUserQuestion still has its question + options visible:
-      expect(out).toContain('Style?');
-      expect(out).toContain('Tailwind');
-      expect(out).toContain('CSS Modules');
-    });
-
-    it('AskUserQuestion multi-question (>= 2 questions) — first question options rendered + note about the rest', () => {
-      const out = renderRoutingPrompt({
-        userMsg: '1',
-        tabs: ['multi-cc-im'],
-        currentTab: null,
-        pendingRequests: [
-          {
-            tabName: 'multi-cc-im',
-            toolName: 'AskUserQuestion',
-            toolInput: {
-              questions: [
-                {
-                  question: 'Q1',
-                  header: '',
-                  multiSelect: false,
-                  options: [{ label: 'A', description: '' }],
-                },
-                {
-                  question: 'Q2',
-                  header: '',
-                  multiSelect: false,
-                  options: [{ label: 'B', description: '' }],
-                },
-              ],
-            },
-          },
-        ],
-      });
-      expect(out).toContain('Q1');
-      // Multi-question note (mirrors orchestrator P3 behavior):
-      expect(out).toMatch(/2 question|additional question|cc TUI/);
-    });
-
-    it('AskUserQuestion with malformed toolInput (no questions array) — defensive: bullet still emitted with safe placeholder', () => {
-      const out = renderRoutingPrompt({
-        userMsg: 'whatever',
-        tabs: ['multi-cc-im'],
-        currentTab: null,
-        pendingRequests: [
-          {
-            tabName: 'multi-cc-im',
-            toolName: 'AskUserQuestion',
-            toolInput: { something_else: 'oops' },
-          },
-        ],
-      });
-      // Must NOT crash — output must include the tab name + tool name + a
-      // placeholder so AI knows there's a pending it can't fully parse.
-      expect(out).toContain('multi-cc-im');
-      expect(out).toContain('AskUserQuestion');
-      expect(out).toMatch(/malformed|unknown|no questions/i);
-    });
 
     // -------------------------------------------------------------------
     // forcePermissionMode (v1.10) — when daemon detects ANY pending, the
@@ -448,21 +285,14 @@ describe('ai-router — renderRoutingPrompt', () => {
 
     it('forcePermissionMode=true → prompt has FORCE PERMISSION MODE marker', () => {
       const out = renderRoutingPrompt({
-        userMsg: 'I pick option 2',
+        userMsg: 'allow that rm command',
         tabs: ['multi-cc-im'],
         currentTab: null,
         pendingRequests: [
           {
             tabName: 'multi-cc-im',
-            toolName: 'AskUserQuestion',
-            toolInput: {
-              questions: [
-                {
-                  question: 'Pick',
-                  options: [{ label: 'A' }, { label: 'B' }],
-                },
-              ],
-            },
+            toolName: 'Bash',
+            toolInput: { command: 'rm -rf build' },
           },
         ],
         forcePermissionMode: true,
@@ -1032,5 +862,217 @@ describe('ai-router — explainExecError', () => {
     expect(explainExecError(new Error('mystery'), 30_000)).toBe(
       'cc exec failed: unknown',
     );
+  });
+});
+
+// ============================================================================
+// AskUserQuestion path (DD §9 — D5-D allow + updatedInput.answers)
+// ============================================================================
+
+describe('ai-router — renderAskUserQuestionPrompt', () => {
+  const ONE_QUESTION_PENDING = {
+    tabName: 'multi-cc-im',
+    questions: [
+      {
+        question: 'Pick a database',
+        header: 'DB',
+        multiSelect: false,
+        options: [
+          { label: 'Postgres', description: 'mature relational' },
+          { label: 'MongoDB', description: 'doc store' },
+        ],
+      },
+    ],
+  };
+
+  it('renders question text + numbered options + descriptions', () => {
+    const out = renderAskUserQuestionPrompt({
+      userMsg: '1',
+      pendings: [ONE_QUESTION_PENDING],
+    });
+    expect(out).toContain('Pick a database');
+    expect(out).toMatch(/1\. Postgres/);
+    expect(out).toMatch(/2\. MongoDB/);
+    expect(out).toContain('mature relational');
+    expect(out).toContain('doc store');
+  });
+
+  it('marks multiSelect questions in the bullet', () => {
+    const out = renderAskUserQuestionPrompt({
+      userMsg: '1,2',
+      pendings: [
+        {
+          tabName: 'multi-cc-im',
+          questions: [
+            {
+              question: 'Which features?',
+              header: 'Feat',
+              multiSelect: true,
+              options: [
+                { label: 'A', description: '' },
+                { label: 'B', description: '' },
+                { label: 'C', description: '' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toMatch(/multiSelect/i);
+  });
+
+  it('renders multi-question pendings — both questions visible', () => {
+    const out = renderAskUserQuestionPrompt({
+      userMsg: 'first one is summary, second is intro and conclusion',
+      pendings: [
+        {
+          tabName: 'multi-cc-im',
+          questions: [
+            {
+              question: 'Format?',
+              header: 'F',
+              multiSelect: false,
+              options: [
+                { label: 'Summary', description: 's' },
+                { label: 'Detailed', description: 'd' },
+              ],
+            },
+            {
+              question: 'Sections?',
+              header: 'S',
+              multiSelect: true,
+              options: [
+                { label: 'Intro', description: 'i' },
+                { label: 'Conclusion', description: 'c' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).toContain('Format?');
+    expect(out).toContain('Sections?');
+    expect(out).toMatch(/question\[0\]/);
+    expect(out).toMatch(/question\[1\]/);
+  });
+
+  it('OUTPUT spec mandates structured answers array (option / text kinds)', () => {
+    const out = renderAskUserQuestionPrompt({
+      userMsg: '1',
+      pendings: [ONE_QUESTION_PENDING],
+    });
+    expect(out).toContain('"answers"');
+    expect(out).toMatch(/"kind":\s*"option"/);
+    expect(out).toMatch(/"kind":\s*"text"/);
+    expect(out).toMatch(/"optionIndex"/);
+    expect(out).toMatch(/"text"/);
+    // No routing rules — AUQ path is focused on answer extraction only.
+    expect(out).not.toMatch(/MATCHING RULES \(in priority order\)/);
+    expect(out).not.toMatch(/Rule 1.*IF A TAB NAME APPEARS/i);
+    // No allow/deny semantics — AUQ doesn't gate, it answers.
+    expect(out).not.toMatch(/decision.*allow/i);
+  });
+
+  it('interpolates the user message verbatim', () => {
+    const out = renderAskUserQuestionPrompt({
+      userMsg: '我选 Postgres，不要 MongoDB',
+      pendings: [ONE_QUESTION_PENDING],
+    });
+    expect(out).toContain('我选 Postgres，不要 MongoDB');
+  });
+});
+
+describe('ai-router — parseAskUserQuestionOutput', () => {
+  function wrapEnvelope(inner: unknown): string {
+    return JSON.stringify({
+      result:
+        typeof inner === 'string' ? inner : JSON.stringify(inner),
+      session_id: 'test',
+    });
+  }
+
+  it('parses a valid option-kind answer (1-based index)', () => {
+    const envelope = wrapEnvelope({
+      target: 'multi-cc-im',
+      reason: 'user picked option 1',
+      answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+    });
+    const result = parseAskUserQuestionOutput(envelope);
+    expect(result).not.toBeNull();
+    expect(result!.target).toBe('multi-cc-im');
+    expect(result!.answers).toEqual([
+      { questionIndex: 0, kind: 'option', optionIndex: 1 },
+    ]);
+  });
+
+  it('parses a multi-select option-kind answer (optionIndex array)', () => {
+    const envelope = wrapEnvelope({
+      target: 'frontend',
+      reason: 'multi pick',
+      answers: [{ questionIndex: 0, kind: 'option', optionIndex: [1, 3] }],
+    });
+    const result = parseAskUserQuestionOutput(envelope);
+    expect(result).not.toBeNull();
+    const entry = result!.answers[0];
+    if (entry?.kind !== 'option') throw new Error('expected option');
+    expect(entry.optionIndex).toEqual([1, 3]);
+  });
+
+  it('parses a text-kind free-form answer', () => {
+    const envelope = wrapEnvelope({
+      target: 'multi-cc-im',
+      reason: 'free text',
+      answers: [
+        { questionIndex: 0, kind: 'text', text: 'use TypeScript strict mode' },
+      ],
+    });
+    const result = parseAskUserQuestionOutput(envelope);
+    expect(result).not.toBeNull();
+    const entry = result!.answers[0];
+    if (entry?.kind !== 'text') throw new Error('expected text');
+    expect(entry.text).toBe('use TypeScript strict mode');
+  });
+
+  it('returns null on invalid optionIndex (0 or negative)', () => {
+    const envelope = wrapEnvelope({
+      target: 'multi-cc-im',
+      answers: [{ questionIndex: 0, kind: 'option', optionIndex: 0 }],
+    });
+    expect(parseAskUserQuestionOutput(envelope)).toBeNull();
+  });
+
+  it('returns null on empty answers array', () => {
+    const envelope = wrapEnvelope({
+      target: 'multi-cc-im',
+      answers: [],
+    });
+    expect(parseAskUserQuestionOutput(envelope)).toBeNull();
+  });
+
+  it('returns null on missing target', () => {
+    const envelope = wrapEnvelope({
+      answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }],
+    });
+    expect(parseAskUserQuestionOutput(envelope)).toBeNull();
+  });
+
+  it('strips markdown fences around inner JSON before parsing', () => {
+    const inner =
+      '```json\n' +
+      JSON.stringify({
+        target: 'multi-cc-im',
+        answers: [{ questionIndex: 0, kind: 'option', optionIndex: 2 }],
+      }) +
+      '\n```';
+    const envelope = JSON.stringify({ result: inner });
+    const result = parseAskUserQuestionOutput(envelope);
+    expect(result).not.toBeNull();
+    expect(result!.target).toBe('multi-cc-im');
+  });
+
+  it('returns null on malformed envelope', () => {
+    expect(parseAskUserQuestionOutput('not json')).toBeNull();
+    expect(parseAskUserQuestionOutput('{}')).toBeNull();
+    expect(parseAskUserQuestionOutput('{"result": 123}')).toBeNull();
   });
 });

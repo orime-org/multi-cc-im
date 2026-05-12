@@ -435,11 +435,15 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     expect(result).toBeUndefined();
   });
 
-  it('AskUserQuestion + bound state + response received → returns deny + reason=<response.reason> (D5-C)', async () => {
+  it('AskUserQuestion + response decision=deny → hook forwards deny + reason verbatim (defensive)', async () => {
+    // Per DD §9 revision, daemon SHOULD write allow + updatedInput for AUQ.
+    // If a future router still emits deny (e.g. defensive guard, schema
+    // regression), the hook must honor it verbatim — not magically rewrite
+    // it to allow. cc transcript will show the tool as denied with the
+    // daemon's reason; that's the daemon's decision to own.
     await setupBoundState(stateDir);
 
-    // Background responder: write response with decision='deny' + reason
-    // (mimics what daemon would do per DD §6 P4 ai-router).
+    // Background responder: write response with decision='deny' + reason.
     const respondInBackground = (async () => {
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
@@ -487,12 +491,23 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     expect(after.some((n) => n.includes(PERMISSION_RESPONSE_PREFIX))).toBe(false);
   });
 
-  it('AskUserQuestion + response with decision=allow (rogue daemon) → defensive: hook still returns deny', async () => {
-    // D5-C invariant: AskUserQuestion ALWAYS goes back to cc as deny+reason.
-    // If a buggy daemon writes decision='allow' (or a future router change
-    // accidentally swaps), the hook must still produce deny — otherwise cc
-    // gets a silent green light for the tool with no answer in transcript.
+  it('AskUserQuestion + response with decision=allow + updatedInput → forwards updatedInput to cc (D5-D answer-inject)', async () => {
+    // Per DD §9 revision: AskUserQuestion's correct response channel is
+    // `allow + updatedInput.answers`. Daemon writes that, hook forwards it
+    // verbatim to cc so cc treats the tool as completed successfully with
+    // the user's answers. No deny override anymore.
     await setupBoundState(stateDir);
+    const updatedInput = {
+      questions: [
+        {
+          question: 'How should I format the output?',
+          options: [{ label: 'Summary' }, { label: 'Detailed' }],
+        },
+      ],
+      answers: {
+        'How should I format the output?': 'Summary',
+      },
+    };
     const respondInBackground = (async () => {
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline) {
@@ -508,8 +523,8 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
               paneId: PANE_ID,
               sessionId: SID,
               requestId: m[1]!,
-              decision: 'allow', // <-- WRONG, hook must override
-              reason: 'user said yes (but as allow not deny)',
+              decision: 'allow',
+              updatedInput,
             });
             return;
           }
@@ -527,17 +542,25 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     });
     await respondInBackground;
 
-    expect(
-      (result as { hookSpecificOutput: { permissionDecision: string } })
-        .hookSpecificOutput.permissionDecision,
-    ).toBe('deny');
+    const out = (
+      result as {
+        hookSpecificOutput: {
+          permissionDecision: string;
+          updatedInput?: Record<string, unknown>;
+        };
+      }
+    ).hookSpecificOutput;
+    expect(out.permissionDecision).toBe('allow');
+    expect(out.updatedInput).toEqual(updatedInput);
   });
 
-  it('AskUserQuestion + timeout → default allow (cc renders TUI widget as fallback per DD §7)', async () => {
-    // When user doesn't reply in IM in time, defaulting to deny would
-    // cancel the tool with a generic "timeout" reason — cc gets no real
-    // answer. Defaulting to allow lets cc render the TUI widget so user
-    // can still respond locally. DD §7 explicitly documents this.
+  it('AskUserQuestion + timeout → allow + updatedInput.answers with empty strings (DD §9.5)', async () => {
+    // Per DD §9.5 revision: on AUQ timeout the hook self-constructs an
+    // `updatedInput` with empty `answers` per question and returns
+    // `permissionDecision: 'allow'`. cc records the tool as completed
+    // with empty user answers; the model decides what to do next. Does
+    // NOT use the deny channel (deny is not part of AUQ's documented
+    // response semantics per agent-sdk/user-input docs).
     await setupBoundState(stateDir);
     const result = await runHookReceiver({
       stateDir,
@@ -546,10 +569,28 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
       permissionPollIntervalMs: 20,
       askUserQuestionTimeoutMs: 100, // immediate timeout
     });
-    expect(
-      (result as { hookSpecificOutput: { permissionDecision: string } })
-        .hookSpecificOutput.permissionDecision,
-    ).toBe('allow');
+    const out = (
+      result as {
+        hookSpecificOutput: {
+          permissionDecision: string;
+          updatedInput?: {
+            questions: unknown[];
+            answers: Record<string, string>;
+          };
+        };
+      }
+    ).hookSpecificOutput;
+    expect(out.permissionDecision).toBe('allow');
+    expect(out.updatedInput).toBeDefined();
+    expect(out.updatedInput!.questions).toEqual(
+      (PRE_TOOL_USE_ASK as unknown as { tool_input: { questions: unknown[] } })
+        .tool_input.questions,
+    );
+    // Empty answers for every question key (cc reads empty answer → decides)
+    for (const [k, v] of Object.entries(out.updatedInput!.answers)) {
+      expect(typeof k).toBe('string');
+      expect(v).toBe('');
+    }
     const after = await readStateDirEntries(stateDir);
     expect(after.some((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toBe(false);
   });

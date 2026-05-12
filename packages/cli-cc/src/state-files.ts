@@ -273,15 +273,40 @@ export interface PermissionRequestFile {
   createdAt: number;
 }
 
-export interface PermissionResponseFile {
-  /** Echoes the request id so hook subprocess matches its own request. */
-  requestId: string;
-  /** User's decision relayed from IM. */
-  decision: 'allow' | 'deny';
-  /** Human-readable reason — passed through to cc as
-   *  `permissionDecisionReason` so cc transcript records why. */
-  reason: string;
-}
+/**
+ * PermissionResponse file body. Discriminated union by `decision`:
+ *
+ * - `allow` — generic tool allow OR AskUserQuestion answer-inject path.
+ *   - `updatedInput` (optional): present for AskUserQuestion only,
+ *     carries `{questions, answers}` so cc treats the tool as completed
+ *     successfully with the user's answers (per [DD §9](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel)).
+ *   - `reason` (optional): generic-tool allow reason (e.g. AI-routed
+ *     trace text, `"IM user replied /1"` for dead-syntax fallback).
+ * - `deny` — generic tool deny. `reason` is required and surfaces in
+ *   cc transcript via `permissionDecisionReason`.
+ *
+ * Hook-receiver reads this file and outputs either
+ * `{permissionDecision:'allow', updatedInput?}` or
+ * `{permissionDecision:'deny', permissionDecisionReason}` to cc per
+ * the official PreToolUse hook output schema.
+ */
+export const PermissionResponseFileSchema = z.discriminatedUnion('decision', [
+  z.object({
+    requestId: z.string().min(1),
+    decision: z.literal('allow'),
+    updatedInput: z.record(z.string(), z.unknown()).optional(),
+    reason: z.string().optional(),
+  }),
+  z.object({
+    requestId: z.string().min(1),
+    decision: z.literal('deny'),
+    reason: z.string(),
+  }),
+]);
+
+export type PermissionResponseFile = z.infer<
+  typeof PermissionResponseFileSchema
+>;
 
 export function permissionRequestPath(
   opts: PerPaneIO & { requestId: string },
@@ -322,18 +347,21 @@ export async function readPermissionRequestFile(
 export async function writePermissionResponseFile(
   opts: PerPaneIO & PermissionResponseFile,
 ): Promise<void> {
-  const body: PermissionResponseFile = {
-    requestId: opts.requestId,
-    decision: opts.decision,
-    reason: opts.reason,
-  };
+  // Strip PerPaneIO routing fields and re-validate the discriminated union
+  // so writers can't silently emit a malformed body (e.g. `allow` without
+  // `updatedInput` AND without `reason` is legal — `deny` without `reason`
+  // is not).
+  const { stateDir: _s, paneId: _p, sessionId: _sid, ...rest } = opts;
+  const body = PermissionResponseFileSchema.parse(rest);
   await atomicWrite(permissionResponsePath(opts), JSON.stringify(body, null, 2));
 }
 
 export async function readPermissionResponseFile(
   filePath: string,
 ): Promise<PermissionResponseFile | null> {
-  return readJsonOrNull<PermissionResponseFile>(filePath);
+  const raw = await readJsonOrNull<unknown>(filePath);
+  if (raw === null) return null;
+  return PermissionResponseFileSchema.parse(raw);
 }
 
 export async function deletePermissionRequestFile(
