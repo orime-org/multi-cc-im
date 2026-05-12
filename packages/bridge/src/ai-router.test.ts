@@ -157,6 +157,106 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).not.toMatch(/cwd/i);
   });
 
+  // Role + 3-part intent extraction (2026-05-12 fix for AI dispatcher
+  // mis-treating meta-instructions as task body).
+  describe('role + 3-part intent extraction', () => {
+    it('includes a YOUR ROLE section identifying the dispatcher role', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      expect(out).toMatch(/YOUR ROLE/i);
+      expect(out).toMatch(/dispatcher/i);
+    });
+
+    it('explains the 你/他 pronoun convention (你 = dispatcher, 他 = cc)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // The user's 你 is the dispatcher; 他 refers to cc — prompt must
+      // teach AI to strip "你跟 X 说" and rewrite "他" → 2nd-person.
+      expect(out).toMatch(/你跟/);
+      expect(out).toMatch(/3rd-person/i);
+      expect(out).toMatch(/2nd-person/i);
+    });
+
+    it('has an INTENT EXTRACTION section with 3-part split', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      expect(out).toMatch(/INTENT EXTRACTION/i);
+      expect(out).toMatch(/ROUTING CUES/i);
+      expect(out).toMatch(/TASK BODY/i);
+      expect(out).toMatch(/META-INSTRUCTIONS/i);
+    });
+
+    it('teaches 3rd-person → 2nd-person rewrite explicitly (with "让他" / "his"/"cc 应该" mappings)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // Each documented rewrite pair must be present so AI sees the pattern.
+      expect(out).toMatch(/让他/);
+      expect(out).toMatch(/请你|请\s/);
+      expect(out).toMatch(/his code|your code/i);
+      expect(out).toMatch(/cc 应该/);
+    });
+
+    it('teaches meta-instruction rewrite: examples cover Chinese + English variants', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // Both 让他先出计划 and "make him plan first" should appear as
+      // patterns AI is expected to recognize as meta.
+      expect(out).toMatch(/让他先出计划/);
+      expect(out).toMatch(/用 TDD|先 review|出 plan/);
+      expect(out).toMatch(/make him plan first|have it run tests/i);
+    });
+
+    it('includes the real-case anchor example (2026-05-12 work_temp regression)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // The exact user case that motivated this fix lives in the prompt
+      // as an anchor example so AI sees a concrete mapping it can mimic.
+      expect(out).toMatch(/work temp/);
+      expect(out).toMatch(/stop hook/);
+      expect(out).toMatch(/neat-freak/);
+      expect(out).toMatch(/请先出计划，不要直接实施/);
+    });
+
+    it('OUTPUT spec intent field references INTENT EXTRACTION (not just "task description")', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // Old spec said "task description with routing cues stripped" —
+      // new spec must mention meta-instructions / 2nd-person rewrite
+      // so the AI hooks into the INTENT EXTRACTION rules.
+      expect(out).toMatch(/meta-instructions|2nd-person|INTENT EXTRACTION/i);
+    });
+
+    it('has a fallback rule: when meta vs body ambiguous, keep as body', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      expect(out).toMatch(/cannot distinguish|default to keeping|extra wording is better/i);
+    });
+  });
+
   // P2 — natural-language permission reply (DD 2026-05-11)
   describe('pendingRequests integration', () => {
     it('omits the PENDING block when pendingRequests is undefined (backward compat)', () => {
