@@ -117,6 +117,34 @@ The daemon echoes back which pending it matched + the decision. Allow is safe-by
 
 Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) auto-allow without bothering IM.
 
+## cc widget questions (AskUserQuestion) → IM (works in any mode)
+
+When cc asks you a multiple-choice question (its `AskUserQuestion` widget — usually plan reviews / design choices / library picks), the question + options are forwarded to IM **regardless of whether you're in `/start` auto-approve or `/start off` ask mode**:
+
+```
+[multi-cc-im] cc 想问你:
+
+Pick a database
+
+  1. Postgres
+     mature relational
+  2. MongoDB
+     doc store
+  3. 你的考虑（自由文本）
+
+请回复你的选择（编号或自然语言都行）
+```
+
+Reply with anything that makes sense:
+- A number — `1`
+- The option's label — `Postgres`
+- Natural language — `我选第二个` / `the mongo one` / `do option 2 with a side of fries`
+- Free text not matching any option — your reply goes through verbatim
+
+The daemon hands your answer back to cc; cc continues from there. The cc TUI widget never blocks — if you don't reply within 5 minutes the widget falls back to the TUI so you can still answer locally.
+
+**Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): only the first is shown in IM; finish the rest in cc TUI.
+
 ## cc replies → IM rendering
 
 Feishu doesn't render markdown, so cc replies are simplified before sending — you see clean text instead of raw `**` / backticks:

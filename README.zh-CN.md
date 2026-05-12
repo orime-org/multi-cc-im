@@ -117,6 +117,34 @@ daemon 回显匹配到哪个 pending + 决定。允许是安全默认 — 如果
 
 只读工具（`Read` / `Grep` / `Glob` / `NotebookRead`）自动放行，不打扰 IM。
 
+## cc 选择题 (AskUserQuestion) → IM（任意模式都生效）
+
+cc 让你做多选题时（它的 `AskUserQuestion` widget —— 常见场景：plan review / 设计抉择 / 选库），问题 + 选项会**不管你在 `/start` auto-approve 还是 `/start off` ask 模式都转发到 IM**：
+
+```
+[multi-cc-im] cc 想问你:
+
+Pick a database
+
+  1. Postgres
+     mature relational
+  2. MongoDB
+     doc store
+  3. 你的考虑（自由文本）
+
+请回复你的选择（编号或自然语言都行）
+```
+
+回复怎么写都行：
+- 数字 —— `1`
+- 选项 label —— `Postgres`
+- 自然语言 —— `我选第二个` / `the mongo one` / `选第 2 个加个 google login`
+- 不匹配任何选项的自由文本 —— 你的回复原文直接传给 cc
+
+daemon 把你的回复交给 cc，cc 接着干。cc TUI widget 不会卡着 —— 5 分钟内 IM 没回复，widget fallback 回 TUI 你可以本地点选。
+
+**多问题** AskUserQuestion（少见 —— cc 一次问 2+ 个问题）：IM 只显示第 1 题；剩下的去 cc TUI 答。
+
 ## cc 回复 → IM 显示
 
 飞书不渲染 markdown，所以 cc 回复在发送前会做简化 — 你看到的是干净文字而不是裸 `**` / 反引号：
