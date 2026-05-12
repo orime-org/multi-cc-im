@@ -43,8 +43,42 @@ import { truncate } from './text.js';
  */
 const DEFAULT_SEND_KEYSTROKE_DELAY_MS = 300;
 
-/** Reaper window — should match hook subprocess timeout (10s). */
-const DEFAULT_REAPER_DELAY_MS = 10_000;
+/**
+ * Reaper window for regular tools (Bash / Edit / WebFetch / etc).
+ *
+ * Must exceed the cc-side hook timeout (`apps/setup-hooks.ts`
+ * EVENT_MATCHER_SPECS.PreToolUse[<regular>] = 20s) so the hook subprocess
+ * has time to run its own try/finally cleanup after cc SIGKILLs it on
+ * timeout. 30s = 20s cc-side + 10s margin.
+ *
+ * Bumped from 10s 2026-05-12 — at 10s the reaper races with the hook's
+ * internal poll deadline (10s) + the user's natural-language reply
+ * window. For v1.7 Bash deny via natural language, user reading +
+ * thinking + typing >10s would let reaper unlink the live Request file
+ * before the IM reply lands, breaking force-permission mode.
+ */
+const DEFAULT_REAPER_DELAY_MS = 30_000;
+
+/**
+ * Reaper window for AskUserQuestion. Must exceed the AskUserQuestion-
+ * specific cc-side hook timeout (300s per `apps/setup-hooks.ts`
+ * EVENT_MATCHER_SPECS.PreToolUse[<AskUserQuestion>]). 310s = 300s
+ * cc-side + 10s margin.
+ *
+ * Per real-account smoke 2026-05-12 root cause: with the regular 10s
+ * reaper, AskUserQuestion's Request file got unlinked while the hook
+ * was still polling for the user's IM reply (user takes 15-60s to
+ * read the options + answer). Daemon then saw an empty pending list
+ * when the reply arrived → routed the answer as a new task → cc
+ * never received it in the AskUserQuestion's tool result.
+ *
+ * Reaper's defensive purpose (cleanup of SIGKILL'd hook orphans) is
+ * unaffected — orphans get reaped 5min later instead of 10s later,
+ * which is fine for the rare SIGKILL case.
+ */
+const ASK_USER_QUESTION_REAPER_DELAY_MS = 310_000;
+
+const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
 export interface CreateOrchestratorOpts {
   /** Lark (or future tg / etc.) IM adapter. */
@@ -72,10 +106,20 @@ export interface CreateOrchestratorOpts {
   /**
    * Daemon reaper window (ms) — schedule unlink of orphan
    * `<paneId>_<sid>.PermissionRequest/Response.<id>.json` files this long
-   * after chokidar surfaces a new Request. Default `10_000` matches hook
-   * subprocess timeout. Tests inject a small value.
+   * after chokidar surfaces a new Request. Default `30_000` (cc-side hook
+   * timeout 20s + 10s margin). Applies to regular tools (Bash / Edit /
+   * etc); AskUserQuestion uses `askUserQuestionReaperDelayMs` instead.
+   * Tests inject a small value.
    */
   reaperDelayMs?: number;
+  /**
+   * Reaper window (ms) specifically for AskUserQuestion's PermissionRequest
+   * files. Default `310_000` (cc-side AskUserQuestion hook timeout 300s
+   * + 10s margin). Required because AskUserQuestion holds the hook for
+   * up to 290s waiting for IM reply — reaping at the regular 30s would
+   * unlink the live Request file mid-flow. Tests inject a small value.
+   */
+  askUserQuestionReaperDelayMs?: number;
   /** Non-fatal error sink. */
   onError?: (
     err: unknown,
@@ -133,6 +177,8 @@ export function createOrchestrator(
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
   const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
+  const askUserQuestionReaperDelayMs =
+    opts.askUserQuestionReaperDelayMs ?? ASK_USER_QUESTION_REAPER_DELAY_MS;
   // null → AI routing explicitly disabled. undefined → use real routeViaAI.
   // Function → use the provided wrapper (CLI flags / test stub).
   const aiRouter: ((o: AIRoutingOpts) => Promise<AIRoutingResult>) | undefined =
@@ -501,11 +547,16 @@ export function createOrchestrator(
   ): Promise<void> {
     const { paneId } = p;
 
-    // Schedule reaper FIRST regardless of forward outcome.
+    // Schedule reaper FIRST regardless of forward outcome. Per-tool delay
+    // (2026-05-12 root-cause fix): AskUserQuestion holds the hook for up
+    // to 290s; if the reaper fires at the regular 30s it unlinks the
+    // live Request file while the hook is still polling for IM reply,
+    // and force-permission mode then misroutes the answer as a new task.
     scheduleReaper({
       paneId,
       sessionId: p.session_id,
       requestId: p.requestId,
+      toolName: p.tool_name,
     });
 
     // Read global IMOrigin. hook E3 should have short-circuited; defensive
@@ -643,13 +694,30 @@ export function createOrchestrator(
     paneId: number;
     sessionId: string;
     requestId: string;
+    toolName: string;
   }): void {
     const key = `${o.paneId}:${o.sessionId}:${o.requestId}`;
     const prev = reaperTimers.get(key);
     if (prev !== undefined) clearTimeout(prev);
 
+    // Per-tool reaper delay. AskUserQuestion holds the hook for up to
+    // 290s (vs regular tools' 10s internal poll), so its reaper must
+    // wait correspondingly longer.
+    const delay =
+      o.toolName === ASK_USER_QUESTION_TOOL_NAME
+        ? askUserQuestionReaperDelayMs
+        : reaperDelayMs;
+
     const timer = setTimeout(async () => {
       reaperTimers.delete(key);
+      // Diagnostic log — without this, the previous silent unlink made
+      // the v1.10 force-permission breakage (real-account smoke
+      // 2026-05-12) opaque. Now `[reaper] unlink ...` appearing BEFORE
+      // a user's IM reply is the smoking gun for "reaper delay too
+      // short for this tool".
+      log(
+        `[reaper] unlink pane=${o.paneId} sid=${o.sessionId.slice(0, 8)} reqId=${o.requestId} tool=${o.toolName} delay=${delay}ms`,
+      );
       const reqPath = permissionRequestPath({
         stateDir: opts.stateDir,
         paneId: o.paneId,
@@ -672,7 +740,7 @@ export function createOrchestrator(
           sessionId: o.sessionId,
         });
       }
-    }, reaperDelayMs);
+    }, delay);
     reaperTimers.set(key, timer);
   }
 
