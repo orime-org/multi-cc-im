@@ -51,6 +51,24 @@ const PRE_TOOL_USE_READ: ParsedHookPayload = {
   tool_input: { file_path: '/tmp/x' },
 };
 
+const PRE_TOOL_USE_ASK: ParsedHookPayload = {
+  ...PRE_TOOL_USE_BASH,
+  tool_name: 'AskUserQuestion',
+  tool_input: {
+    questions: [
+      {
+        question: 'Pick one',
+        header: 'Test',
+        multiSelect: false,
+        options: [
+          { label: 'Option A', description: 'first one' },
+          { label: 'Option B', description: 'second one' },
+        ],
+      },
+    ],
+  },
+};
+
 const STOP_PAYLOAD: ParsedHookPayload = {
   session_id: SID as never,
   transcript_path: TX as never,
@@ -370,6 +388,188 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     // No stale Request / Response left.
     expect(after.includes(stalePath.split('/').pop()!)).toBe(false);
     expect(after.some((n) => n.includes('staleeeee'))).toBe(false);
+  });
+});
+
+// ============================================================================
+// AskUserQuestion special-case (v1.9 DD §6 P2)
+// ============================================================================
+
+describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-05-12)', () => {
+  let stateDir: string;
+  beforeEach(async () => {
+    stateDir = await mkdtemp(join(tmpdir(), 'hook-receiver-ask-'));
+  });
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  it('AskUserQuestion + IMWork.auto=true → bypasses auto-allow short-circuit, falls through to forward path (D1-B)', async () => {
+    // Regular tool with IMWork.auto=true → E1.5 short-circuit returns allow
+    // without writing Request. AskUserQuestion under same config must NOT
+    // short-circuit — D1-B always-forward semantics.
+    await writeIMWorkFile(stateDir, { auto: true });
+    // No IMOrigin → falls through to E3 silent exit. The key assertion is
+    // that we DIDN'T return the auto-allow allow object.
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_ASK,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toBeUndefined();
+    expect(
+      (await readStateDirEntries(stateDir)).some((n) =>
+        n.includes(PERMISSION_REQUEST_PREFIX),
+      ),
+    ).toBe(false);
+  });
+
+  it('AskUserQuestion + IMWork null → silent exit (no forward when IM mode off; cc renders TUI widget natively)', async () => {
+    // D1-B says "IMWork on → always forward". IMWork OFF means user opted
+    // out of IM routing; AskUserQuestion should also defer.
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_ASK,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it('AskUserQuestion + bound state + response received → returns deny + reason=<response.reason> (D5-C)', async () => {
+    await setupBoundState(stateDir);
+
+    // Background responder: write response with decision='deny' + reason
+    // (mimics what daemon would do per DD §6 P4 ai-router).
+    const respondInBackground = (async () => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${PANE_ID}_${SID}${PERMISSION_REQUEST_PREFIX}`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(/\.PermissionRequest\.([0-9a-f]+)\.json$/);
+          if (m) {
+            await writePermissionResponseFile({
+              stateDir,
+              paneId: PANE_ID,
+              sessionId: SID,
+              requestId: m[1]!,
+              decision: 'deny',
+              reason: 'I pick Option A — second one looks risky',
+            });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_ASK,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      askUserQuestionTimeoutMs: 2_000,
+    });
+    await respondInBackground;
+
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'I pick Option A — second one looks risky',
+      },
+    });
+    // Request + Response cleaned up by the same try/finally as regular path.
+    const after = await readStateDirEntries(stateDir);
+    expect(after.some((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toBe(false);
+    expect(after.some((n) => n.includes(PERMISSION_RESPONSE_PREFIX))).toBe(false);
+  });
+
+  it('AskUserQuestion + response with decision=allow (rogue daemon) → defensive: hook still returns deny', async () => {
+    // D5-C invariant: AskUserQuestion ALWAYS goes back to cc as deny+reason.
+    // If a buggy daemon writes decision='allow' (or a future router change
+    // accidentally swaps), the hook must still produce deny — otherwise cc
+    // gets a silent green light for the tool with no answer in transcript.
+    await setupBoundState(stateDir);
+    const respondInBackground = (async () => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${PANE_ID}_${SID}${PERMISSION_REQUEST_PREFIX}`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(/\.PermissionRequest\.([0-9a-f]+)\.json$/);
+          if (m) {
+            await writePermissionResponseFile({
+              stateDir,
+              paneId: PANE_ID,
+              sessionId: SID,
+              requestId: m[1]!,
+              decision: 'allow', // <-- WRONG, hook must override
+              reason: 'user said yes (but as allow not deny)',
+            });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_ASK,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      askUserQuestionTimeoutMs: 2_000,
+    });
+    await respondInBackground;
+
+    expect(
+      (result as { hookSpecificOutput: { permissionDecision: string } })
+        .hookSpecificOutput.permissionDecision,
+    ).toBe('deny');
+  });
+
+  it('AskUserQuestion + timeout → default allow (cc renders TUI widget as fallback per DD §7)', async () => {
+    // When user doesn't reply in IM in time, defaulting to deny would
+    // cancel the tool with a generic "timeout" reason — cc gets no real
+    // answer. Defaulting to allow lets cc render the TUI widget so user
+    // can still respond locally. DD §7 explicitly documents this.
+    await setupBoundState(stateDir);
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_ASK,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      askUserQuestionTimeoutMs: 100, // immediate timeout
+    });
+    expect(
+      (result as { hookSpecificOutput: { permissionDecision: string } })
+        .hookSpecificOutput.permissionDecision,
+    ).toBe('allow');
+    const after = await readStateDirEntries(stateDir);
+    expect(after.some((n) => n.includes(PERMISSION_REQUEST_PREFIX))).toBe(false);
+  });
+
+  it('regular Bash tool with IMWork.auto=true STILL auto-allows (regression guard for D1-B narrow scope)', async () => {
+    // D1-B special-cases only AskUserQuestion. Regular tools must keep
+    // their existing v1.7 auto-mode behavior.
+    await writeIMWorkFile(stateDir, { auto: true });
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PRE_TOOL_USE_BASH,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason: expect.stringContaining('auto-approve'),
+      },
+    });
   });
 });
 
