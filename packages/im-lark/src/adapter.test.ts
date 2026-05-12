@@ -189,6 +189,107 @@ describe('createLarkAdapter', () => {
       expect(handler.received).toHaveLength(0);
     });
 
+    it('audio message → echoes keyboard-mic hint via client.im.v1.message.create + does NOT route (DD 2026-05-12 §5)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const createCalls: unknown[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: {
+            v1: {
+              message: {
+                create: vi.fn(async (payload: unknown) => {
+                  createCalls.push(payload);
+                  return { code: 0 };
+                }),
+              },
+            },
+          },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: {
+          ...baseInboundEvent.message,
+          message_type: 'audio',
+          content: JSON.stringify({
+            file_key: '75235e0c-4f92-430a-a99b-8446610223cg',
+            duration: 2000,
+          }),
+        },
+      });
+
+      // Did NOT route — bridge stays text-only per DD D1-1.
+      expect(handler.received).toHaveLength(0);
+
+      // DID send a friendly echo back to the user's chat.
+      expect(createCalls).toHaveLength(1);
+      expect(createCalls[0]).toMatchObject({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: 'oc_chat',
+          msg_type: 'text',
+        },
+      });
+      const content = JSON.parse(
+        (createCalls[0] as { data: { content: string } }).data.content,
+      ) as { text: string };
+      expect(content.text).toContain('音频消息');
+      expect(content.text).toMatch(/键盘|🎤/);
+    });
+
+    it('audio message echo failure does NOT propagate — silent log, daemon stays alive', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const logs: string[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: {
+            v1: {
+              message: {
+                create: vi.fn(async () => {
+                  throw new Error('Lark API down');
+                }),
+              },
+            },
+          },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+        log: (l) => logs.push(l),
+      });
+      await adapter.start(handler);
+      await expect(
+        dispatcher.fire('im.message.receive_v1', {
+          ...baseInboundEvent,
+          message: {
+            ...baseInboundEvent.message,
+            message_type: 'audio',
+            content: JSON.stringify({ file_key: 'fk', duration: 1000 }),
+          },
+        }),
+      ).resolves.toBeUndefined();
+      expect(handler.received).toHaveLength(0);
+      expect(
+        logs.some((l) => l.startsWith('[lark] failed to echo audio-unsupported')),
+      ).toBe(true);
+    });
+
     it('event without sender.sender_id.open_id drops silently', async () => {
       const dispatcher = makeStubDispatcher();
       const handler = makeHandler();
