@@ -1661,6 +1661,103 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     await orch.stop();
   });
 
+  it('AskUserQuestion uses askUserQuestionReaperDelayMs (NOT regular reaperDelayMs)', async () => {
+    // Root-cause fix 2026-05-12: regular 10s reaper unlinked the Request
+    // file while the AskUserQuestion hook was still polling (290s hold)
+    // → daemon saw empty pending when user IM reply landed → routed as
+    // new task instead of force-permission. Per-tool delay split fixes it.
+    //
+    // Test design: small regularDelay (50ms), large AUQ delay (500ms).
+    // After PRE_REAPER_PROBE_MS (10ms) AUQ Request must still exist.
+    // After regular reap window (50ms + buffer), AUQ Request STILL exists.
+    // After AUQ reap window (500ms+), AUQ Request gone.
+    const REGULAR_REAPER_MS = 50;
+    const AUQ_REAPER_MS = 500;
+
+    const requestId = 'auqreaper1';
+    const reqPath = permissionRequestPath({
+      stateDir: reaperStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId,
+    });
+    await writeFile(
+      reqPath,
+      JSON.stringify({
+        requestId,
+        toolName: 'AskUserQuestion',
+        toolInput: { questions: [{ question: 'q', options: [] }] },
+        createdAt: 0,
+      }),
+    );
+
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: reaperStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+      reaperDelayMs: REGULAR_REAPER_MS,
+      askUserQuestionReaperDelayMs: AUQ_REAPER_MS,
+    });
+    await orch.start();
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'AskUserQuestion',
+        toolInput: { questions: [{ question: 'q', options: [] }] },
+        requestId,
+      }),
+    );
+
+    // Past the REGULAR reap window: AskUserQuestion Request still here.
+    await delay(REGULAR_REAPER_MS + 50);
+    expect(existsSync(reqPath)).toBe(true);
+
+    // Past the AUQ reap window: now gone.
+    await delay(AUQ_REAPER_MS);
+    expect(existsSync(reqPath)).toBe(false);
+
+    await orch.stop();
+  });
+
+  it('reaper logs [reaper] unlink line when it fires (diagnostic for future smoke gaps)', async () => {
+    const requestId = 'reaperlog1';
+    const lines: string[] = [];
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: reaperStateDir,
+      imAdapter: makeMockIM(),
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+      reaperDelayMs: REAPER_WINDOW_MS,
+      log: (l) => lines.push(l),
+    });
+    await orch.start();
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId,
+      }),
+    );
+    await delay(POST_REAPER_PROBE_MS);
+    expect(
+      lines.some(
+        (l) =>
+          l.startsWith('[reaper] unlink') &&
+          l.includes(`reqId=${requestId}`),
+      ),
+    ).toBe(true);
+    await orch.stop();
+  });
+
   it('orchestrator.stop() clears pending reaper timers', async () => {
     const requestId = 'reaper-test-3';
     const reqPath = permissionRequestPath({
