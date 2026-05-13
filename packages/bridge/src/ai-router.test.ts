@@ -281,6 +281,44 @@ describe('ai-router — renderRoutingPrompt', () => {
       expect(out).toMatch(/work temp.*work_temp/);
       expect(out).toMatch(/breatic frontend.*breatic_frontend/);
     });
+
+    it('Rule 1 has a standalone STT voice-typo bullet with AGGRESSIVE matching directive (2026-05-13 Multi-CCRM fix)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+      });
+      // STT voice-typo handling must be its own bullet (not buried inside
+      // the Chinese-English code-mixing bullet) so Haiku doesn't skip it.
+      expect(out).toMatch(/speech-to-text|STT/i);
+      expect(out).toMatch(/AGGRESSIVE/);
+      expect(out).toMatch(/Do NOT bail|don't pick on STT typos/i);
+    });
+
+    it('Rule 1 spells out the ≤2 character edit-distance rule for STT typos', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+      });
+      expect(out).toMatch(/≤\s*2|at most.*2.*character|2 character/i);
+      expect(out).toMatch(/substitut|insertion|deletion/i);
+      expect(out).toMatch(/TREAT IT AS A MATCH/);
+    });
+
+    it('Rule 1 includes the real-case anchor: Multi-CCRM → multi-cc-im', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+      });
+      // The exact STT mishearing the user reported (2026-05-13).
+      expect(out).toMatch(/Multi-CCRM/);
+      expect(out).toMatch(/multi-cc-im/);
+      // Plus several other phonetic-distance anchors so AI generalises.
+      expect(out).toMatch(/no\.js|nojs/);
+      expect(out).toMatch(/work tamp|walk temp/);
+    });
   });
 
   // P2 — natural-language permission reply (DD 2026-05-11)

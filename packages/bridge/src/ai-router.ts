@@ -239,10 +239,33 @@ Rule 1 — IF A TAB NAME APPEARS IN THE MESSAGE → PICK THAT TAB.
       "multi-cc-im"
       "breatic frontend" / "breatic-frontend" both match "breatic_frontend"
       "work temp" matches "work_temp"
-    - Tolerate speech-to-text typos — "CRM" / "I'm" / "Aim" may all
-      be typos of "IM"; "front and" may be typo of "frontend"
     - Tolerate Chinese-English code mixing — "frontend那个" / "给后端"
-      / "那个 api" / "Multiccrm" (voice-typo for multi-cc-im)
+      / "那个 api"
+    - Tolerate speech-to-text (STT) typos — BE AGGRESSIVE with phonetic
+      matching. The user's IM message often comes from voice input,
+      and STT systems regularly mishear tab names. If a message string
+      is at most ≤2 character substitutions/insertions/deletions away
+      from a tab name (within similar length), TREAT IT AS A MATCH and
+      pick that tab. Do NOT bail to "none" over single-character STT
+      noise. Examples of mishearings cc tab names regularly suffer:
+
+        "Multi-CCRM" / "Multi-CRM" / "Multi CCM" / "Multiccrm"
+          → multi-cc-im   (STT hears "cc-im" as "CRM" / "CCM" / "CRN")
+        "CRM" / "I'm" / "Aim" / "IBM"
+          → IM            (1-char distance, "I + M" mishears)
+        "no.js" / "nojs" / "knowed" / "nord"
+          → node
+        "front and" / "frunt end" / "frantend"
+          → frontend
+        "work tamp" / "walk temp" / "work tab"
+          → work_temp
+        "brattic" / "Britain" / "breatic" with typos
+          → breatic
+
+      The phonetic-match rule beats the strict "literal substring"
+      check the deterministic fallback runs after you. If you don't
+      pick on STT typos, no later layer recovers them — the user just
+      sees "无法识别目标" and has to retype with #<tab>.
 
   TIE-BREAK — MOST-SPECIFIC TAB WINS when several candidates match:
 
