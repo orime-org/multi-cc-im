@@ -2580,18 +2580,31 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     // Both Request and Response should still exist before reaper fires
     expect(existsSync(reqPath)).toBe(true);
-
-    // Wait past reaper window
-    await new Promise((resolve) => setTimeout(resolve, REAPER_WINDOW + 50));
-
-    // Reaper should have unlinked both PermissionDialog files
-    expect(existsSync(reqPath)).toBe(false);
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
       paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e5eee1',
     });
+    expect(existsSync(respPath)).toBe(true);
+
+    // Strong wait for the reaper to actually unlink both files. Replaces a
+    // fixed `setTimeout(REAPER_WINDOW + 50)` that flaked on Linux CI under
+    // load (file system + reaper timer can drift past a 100ms budget). The
+    // 2s waitFor cap is just a safety net; on a healthy machine the loop
+    // exits in ~70ms (REAPER_WINDOW + one poll tick).
+    const waitForGone = async (p: string, timeoutMs = 2000): Promise<void> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (!existsSync(p)) return;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    await waitForGone(reqPath);
+    await waitForGone(respPath);
+
+    // Reaper should have unlinked both PermissionDialog files
+    expect(existsSync(reqPath)).toBe(false);
     expect(existsSync(respPath)).toBe(false);
 
     // PermissionDialog reaper must NOT touch regular Permission files
