@@ -81,6 +81,7 @@ export {
   deletePermissionDialogResponseFile,
   listPermissionDialogRequestFiles,
   listPermissionDialogResponseFiles,
+  listPendingPermissionDialogs,
   parsePermissionDialogFilename,
   PERMISSION_DIALOG_REQUEST_PREFIX,
   PERMISSION_DIALOG_RESPONSE_PREFIX,
@@ -99,6 +100,7 @@ export type {
   IMWorkFile,
   PermissionDialogRequestFile,
   PermissionDialogResponseFile,
+  PendingPermissionDialog,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI

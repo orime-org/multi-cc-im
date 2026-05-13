@@ -1847,3 +1847,232 @@ describe('router — AskUserQuestion AI path (DD §9 R7)', () => {
     expect(result.dispatches.length).toBe(1);
   });
 });
+
+describe('router — PermissionDialog AI path (DD 2026-05-13 §6 P7)', () => {
+  const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+
+  function dialogPending(
+    paneId: PaneId,
+    overrides: Partial<{
+      toolName: string;
+      toolInput: Record<string, unknown>;
+      permissionSuggestions: readonly unknown[];
+    }> = {},
+  ) {
+    return {
+      paneId,
+      sessionId: SID,
+      requestId: 'pd00001',
+      toolName: overrides.toolName ?? 'Bash',
+      toolInput: overrides.toolInput ?? { command: 'mkdir -p .claude/hooks' },
+      permissionSuggestions: overrides.permissionSuggestions ?? [
+        {
+          type: 'addRules',
+          behavior: 'allow',
+          destination: 'session',
+          rules: [{ toolName: 'Edit', ruleContent: 'Edit(./.claude/**)' }],
+        },
+      ],
+      createdAt: 1700000000000,
+    };
+  }
+
+  it('PermissionDialog pending exists → routes to aiPermissionRequestRouter (NOT routing / NOT AUQ / NOT force-perm)', async () => {
+    let regularCalls = 0;
+    let auqCalls = 0;
+    let dialogCalls = 0;
+    const result = await route(incoming('我选 2'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiRouter: async () => {
+        regularCalls += 1;
+        return {
+          target: null,
+          intent: null,
+          reason: 'should not fire',
+          permissionResponse: null,
+        };
+      },
+      aiAskUserQuestionRouter: async () => {
+        auqCalls += 1;
+        return null;
+      },
+      aiPermissionRequestRouter: async () => {
+        dialogCalls += 1;
+        return {
+          target: 'frontend',
+          reason: 'matched always-allow .claude/**',
+          answer: { behavior: 'allow', appliedSuggestionIndex: 1 },
+        };
+      },
+    });
+    expect(regularCalls).toBe(0);
+    expect(auqCalls).toBe(0);
+    expect(dialogCalls).toBe(1);
+    expect(result.permissionDialogResponse).toBeDefined();
+    expect(result.permissionDialogResponse!.answer).toEqual({
+      behavior: 'allow',
+      appliedSuggestionIndex: 1,
+    });
+  });
+
+  it('single-yes (no appliedSuggestionIndex) → echo "同意一次"', async () => {
+    const result = await route(incoming('好'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiPermissionRequestRouter: async () => ({
+        target: 'frontend',
+        reason: 'single-yes',
+        answer: { behavior: 'allow' },
+      }),
+    });
+    expect(result.permissionDialogResponse?.answer).toEqual({
+      behavior: 'allow',
+    });
+    expect(result.echo).toMatch(/同意一次/);
+  });
+
+  it('always-allow (appliedSuggestionIndex=1) → echo shows the picked rule label', async () => {
+    const result = await route(incoming('总是允许'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiPermissionRequestRouter: async () => ({
+        target: 'frontend',
+        reason: 'always',
+        answer: { behavior: 'allow', appliedSuggestionIndex: 1 },
+      }),
+    });
+    expect(result.echo).toMatch(/始终允许/);
+    expect(result.echo).toContain('Edit(./.claude/**)');
+  });
+
+  it('deny → echo shows "拒绝" + optional message', async () => {
+    const result = await route(incoming('不行'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiPermissionRequestRouter: async () => ({
+        target: 'frontend',
+        reason: 'denied',
+        answer: { behavior: 'deny', message: '用户拒绝' },
+      }),
+    });
+    expect(result.permissionDialogResponse?.answer).toMatchObject({
+      behavior: 'deny',
+      message: '用户拒绝',
+    });
+    expect(result.echo).toMatch(/拒绝/);
+  });
+
+  it('AI returns appliedSuggestionIndex out of range → router clamps to single-yes (defensive)', async () => {
+    const result = await route(incoming('选 5'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId), // 1 suggestion only
+      ],
+      aiPermissionRequestRouter: async () => ({
+        target: 'frontend',
+        reason: 'oops',
+        answer: { behavior: 'allow', appliedSuggestionIndex: 9 },
+      }),
+    });
+    // Clamped to single-yes (appliedSuggestionIndex stripped)
+    expect(result.permissionDialogResponse?.answer).toEqual({
+      behavior: 'allow',
+    });
+  });
+
+  it('no AI router wired → fallback safe-deny (cc unstalls with explicit deny)', async () => {
+    const result = await route(incoming('whatever'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      // No aiPermissionRequestRouter; no aiRouter either — route() needs
+      // SOMETHING wired to enter handlePlainWithAI. Provide a throw stub
+      // for routing aiRouter so we can prove it's NOT called.
+      aiRouter: async () => {
+        throw new Error('routing aiRouter must not be called for dialog pending');
+      },
+    });
+    expect(result.permissionDialogResponse?.answer.behavior).toBe('deny');
+    expect(result.echo).toMatch(/AI 分诊失败/);
+  });
+
+  it('AI returned null → fallback safe-deny', async () => {
+    const result = await route(incoming('whatever'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiPermissionRequestRouter: async () => null,
+    });
+    expect(result.permissionDialogResponse?.answer.behavior).toBe('deny');
+  });
+
+  it('PermissionDialog pending takes priority over AUQ pending (D8 fairness — sensitive gate first)', async () => {
+    let dialogCalls = 0;
+    const auqPending = {
+      paneId: FRONTEND.paneId,
+      sessionId: SID,
+      requestId: 'auq00001',
+      toolName: 'AskUserQuestion',
+      toolInput: {
+        questions: [
+          {
+            question: 'Q1',
+            header: 'X',
+            multiSelect: false,
+            options: [
+              { label: 'a', description: '' },
+              { label: 'b', description: '' },
+            ],
+          },
+        ],
+      },
+      createdAt: 1700000000000,
+    };
+    await route(incoming('好'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      imWorkOn: true,
+      listPendingPermissionRequests: async () => [auqPending],
+      listPendingPermissionDialogs: async () => [
+        dialogPending(FRONTEND.paneId),
+      ],
+      aiAskUserQuestionRouter: async () => {
+        throw new Error('AUQ router must not fire when PermissionDialog pending');
+      },
+      aiPermissionRequestRouter: async () => {
+        dialogCalls += 1;
+        return {
+          target: 'frontend',
+          reason: 'r',
+          answer: { behavior: 'allow' },
+        };
+      },
+    });
+    expect(dialogCalls).toBe(1);
+  });
+});
