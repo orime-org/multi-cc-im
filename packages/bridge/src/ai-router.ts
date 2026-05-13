@@ -2,8 +2,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   AskUserQuestionAIOutputSchema,
+  PermissionDialogAIOutputSchema,
   type AskUserQuestionAnswerEntry,
   type AskUserQuestionItem,
+  type PermissionDialogAnswer,
 } from '@multi-cc-im/shared';
 
 /**
@@ -1146,4 +1148,285 @@ export async function routeAskUserQuestionViaAI(
   }
 
   return parseAskUserQuestionOutput(stdout);
+}
+
+// ============================================================================
+// PermissionRequest hook event AI path
+// (cc sensitive-path dialog reply triage — DD 2026-05-13 P6)
+//
+// When IMWork.auto=false and cc fires PermissionRequest hook, daemon
+// forwards the dialog to IM with numbered options derived from cc's
+// `permission_suggestions`. User replies free-form in IM; this AI path
+// extracts the structured answer (single-yes / always-allow-suggestion-N
+// / deny) which daemon then resolves into the on-disk Response file.
+// ============================================================================
+
+/**
+ * One pending PermissionDialog visible to the AI router. Caller (router)
+ * resolves `paneId → tab title` and renders the dialog's
+ * `permission_suggestions` as numbered options.
+ */
+export interface PendingPermissionDialog {
+  /** Tab title — used both for prompt clarity and the AI's `target` output. */
+  tabName: string;
+  /** cc tool that triggered the dialog (e.g. `'Bash'`, `'Edit'`). */
+  toolName: string;
+  /**
+   * Best-effort path/command summary extracted by daemon (`file_path` /
+   * `command` / etc.). Shown to AI so it can recognize "the .claude/
+   * one" / "the rm one" in user's natural-language reply.
+   */
+  toolInputSummary: string;
+  /**
+   * cc's `permission_suggestions` array (PermissionUpdate objects).
+   * Opaque — we rely on a best-effort `summarizePermissionSuggestion`
+   * to give the AI a human-readable label per entry. The AI returns a
+   * 1-based index back; daemon resolves into the actual cc payload.
+   */
+  permissionSuggestions: readonly unknown[];
+}
+
+export interface AIPermissionDialogResult {
+  /** Matched tab (must be one of input `pendings[].tabName`). */
+  target: string;
+  /** Short trace explanation (≤15 words) — daemon log + IM echo. */
+  reason: string | null;
+  /** Structured answer per DD §3 D6. */
+  answer: PermissionDialogAnswer;
+}
+
+/**
+ * Best-effort summarize one PermissionUpdate entry from cc's
+ * `permission_suggestions` for prompt rendering + IM display. cc's
+ * actual shape (verified against cc 2.1.88 source):
+ *
+ *   {
+ *     type: 'addRules',
+ *     behavior: 'allow',
+ *     destination: 'session',
+ *     rules: [{toolName: 'Edit', ruleContent: 'Edit(./.claude/**)'}]
+ *   }
+ *
+ * We extract the first rule's `ruleContent` if present; fall back to a
+ * type/destination summary. Defensive on any shape mismatch (cc protocol
+ * isn't version-stable per DD §2.5).
+ */
+export function summarizePermissionSuggestion(s: unknown): string {
+  if (typeof s !== 'object' || s === null) return '<unknown suggestion>';
+  const sug = s as Record<string, unknown>;
+  if (Array.isArray(sug.rules) && sug.rules.length > 0) {
+    const first = sug.rules[0];
+    if (typeof first === 'object' && first !== null) {
+      const rule = first as Record<string, unknown>;
+      if (typeof rule.ruleContent === 'string' && rule.ruleContent.length > 0) {
+        return rule.ruleContent;
+      }
+    }
+  }
+  const typeStr = typeof sug.type === 'string' ? sug.type : '?';
+  const destStr =
+    typeof sug.destination === 'string' ? sug.destination : '?';
+  return `${typeStr}/${destStr}`;
+}
+
+/**
+ * Render the PermissionRequest AI prompt. The AI's job is narrow:
+ * map a free-text IM reply into the documented decision shape per
+ * DD §3 D6 (single-yes / always-allow-suggestion-N / deny).
+ */
+export function renderPermissionRequestPrompt(opts: {
+  userMsg: string;
+  pendings: readonly PendingPermissionDialog[];
+}): string {
+  const pendingBlock = renderPermissionDialogPendings(opts.pendings);
+  return `You are the IM PermissionRequest-answer extractor for multi-cc-im.
+
+==================================================================
+PERMISSION-REQUEST MODE
+==================================================================
+
+cc fired a permission dialog because it wants to edit a sensitive
+path (e.g. \`.claude/* / .git/* / .env\` / etc.) — paths that cc's
+internal safety gate forces an "ask" on regardless of any
+user-level allow rule. The daemon forwarded the dialog to IM
+verbatim with numbered options derived from cc's own
+\`permission_suggestions\`. Your only job is to extract the user's
+choice from the IM message below.
+
+The user's current IM message:
+"${opts.userMsg}"
+${pendingBlock}
+==================================================================
+ANSWER EXTRACTION RULES (DD §3 D6)
+==================================================================
+
+Map the user's IM reply to ONE of these answer shapes:
+
+1. SINGLE-YES (this call only, no session-wide rule):
+   - Triggers: "1" / "yes" / "ok" / "好" / "同意" / "同意一次" /
+     "allow once" / "for this time" / similar.
+   - Output: \`{behavior: "allow"}\` — NO \`appliedSuggestionIndex\`.
+
+2. ALWAYS-ALLOW-SUGGESTION-N (session rule from cc's list):
+   - Triggers: user picks one of the numbered suggestions listed
+     above by number ("2", "3"), label ("\`Edit(./.claude/**)\`"),
+     or paraphrase ("总是允许" / "always allow" / "yes always" /
+     "yes and remember").
+   - Output: \`{behavior: "allow", appliedSuggestionIndex: <1-based
+     index INTO the suggestions list>}\`. The index points into the
+     "suggestions:" block under each pending entry. Daemon resolves
+     it back to cc's opaque PermissionUpdate object.
+   - **CRITICAL**: \`appliedSuggestionIndex\` MUST be ≥ 1 and ≤ the
+     number of suggestions listed. Never invent a new index. Never
+     fabricate a custom always-allow that wasn't in the list (per
+     DD §3 D6-A).
+
+3. DENY:
+   - Triggers: "no" / "deny" / "拒绝" / "取消" / "stop" / similar.
+   - Output: \`{behavior: "deny", message: <short paraphrase of why,
+     in user's source language, ≤25 chars>}\`.
+
+4. AMBIGUOUS reply → safe default = DENY with
+   \`message: "<user's verbatim message>"\`. Daemon shows it to cc;
+   user can re-issue from cc TUI.
+
+==================================================================
+OUTPUT
+==================================================================
+
+Output JSON, no markdown wrapping:
+${OUTPUT_SPEC_PERMISSION_DIALOG}`;
+}
+
+const OUTPUT_SPEC_PERMISSION_DIALOG = `{
+  "target": "<exact tab name from the listed pendings>",
+  "reason": "<short internal explanation, ≤15 words — daemon log + IM echo>",
+  "answer":
+    {
+      "behavior": "allow",
+      "appliedSuggestionIndex": <1-based index into suggestions list, OR omit for single-yes>
+    }
+    OR
+    {
+      "behavior": "deny",
+      "message": "<short user-facing explanation in source language>"
+    }
+}`;
+
+function renderPermissionDialogPendings(
+  pendings: readonly PendingPermissionDialog[],
+): string {
+  if (pendings.length === 0) return '';
+  const bullets = pendings
+    .map((p) => {
+      const lines: string[] = [
+        `  - tab=${p.tabName}`,
+        `    tool=${p.toolName}`,
+        `    target=${p.toolInputSummary}`,
+        `    suggestions:`,
+      ];
+      p.permissionSuggestions.forEach((s, i) => {
+        lines.push(`      ${i + 1}. ${summarizePermissionSuggestion(s)}`);
+      });
+      if (p.permissionSuggestions.length === 0) {
+        lines.push(`      (none — cc offered no always-allow suggestions)`);
+      }
+      return lines.join('\n');
+    })
+    .join('\n\n');
+  return `
+==================================================================
+PENDING PermissionRequest DIALOGS
+==================================================================
+
+${bullets}
+`;
+}
+
+/**
+ * Parse the cc envelope output for PermissionRequest mode. Returns null
+ * on any failure (caller falls back to a default deny so cc doesn't
+ * stall — see router P7).
+ */
+export function parsePermissionRequestOutput(
+  stdout: string,
+): AIPermissionDialogResult | null {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (
+    typeof envelope !== 'object' ||
+    envelope === null ||
+    !('result' in envelope) ||
+    typeof (envelope as { result: unknown }).result !== 'string'
+  ) {
+    return null;
+  }
+  let inner = (envelope as { result: string }).result.trim();
+  if (inner.startsWith('```')) {
+    const firstNewline = inner.indexOf('\n');
+    if (firstNewline > 0) inner = inner.slice(firstNewline + 1);
+    if (inner.endsWith('```')) inner = inner.slice(0, -3).trim();
+    else if (inner.endsWith('```\n')) inner = inner.slice(0, -4).trim();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(inner);
+  } catch {
+    return null;
+  }
+  const validated = PermissionDialogAIOutputSchema.safeParse(parsed);
+  if (!validated.success) return null;
+  return {
+    target: validated.data.target,
+    reason: validated.data.reason ?? null,
+    answer: validated.data.answer,
+  };
+}
+
+export interface PermissionRequestViaAIOpts {
+  userMsg: string;
+  pendings: readonly PendingPermissionDialog[];
+  claudeBinary?: string;
+  model?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * Spawn `claude --print` for PermissionRequest extraction. Returns null on
+ * any failure (timeout / non-zero exit / parse error) — caller treats null
+ * as "AI couldn't decide; fall back to default deny so cc doesn't stall".
+ */
+export async function routePermissionRequestViaAI(
+  opts: PermissionRequestViaAIOpts,
+): Promise<AIPermissionDialogResult | null> {
+  const claudeBinary = opts.claudeBinary ?? DEFAULT_CLAUDE_BINARY;
+  const model = opts.model ?? DEFAULT_MODEL;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const prompt = renderPermissionRequestPrompt({
+    userMsg: opts.userMsg,
+    pendings: opts.pendings,
+  });
+  const args = buildClaudeArgs({ model, prompt });
+
+  const childEnv = { ...process.env };
+  delete childEnv.WEZTERM_PANE;
+
+  let stdout: string;
+  try {
+    const result = await execFileAsync(claudeBinary, args, {
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+      env: childEnv,
+    });
+    stdout = result.stdout;
+  } catch {
+    return null;
+  }
+
+  return parsePermissionRequestOutput(stdout);
 }
