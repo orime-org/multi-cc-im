@@ -70,6 +70,20 @@ export {
   captureProcessLstart,
   isDaemonAlive,
   PermissionResponseFileSchema,
+  PermissionDialogResponseFileSchema,
+  permissionDialogRequestPath,
+  permissionDialogResponsePath,
+  writePermissionDialogRequestFile,
+  readPermissionDialogRequestFile,
+  writePermissionDialogResponseFile,
+  readPermissionDialogResponseFile,
+  deletePermissionDialogRequestFile,
+  deletePermissionDialogResponseFile,
+  listPermissionDialogRequestFiles,
+  listPermissionDialogResponseFiles,
+  parsePermissionDialogFilename,
+  PERMISSION_DIALOG_REQUEST_PREFIX,
+  PERMISSION_DIALOG_RESPONSE_PREFIX,
 } from './state-files.js';
 export type {
   PerPaneIO,
@@ -80,8 +94,11 @@ export type {
   DaemonPidFile,
   ParsedStopFilename,
   ParsedPermissionFilename,
+  ParsedPermissionDialogFilename,
   ParsedLegacyPaneOriginFilename,
   IMWorkFile,
+  PermissionDialogRequestFile,
+  PermissionDialogResponseFile,
 } from './state-files.js';
 
 // Hook receiver entry point — invoked by `multi-cc-im hook <event>` CLI

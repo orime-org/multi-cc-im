@@ -5,6 +5,8 @@ import { AskUserQuestionToolInputSchema } from '@multi-cc-im/shared';
 import { popInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
+  deletePermissionDialogRequestFile,
+  deletePermissionDialogResponseFile,
   deletePermissionFileByPath,
   deletePermissionRequestFile,
   deletePermissionResponseFile,
@@ -13,12 +15,17 @@ import {
   existsIMWorkFile,
   formatStopTimestamp,
   isDaemonAlive,
+  listPermissionDialogRequestFiles,
+  listPermissionDialogResponseFiles,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
   listStopFiles,
+  permissionDialogResponsePath,
   permissionResponsePath,
   readIMWorkFile,
+  readPermissionDialogResponseFile,
   readPermissionResponseFile,
+  writePermissionDialogRequestFile,
   writePermissionRequestFile,
   writeStopFile,
 } from './state-files.js';
@@ -69,6 +76,44 @@ export type PreToolUseHookOutput = {
         permissionDecision: 'deny' | 'ask' | 'defer';
         permissionDecisionReason: string;
       };
+};
+
+/**
+ * cc PermissionRequest hook stdout shape. Per [DD: PermissionRequest hook
+ * IM bridge §2.1](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md#21-hookspecificoutput-schema-for-permissionrequest)
+ * source-verified against cc 2.1.88 (`types/hooks.ts:121-134`):
+ *
+ * ```json
+ * {
+ *   "hookSpecificOutput": {
+ *     "hookEventName": "PermissionRequest",
+ *     "decision": {
+ *       "behavior": "allow" | "deny",
+ *       "updatedInput": {...}?,           // allow only
+ *       "updatedPermissions": [...]?,     // allow only — session-rule injection
+ *       "message": "..."?                 // deny only
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * `interrupt: true` (deny variant) intentionally NOT exposed —
+ * multi-cc-im never wants to abort the cc session as a whole.
+ */
+export type PermissionRequestHookOutput = {
+  hookSpecificOutput: {
+    hookEventName: 'PermissionRequest';
+    decision:
+      | {
+          behavior: 'allow';
+          updatedInput?: Record<string, unknown>;
+          updatedPermissions?: readonly unknown[];
+        }
+      | {
+          behavior: 'deny';
+          message?: string;
+        };
+  };
 };
 
 /**
@@ -129,6 +174,15 @@ const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
  */
 const READ_ONLY_TOOL_NAMES = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
 
+/**
+ * PermissionRequest hook internal poll deadline. Per
+ * [DD: PermissionRequest hook IM bridge §3 D8](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md#3-dimensions--user-decisions):
+ * 110s internal + 120s cc-side setting (in setup-hooks) = mirror v1.9 AUQ
+ * timing. Gives user up to 110s to answer in IM before hook self-handles
+ * timeout (avoids cc 10-min default kicking in mid-flow).
+ */
+const PERMISSION_DIALOG_TIMEOUT_MS = 110_000;
+
 export interface RunHookReceiverOpts {
   /**
    * Directory where state files live (e.g. `~/.multi-cc-im/state/`).
@@ -153,10 +207,16 @@ export interface RunHookReceiverOpts {
   permissionTimeoutMs?: number;
   /**
    * Override the AskUserQuestion-specific poll deadline (ms). Default
-   * `ASK_USER_QUESTION_TIMEOUT_MS` (290s). Tests use a small value to
-   * exercise the timeout branch without waiting 5 min.
+   * `ASK_USER_QUESTION_TIMEOUT_MS` (110s per DD §9.5). Tests use a small
+   * value to exercise the timeout branch without waiting 110s.
    */
   askUserQuestionTimeoutMs?: number;
+  /**
+   * Override the PermissionRequest-specific poll deadline (ms). Default
+   * `PERMISSION_DIALOG_TIMEOUT_MS` (110s per DD §3 D8). Tests use a small
+   * value to exercise the timeout branch without waiting 110s.
+   */
+  permissionDialogTimeoutMs?: number;
 }
 
 /**
@@ -213,7 +273,9 @@ function defaultResolvePaneId(): number | undefined {
  */
 export async function runHookReceiver(
   opts: RunHookReceiverOpts,
-): Promise<HookDecision | PreToolUseHookOutput | void> {
+): Promise<
+  HookDecision | PreToolUseHookOutput | PermissionRequestHookOutput | void
+> {
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
 
@@ -445,20 +507,142 @@ export async function runHookReceiver(
     }
 
     case 'PermissionRequest': {
-      // P1 stub: subscribed in setup-hooks (per DD §6 P1) but full
-      // forward + IM dialog handler lives in P2-P7 (cli-cc receiver +
-      // shared types + state-files + orchestrator + ai-router + router).
+      // P4 handler per [DD: PermissionRequest hook IM bridge §4](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md#4-recommendation--safety-property).
       //
-      // For P1 we silently return — cc falls back to its TUI dialog as
-      // before, identical to the pre-DD baseline. Zero behavior change
-      // for users until P2-P7 ship.
+      // Decision tree (mirrors PreToolUse short-circuits):
+      //   E1 IMWork null         → silent exit (cc falls back to TUI dialog)
+      //   E2 !IMOrigin           → silent exit (no IM thread to forward to)
+      //   E3 !daemon alive       → silent exit (no listener for our Request)
+      //   E4 forward path        → write PermissionDialogRequest file with
+      //                            permission_suggestions, poll matching
+      //                            Response file for ≤110s, emit cc stdout
+      //                            JSON based on Response decision.
       //
-      // TODO(P4): replicate PreToolUse decision tree here:
-      //   - IMWork null → silent exit (current)
-      //   - IMWork.auto=true → emit single-yes allow + IM audit log (D2-A + D5-B)
-      //   - IMWork.auto=false → write PermissionRequest Request file,
-      //     poll for Response, emit cc stdout JSON with decision
-      return;
+      // Note: BOTH `/start auto` (D2-A: silent single-yes) AND `/start off`
+      // (D3-A: IM forward) flow through the daemon for unified handling.
+      // The auto vs off branching happens in the daemon (orchestrator) so
+      // it can emit IM audit log (D5-B) consistently. Hook-side stays simple.
+
+      if ((await readIMWorkFile(stateDir)) === null) return; // E1
+      if (!(await existsIMOriginFile(stateDir))) return; // E2
+      if (!(await isDaemonAlive(stateDir))) return; // E3
+
+      // Sweep stale Request/Response files for this pane+sid before writing
+      // the new Request (defends against prior hook subprocess killed
+      // mid-cleanup). Mirrors PreToolUse path.
+      const staleReq = await listPermissionDialogRequestFiles({
+        stateDir,
+        paneId,
+        sessionId,
+      });
+      for (const f of staleReq) await deletePermissionFileByPath(f);
+      const staleResp = await listPermissionDialogResponseFiles({
+        stateDir,
+        paneId,
+        sessionId,
+      });
+      for (const f of staleResp) await deletePermissionFileByPath(f);
+
+      const requestId = randomBytes(4).toString('hex');
+      await writePermissionDialogRequestFile({
+        stateDir,
+        paneId,
+        sessionId,
+        requestId,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        permissionSuggestions: payload.permission_suggestions ?? [],
+        createdAt: Date.now(),
+      });
+
+      const respPath = permissionDialogResponsePath({
+        stateDir,
+        paneId,
+        sessionId,
+        requestId,
+      });
+      const pollMs =
+        opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS;
+      const timeoutMs =
+        opts.permissionDialogTimeoutMs ?? PERMISSION_DIALOG_TIMEOUT_MS;
+      const deadline = Date.now() + timeoutMs;
+      let hookOutput: PermissionRequestHookOutput | undefined;
+
+      // Delete-always semantics: wrap polling in try/finally so Request +
+      // Response are ALWAYS deleted on exit (success / timeout / throw).
+      // Same pattern as PreToolUse + AskUserQuestion paths.
+      try {
+        while (Date.now() < deadline) {
+          try {
+            await stat(respPath);
+            const resp = await readPermissionDialogResponseFile(respPath);
+            if (resp && resp.requestId === requestId) {
+              if (resp.decision.behavior === 'allow') {
+                hookOutput = {
+                  hookSpecificOutput: {
+                    hookEventName: 'PermissionRequest',
+                    decision: {
+                      behavior: 'allow',
+                      ...(resp.decision.updatedInput !== undefined
+                        ? { updatedInput: resp.decision.updatedInput }
+                        : {}),
+                      ...(resp.decision.updatedPermissions !== undefined
+                        ? {
+                            updatedPermissions: resp.decision.updatedPermissions,
+                          }
+                        : {}),
+                    },
+                  },
+                };
+              } else {
+                hookOutput = {
+                  hookSpecificOutput: {
+                    hookEventName: 'PermissionRequest',
+                    decision: {
+                      behavior: 'deny',
+                      ...(resp.decision.message !== undefined
+                        ? { message: resp.decision.message }
+                        : {}),
+                    },
+                  },
+                };
+              }
+              break;
+            }
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          }
+          await sleep(pollMs);
+        }
+      } finally {
+        await deletePermissionDialogRequestFile({
+          stateDir,
+          paneId,
+          sessionId,
+          requestId,
+        });
+        await deletePermissionDialogResponseFile({
+          stateDir,
+          paneId,
+          sessionId,
+          requestId,
+        });
+      }
+
+      if (hookOutput) return hookOutput;
+
+      // Timeout fallback — emit a plain `allow` (no `updatedPermissions`
+      // so cc still gates subsequent same-session sensitive paths). This
+      // aligns with D2-A "single-yes, don't silently grant session-wide
+      // bypass" but applied to the timeout case where user simply didn't
+      // answer. cc TUI dialog won't re-render (allow = dialog never
+      // renders per source §2.4); cc proceeds with the tool.
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'allow' },
+        },
+      };
     }
 
     case 'Stop': {

@@ -47,6 +47,19 @@ import {
   writePermissionRequestFile,
   writePermissionResponseFile,
   writeStopFile,
+  PERMISSION_DIALOG_REQUEST_PREFIX,
+  PERMISSION_DIALOG_RESPONSE_PREFIX,
+  parsePermissionDialogFilename,
+  permissionDialogRequestPath,
+  permissionDialogResponsePath,
+  writePermissionDialogRequestFile,
+  readPermissionDialogRequestFile,
+  writePermissionDialogResponseFile,
+  readPermissionDialogResponseFile,
+  deletePermissionDialogRequestFile,
+  deletePermissionDialogResponseFile,
+  listPermissionDialogRequestFiles,
+  listPermissionDialogResponseFiles,
 } from './state-files.js';
 import type { IMReplyContext } from '@multi-cc-im/shared';
 
@@ -638,6 +651,218 @@ describe('state-files', () => {
       const got = await listPendingPermissionRequests(stateDir);
       expect(got).toHaveLength(1);
       expect(got[0]?.requestId).toBe('fee15');
+    });
+  });
+
+  describe('PermissionDialog Request / Response (DD 2026-05-13 P3)', () => {
+    it('parsePermissionDialogFilename matches new prefix, rejects old PermissionRequest prefix', () => {
+      const ok = parsePermissionDialogFilename(
+        `${PANE_ID}_${SID}.PermissionDialogRequest.abc123.json`,
+      );
+      expect(ok).toEqual({
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'abc123',
+        kind: 'request',
+      });
+
+      const okResp = parsePermissionDialogFilename(
+        `${PANE_ID}_${SID}.PermissionDialogResponse.def456.json`,
+      );
+      expect(okResp?.kind).toBe('response');
+
+      // Must NOT match the older PreToolUse-flow PermissionRequest prefix.
+      const oldFmt = parsePermissionDialogFilename(
+        `${PANE_ID}_${SID}.PermissionRequest.abc123.json`,
+      );
+      expect(oldFmt).toBeNull();
+    });
+
+    it('writePermissionDialogRequestFile + readPermissionDialogRequestFile round-trip', async () => {
+      const permissionSuggestions = [
+        {
+          type: 'addRules',
+          behavior: 'allow',
+          destination: 'session',
+          rules: [{ toolName: 'Edit', ruleContent: 'Edit(./.claude/**)' }],
+        },
+      ];
+      await writePermissionDialogRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'auq1234',
+        toolName: 'Bash',
+        toolInput: { command: 'mkdir -p .claude/hooks' },
+        permissionSuggestions,
+        createdAt: 1_700_000_000_000,
+      });
+      const path = permissionDialogRequestPath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'auq1234',
+      });
+      expect(
+        path.endsWith(
+          `${PANE_ID}_${SID}${PERMISSION_DIALOG_REQUEST_PREFIX}auq1234.json`,
+        ),
+      ).toBe(true);
+      const got = await readPermissionDialogRequestFile(path);
+      expect(got?.requestId).toBe('auq1234');
+      expect(got?.toolName).toBe('Bash');
+      expect(got?.toolInput).toEqual({ command: 'mkdir -p .claude/hooks' });
+      expect(got?.permissionSuggestions).toEqual(permissionSuggestions);
+    });
+
+    it('round-trip allow Response with updatedPermissions (D6 session-rule injection)', async () => {
+      const updatedPermissions = [
+        {
+          type: 'addRules',
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ];
+      await writePermissionDialogResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'allowf00d',
+        decision: { behavior: 'allow', updatedPermissions },
+      });
+      const path = permissionDialogResponsePath({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'allowf00d',
+      });
+      expect(
+        path.endsWith(
+          `${PANE_ID}_${SID}${PERMISSION_DIALOG_RESPONSE_PREFIX}allowf00d.json`,
+        ),
+      ).toBe(true);
+      const got = await readPermissionDialogResponseFile(path);
+      expect(got?.decision.behavior).toBe('allow');
+      if (got?.decision.behavior !== 'allow') throw new Error('expected allow');
+      expect(got.decision.updatedPermissions).toEqual(updatedPermissions);
+    });
+
+    it('round-trip allow Response with NO updatedPermissions (D2-A single-yes)', async () => {
+      await writePermissionDialogResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'plainallw',
+        decision: { behavior: 'allow' },
+      });
+      const got = await readPermissionDialogResponseFile(
+        permissionDialogResponsePath({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'plainallw',
+        }),
+      );
+      expect(got?.decision.behavior).toBe('allow');
+      if (got?.decision.behavior !== 'allow') throw new Error('expected allow');
+      expect(got.decision.updatedPermissions).toBeUndefined();
+      expect(got.decision.updatedInput).toBeUndefined();
+    });
+
+    it('round-trip deny Response with optional message', async () => {
+      await writePermissionDialogResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'denyf00d',
+        decision: { behavior: 'deny', message: 'User rejected via IM' },
+      });
+      const got = await readPermissionDialogResponseFile(
+        permissionDialogResponsePath({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'denyf00d',
+        }),
+      );
+      expect(got?.decision.behavior).toBe('deny');
+      if (got?.decision.behavior !== 'deny') throw new Error('expected deny');
+      expect(got.decision.message).toBe('User rejected via IM');
+    });
+
+    it('writePermissionDialogResponseFile rejects malformed body (zod parse error)', async () => {
+      const invalid = {
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'bad',
+        decision: { behavior: 'maybe' as unknown as 'allow' },
+      } as unknown as Parameters<typeof writePermissionDialogResponseFile>[0];
+      await expect(
+        writePermissionDialogResponseFile(invalid),
+      ).rejects.toThrow();
+    });
+
+    it('listPermissionDialogRequestFiles + listPermissionDialogResponseFiles filter by pane+sid', async () => {
+      await writePermissionDialogRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+        toolName: 'Bash',
+        toolInput: {},
+        permissionSuggestions: [],
+        createdAt: 0,
+      });
+      await writePermissionDialogResponseFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+        requestId: 'r1',
+        decision: { behavior: 'allow' },
+      });
+      // Different sid — should not appear
+      await writePermissionDialogRequestFile({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID2,
+        requestId: 'other',
+        toolName: 'Bash',
+        toolInput: {},
+        permissionSuggestions: [],
+        createdAt: 0,
+      });
+      const reqs = await listPermissionDialogRequestFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      const ress = await listPermissionDialogResponseFiles({
+        stateDir,
+        paneId: PANE_ID,
+        sessionId: SID,
+      });
+      expect(reqs).toHaveLength(1);
+      expect(ress).toHaveLength(1);
+    });
+
+    it('delete helpers are idempotent', async () => {
+      await expect(
+        deletePermissionDialogRequestFile({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'never-existed',
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        deletePermissionDialogResponseFile({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          requestId: 'never-existed',
+        }),
+      ).resolves.toBeUndefined();
     });
   });
 
