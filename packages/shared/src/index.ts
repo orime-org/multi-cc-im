@@ -45,6 +45,7 @@ export type {
   HookPayload,
   HookDecision,
   PreToolUsePayload,
+  PermissionRequestPayload,
   StopPayload,
 } from './adapter/cli.js';
 

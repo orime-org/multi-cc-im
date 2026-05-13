@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 
 /**
- * The 2 cc hook events multi-cc-im needs to subscribe to.
+ * The 3 cc hook events multi-cc-im needs to subscribe to.
  *
  * Per [DD: pane-keyed state files](../../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
  * (DD #61), SessionStart + SessionEnd were dropped:
@@ -20,6 +20,13 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  *   daemon forwards to IM, IM user replies `@<tabname> /1` / `/2`, daemon
  *   writes `<paneId>_<sid>.PermissionResponse.<id>.json`, hook subprocess
  *   emits permission decision to cc. **10 second** timeout default-allows.
+ * - `PermissionRequest` — cc's internal ask-gate dialog forwarded to IM,
+ *   per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md).
+ *   Fires AFTER PreToolUse + all cc-internal gates (deny/ask/safety
+ *   checks), BEFORE TUI dialog renders. Lets daemon intercept sensitive
+ *   path prompts (`.claude/*`, `.git/*`, etc.) that PreToolUse hook
+ *   `allow` cannot bypass — only `decision.updatedPermissions` with
+ *   `destination: 'session'` early-returns before the safety gate.
  * - `Stop` — assistant turn complete; bridge forwards
  *   `last_assistant_message` to IM origin via `<paneId>.IMOrigin` lookup.
  *
@@ -31,8 +38,11 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
  * Per-event matcher + timeout:
  * - `Stop` — `matcher: ""` (no tool concept)
  * - `PreToolUse` — `matcher: "*"` (match all tools) + `timeout: 10`
+ * - `PermissionRequest` — `matcher: ""` (no tool concept; fires per
+ *   permission dialog, not per tool) + `timeout: 120` (mirror AUQ —
+ *   §9.5 DD: PermissionRequest 110s internal + 120s cc-side margin)
  */
-const HOOK_EVENTS = ['PreToolUse', 'Stop'] as const;
+const HOOK_EVENTS = ['PreToolUse', 'PermissionRequest', 'Stop'] as const;
 
 /**
  * Per-event matcher groups to emit into `~/.claude/settings.json`. Each spec
@@ -74,6 +84,7 @@ const EVENT_MATCHER_SPECS: Record<
     { matcher: 'AskUserQuestion', timeout: 120 },
     { matcher: '^(?!AskUserQuestion$).+$', timeout: 20 },
   ],
+  PermissionRequest: [{ matcher: '', timeout: 120 }],
   Stop: [{ matcher: '' }],
 };
 

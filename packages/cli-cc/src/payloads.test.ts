@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PreToolUsePayloadSchema,
+  PermissionRequestPayloadSchema,
   StopPayloadSchema,
   HookPayloadSchema,
   parseHookPayload,
@@ -29,6 +30,18 @@ const STOP = {
   permission_mode: 'default',
   stop_hook_active: false,
   last_assistant_message: 'hi',
+};
+
+const PERMISSION_REQUEST = {
+  session_id: SID,
+  transcript_path: TX,
+  cwd: CWD,
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'Bash',
+  tool_input: { command: 'mkdir -p .claude/hooks' },
+  permission_suggestions: [
+    { type: 'addRules', behavior: 'allow', destination: 'session' },
+  ],
 };
 
 describe('PreToolUsePayloadSchema', () => {
@@ -87,9 +100,36 @@ describe('StopPayloadSchema', () => {
   });
 });
 
+describe('PermissionRequestPayloadSchema', () => {
+  it('accepts the cc 2.1.88 PermissionRequest payload shape', () => {
+    const parsed = PermissionRequestPayloadSchema.parse(PERMISSION_REQUEST);
+    expect(parsed.hook_event_name).toBe('PermissionRequest');
+    expect(parsed.tool_name).toBe('Bash');
+    expect(parsed.tool_input).toEqual({ command: 'mkdir -p .claude/hooks' });
+    expect(parsed.permission_suggestions).toHaveLength(1);
+  });
+
+  it('permission_suggestions is optional (cc may omit it for some dialogs)', () => {
+    const { permission_suggestions, ...withoutSuggestions } = PERMISSION_REQUEST;
+    void permission_suggestions;
+    expect(() =>
+      PermissionRequestPayloadSchema.parse(withoutSuggestions),
+    ).not.toThrow();
+  });
+
+  it('rejects payload missing required tool_name', () => {
+    const { tool_name, ...invalid } = PERMISSION_REQUEST;
+    void tool_name;
+    expect(() => PermissionRequestPayloadSchema.parse(invalid)).toThrow();
+  });
+});
+
 describe('HookPayloadSchema (discriminated union)', () => {
-  it('discriminates PreToolUse + Stop by hook_event_name', () => {
+  it('discriminates PreToolUse + PermissionRequest + Stop by hook_event_name', () => {
     expect(HookPayloadSchema.parse(PRE_TOOL_USE).hook_event_name).toBe('PreToolUse');
+    expect(HookPayloadSchema.parse(PERMISSION_REQUEST).hook_event_name).toBe(
+      'PermissionRequest',
+    );
     expect(HookPayloadSchema.parse(STOP).hook_event_name).toBe('Stop');
   });
 
