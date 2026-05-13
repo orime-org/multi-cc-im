@@ -12,11 +12,13 @@ import {
   imWorkPath,
   listStopFiles,
   permissionRequestPath,
+  readPermissionDialogRequestFile,
   readStopFile,
   stopFilePath,
   writeDaemonPidFile,
   writeIMOriginFile,
   writeIMWorkFile,
+  writePermissionDialogResponseFile,
   writePermissionResponseFile,
 } from './state-files.js';
 import { enqueueInjection } from './injection-queue.js';
@@ -626,7 +628,7 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
   });
 });
 
-describe('runHookReceiver — PermissionRequest stub (DD 2026-05-13 P1)', () => {
+describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () => {
   let stateDir: string;
 
   beforeEach(async () => {
@@ -637,34 +639,199 @@ describe('runHookReceiver — PermissionRequest stub (DD 2026-05-13 P1)', () => 
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  it('returns undefined (silent exit) — P1 stub before P2-P7 implementation lands', async () => {
-    // Per DD §6: P1 subscribes the event in setup-hooks + threads the type
-    // through shared/payloads. Full forward + IM dialog handler ships in
-    // P2-P7. Until then we silently return so cc falls back to its TUI
-    // dialog as before — zero behavior change.
+  it('E1 IMWork null → silent exit (cc falls back to TUI dialog)', async () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
       resolvePaneId: stubPaneId,
     });
     expect(result).toBeUndefined();
-    // No state files should have been written either.
     const entries = await readStateDirEntries(stateDir);
     expect(entries).toEqual([]);
   });
 
-  it('silent stub fires even with IMWork on (P1 deliberately ignores state to keep behavior minimal)', async () => {
-    // Even if IMWork + IMOrigin + daemon.pid are all set up (the path that
-    // would normally trigger heavy work), P1 stub still returns undefined.
-    // This locks in "P1 is truly minimal — no side effects" until P4
-    // wires the real handler.
+  it('E2 IMOrigin missing → silent exit (no IM thread bound)', async () => {
+    await writeIMWorkFile(stateDir);
+    // No IMOrigin / daemon.pid setup
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toBeUndefined();
+    expect(
+      (await readStateDirEntries(stateDir)).some((n) =>
+        n.includes('.PermissionDialogRequest.'),
+      ),
+    ).toBe(false);
+  });
+
+  it('forward path: writes PermissionDialogRequest file + polls Response + returns hook output', async () => {
+    await setupBoundState(stateDir);
+
+    const updatedPermissions = [
+      { type: 'addRules', behavior: 'allow', destination: 'session' },
+    ];
+
+    // Background responder simulates daemon writing a Response file.
+    const respondInBackground = (async () => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${PANE_ID}_${SID}.PermissionDialogRequest.`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(
+            /\.PermissionDialogRequest\.([0-9a-f]+)\.json$/,
+          );
+          if (m) {
+            await writePermissionDialogResponseFile({
+              stateDir,
+              paneId: PANE_ID,
+              sessionId: SID,
+              requestId: m[1]!,
+              decision: { behavior: 'allow', updatedPermissions },
+            });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      permissionDialogTimeoutMs: 2_000,
+    });
+    await respondInBackground;
+
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow', updatedPermissions },
+      },
+    });
+    // Request + Response both cleaned up
+    const after = await readStateDirEntries(stateDir);
+    expect(after.some((n) => n.includes('.PermissionDialogRequest.'))).toBe(
+      false,
+    );
+    expect(after.some((n) => n.includes('.PermissionDialogResponse.'))).toBe(
+      false,
+    );
+  });
+
+  it('forward path: deny Response → forwards deny + message verbatim', async () => {
+    await setupBoundState(stateDir);
+
+    const respondInBackground = (async () => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const entries = await readStateDirEntries(stateDir);
+        const reqFile = entries.find((n) =>
+          n.startsWith(`${PANE_ID}_${SID}.PermissionDialogRequest.`),
+        );
+        if (reqFile) {
+          const m = reqFile.match(
+            /\.PermissionDialogRequest\.([0-9a-f]+)\.json$/,
+          );
+          if (m) {
+            await writePermissionDialogResponseFile({
+              stateDir,
+              paneId: PANE_ID,
+              sessionId: SID,
+              requestId: m[1]!,
+              decision: { behavior: 'deny', message: 'User said no' },
+            });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    })();
+
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      permissionDialogTimeoutMs: 2_000,
+    });
+    await respondInBackground;
+
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'User said no' },
+      },
+    });
+  });
+
+  it('timeout: emits plain allow (no updatedPermissions — protects D2-A "single-yes" semantic)', async () => {
     await setupBoundState(stateDir);
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
       resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 20,
+      permissionDialogTimeoutMs: 100, // immediate timeout
     });
-    expect(result).toBeUndefined();
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow' },
+      },
+    });
+    // Request file cleaned up after timeout
+    const after = await readStateDirEntries(stateDir);
+    expect(after.some((n) => n.includes('.PermissionDialogRequest.'))).toBe(
+      false,
+    );
+  });
+
+  it('written PermissionDialogRequest file contains permission_suggestions from cc payload', async () => {
+    await setupBoundState(stateDir);
+    // Drive a timeout so we can inspect what the hook wrote before cleanup.
+    // The polling loop's stat() runs at pollInterval cadence, so racing
+    // a read between write + cleanup needs a small window — use slightly
+    // longer poll than the immediate-timeout test.
+    const observed: { suggestions: readonly unknown[] }[] = [];
+    const observerInterval = setInterval(async () => {
+      const entries = await readStateDirEntries(stateDir);
+      const reqFile = entries.find((n) =>
+        n.startsWith(`${PANE_ID}_${SID}.PermissionDialogRequest.`),
+      );
+      if (reqFile) {
+        const m = reqFile.match(
+          /\.PermissionDialogRequest\.([0-9a-f]+)\.json$/,
+        );
+        if (m) {
+          const body = await readPermissionDialogRequestFile(
+            join(stateDir, reqFile),
+          );
+          if (body) observed.push({ suggestions: body.permissionSuggestions });
+        }
+      }
+    }, 20);
+
+    await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+      permissionPollIntervalMs: 50,
+      permissionDialogTimeoutMs: 200,
+    });
+    clearInterval(observerInterval);
+
+    expect(observed.length).toBeGreaterThan(0);
+    expect(observed[0]!.suggestions).toEqual(
+      (PERMISSION_REQUEST_PAYLOAD as { permission_suggestions: unknown })
+        .permission_suggestions,
+    );
   });
 });
 

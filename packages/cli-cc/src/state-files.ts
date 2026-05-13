@@ -72,6 +72,25 @@ export function formatStopTimestamp(d: Date): string {
 
 export const PERMISSION_REQUEST_PREFIX = '.PermissionRequest.';
 export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
+/**
+ * PermissionDialog file prefixes (cc's `PermissionRequest` hook event —
+ * named "Dialog" in our file naming to disambiguate from the existing
+ * `PermissionRequest` / `PermissionResponse` files which were named for
+ * the daemon-side "permission request" concept on PreToolUse flows).
+ *
+ * Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
+ *   1. cc fires `PermissionRequest` hook (after PreToolUse + all
+ *      cc-internal gates, before TUI dialog renders)
+ *   2. hook subprocess writes `<paneId>_<sid>.PermissionDialogRequest.<id>.json`
+ *      with `permission_suggestions` from cc's hook input
+ *   3. daemon forwards to IM (off mode) or emits auto-allow + audit log
+ *      (auto mode)
+ *   4. daemon writes `<paneId>_<sid>.PermissionDialogResponse.<id>.json`
+ *      with `decision: {behavior: 'allow' | 'deny', updatedPermissions?}`
+ *   5. hook polls response, emits cc stdout JSON, exits
+ */
+export const PERMISSION_DIALOG_REQUEST_PREFIX = '.PermissionDialogRequest.';
+export const PERMISSION_DIALOG_RESPONSE_PREFIX = '.PermissionDialogResponse.';
 /** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
 export const IM_WORK_FILE_NAME = 'IMWork';
 /** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
@@ -145,6 +164,37 @@ export function parsePermissionFilename(
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(
     /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Permission(Request|Response)\.([0-9a-f]+)\.json$/,
+  );
+  if (!m) return null;
+  return {
+    paneId: Number(m[1]),
+    sessionId: m[2]!,
+    kind: m[3] === 'Request' ? 'request' : 'response',
+    requestId: m[4]!,
+  };
+}
+
+export interface ParsedPermissionDialogFilename {
+  paneId: number;
+  sessionId: string;
+  /** 8-char hex request id. */
+  requestId: string;
+  kind: 'request' | 'response';
+}
+
+/**
+ * Parse `<paneId>_<sid>.PermissionDialog{Request|Response}.<id>.json`
+ * (cc `PermissionRequest` hook event IPC files; named "Dialog" to
+ * disambiguate from the older PreToolUse-flow `PermissionRequest` /
+ * `PermissionResponse` files). Returns null on mismatch — daemon
+ * chokidar / state-sweep should ignore.
+ */
+export function parsePermissionDialogFilename(
+  name: string,
+): ParsedPermissionDialogFilename | null {
+  const base = name.includes('/') ? name.split('/').pop()! : name;
+  const m = base.match(
+    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.PermissionDialog(Request|Response)\.([0-9a-f]+)\.json$/,
   );
   if (!m) return null;
   return {
@@ -500,6 +550,181 @@ export async function listPendingPermissionRequests(
 
   pending.sort((a, b) => a.createdAt - b.createdAt);
   return pending;
+}
+
+// ============================================================================
+// PermissionDialog Request / Response: hook-subprocess ↔ daemon IPC for
+// cc's `PermissionRequest` hook event (sensitive-path dialogs that fire
+// after PreToolUse + all cc-internal gates, before TUI dialog renders).
+//
+// Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md).
+// Lifecycle mirrors PreToolUse PermissionRequest/Response but with
+// distinct filename prefix + body shape:
+//   1. cc PermissionRequest → hook subprocess writes
+//      <paneId>_<sid>.PermissionDialogRequest.<id>.json
+//   2. daemon (chokidar add) forwards to IM (`/start off` mode) OR
+//      writes auto-allow response + IM audit notification (`/start auto`)
+//   3. hook subprocess polls matching .PermissionDialogResponse file
+//   4. hook emits cc stdout JSON
+//      `{hookSpecificOutput: {hookEventName: 'PermissionRequest',
+//        decision: {behavior, updatedInput?, updatedPermissions?, message?}}}`
+//   5. On hook crash: daemon-side reaper backstop unlinks both files
+//      after 130s (mirror v1.9 AUQ reaper window)
+// ============================================================================
+
+export interface PermissionDialogRequestFile {
+  /** Random short id used to pair Request → Response. */
+  requestId: string;
+  /** Tool cc was about to call when the dialog fired (e.g. `'Bash'`, `'Edit'`). */
+  toolName: string;
+  /** cc's tool_input verbatim (per-tool schema). */
+  toolInput: Record<string, unknown>;
+  /**
+   * cc's `permission_suggestions` array from hook input — opaque
+   * `PermissionUpdate[]` objects representing the "Yes always X" dialog
+   * options cc would have shown. Daemon forwards to IM verbatim and may
+   * round-trip the chosen entry back into `decision.updatedPermissions`.
+   * Parsed loosely (entries are `unknown`) because cc's PermissionUpdate
+   * shape isn't version-stable.
+   */
+  permissionSuggestions: readonly unknown[];
+  /** When hook wrote the file (ms epoch). Daemon may use to detect stale. */
+  createdAt: number;
+}
+
+/**
+ * PermissionDialog Response body. Mirrors cc protocol's
+ * `hookSpecificOutput.decision` shape (DD §2.1 source-verified):
+ *
+ * - `allow`: tool proceeds; optional `updatedInput` (modify tool args) +
+ *   optional `updatedPermissions` (session-scoped allow rule injection;
+ *   `destination: 'session'` is the ONLY destination that bypasses cc's
+ *   sensitive-file gate on subsequent same-session calls per
+ *   [filesystem.ts:1268-1300](DD §2.3))
+ * - `deny`: tool cancelled; optional `message` (shown to user in cc).
+ *   `interrupt: true` (which would abort the cc session) is intentionally
+ *   not exposed — daemon never wants to interrupt the session.
+ */
+export const PermissionDialogResponseFileSchema = z.object({
+  requestId: z.string().min(1),
+  decision: z.discriminatedUnion('behavior', [
+    z.object({
+      behavior: z.literal('allow'),
+      updatedInput: z.record(z.string(), z.unknown()).optional(),
+      updatedPermissions: z.array(z.unknown()).optional(),
+    }),
+    z.object({
+      behavior: z.literal('deny'),
+      message: z.string().optional(),
+    }),
+  ]),
+});
+
+export type PermissionDialogResponseFile = z.infer<
+  typeof PermissionDialogResponseFileSchema
+>;
+
+export function permissionDialogRequestPath(
+  opts: PerPaneIO & { requestId: string },
+): string {
+  return join(
+    opts.stateDir,
+    `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_DIALOG_REQUEST_PREFIX}${opts.requestId}.json`,
+  );
+}
+
+export function permissionDialogResponsePath(
+  opts: PerPaneIO & { requestId: string },
+): string {
+  return join(
+    opts.stateDir,
+    `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_DIALOG_RESPONSE_PREFIX}${opts.requestId}.json`,
+  );
+}
+
+export async function writePermissionDialogRequestFile(
+  opts: PerPaneIO & PermissionDialogRequestFile,
+): Promise<void> {
+  const body: PermissionDialogRequestFile = {
+    requestId: opts.requestId,
+    toolName: opts.toolName,
+    toolInput: opts.toolInput,
+    permissionSuggestions: opts.permissionSuggestions,
+    createdAt: opts.createdAt,
+  };
+  await atomicWrite(
+    permissionDialogRequestPath(opts),
+    JSON.stringify(body, null, 2),
+  );
+}
+
+export async function readPermissionDialogRequestFile(
+  filePath: string,
+): Promise<PermissionDialogRequestFile | null> {
+  return readJsonOrNull<PermissionDialogRequestFile>(filePath);
+}
+
+export async function writePermissionDialogResponseFile(
+  opts: PerPaneIO & PermissionDialogResponseFile,
+): Promise<void> {
+  const { stateDir: _s, paneId: _p, sessionId: _sid, ...rest } = opts;
+  const body = PermissionDialogResponseFileSchema.parse(rest);
+  await atomicWrite(
+    permissionDialogResponsePath(opts),
+    JSON.stringify(body, null, 2),
+  );
+}
+
+export async function readPermissionDialogResponseFile(
+  filePath: string,
+): Promise<PermissionDialogResponseFile | null> {
+  const raw = await readJsonOrNull<unknown>(filePath);
+  if (raw === null) return null;
+  return PermissionDialogResponseFileSchema.parse(raw);
+}
+
+export async function deletePermissionDialogRequestFile(
+  opts: PerPaneIO & { requestId: string },
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(permissionDialogRequestPath(opts));
+}
+
+export async function deletePermissionDialogResponseFile(
+  opts: PerPaneIO & { requestId: string },
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(permissionDialogResponsePath(opts));
+}
+
+export async function listPermissionDialogRequestFiles(
+  opts: PerPaneIO,
+): Promise<string[]> {
+  const prefix = `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_DIALOG_REQUEST_PREFIX}`;
+  let entries: string[];
+  try {
+    entries = await readdir(opts.stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(opts.stateDir, name));
+}
+
+export async function listPermissionDialogResponseFiles(
+  opts: PerPaneIO,
+): Promise<string[]> {
+  const prefix = `${paneSidPrefix(opts.paneId, opts.sessionId)}${PERMISSION_DIALOG_RESPONSE_PREFIX}`;
+  let entries: string[];
+  try {
+    entries = await readdir(opts.stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => join(opts.stateDir, name));
 }
 
 // ============================================================================
