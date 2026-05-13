@@ -16,6 +16,17 @@ export type {
   AskUserQuestionAIOutput,
 } from './ask-user-question.js';
 
+// PermissionRequest hook event AI-side schemas (sensitive-path dialog
+// reply triage; on-disk Response shape lives in cli-cc state-files)
+export {
+  PermissionDialogAnswerSchema,
+  PermissionDialogAIOutputSchema,
+} from './permission-dialog.js';
+export type {
+  PermissionDialogAnswer,
+  PermissionDialogAIOutput,
+} from './permission-dialog.js';
+
 // IM adapter (re-exported with category prefixes for flat top-level API)
 export type {
   Adapter as IMAdapter,

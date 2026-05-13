@@ -7,10 +7,13 @@ import {
   buildClaudeArgs,
   explainExecError,
   parseAskUserQuestionOutput,
+  parsePermissionRequestOutput,
   parseRoutingOutput,
   renderAskUserQuestionPrompt,
+  renderPermissionRequestPrompt,
   renderRoutingPrompt,
   routeViaAI,
+  summarizePermissionSuggestion,
 } from './ai-router.js';
 
 // ============================================================================
@@ -1292,5 +1295,209 @@ describe('ai-router — parseAskUserQuestionOutput', () => {
     expect(parseAskUserQuestionOutput('not json')).toBeNull();
     expect(parseAskUserQuestionOutput('{}')).toBeNull();
     expect(parseAskUserQuestionOutput('{"result": 123}')).toBeNull();
+  });
+});
+
+// ============================================================================
+// PermissionRequest hook event AI path (DD 2026-05-13 P6)
+// ============================================================================
+
+describe('ai-router — summarizePermissionSuggestion', () => {
+  it('extracts ruleContent from rules[0] when present', () => {
+    expect(
+      summarizePermissionSuggestion({
+        type: 'addRules',
+        behavior: 'allow',
+        destination: 'session',
+        rules: [{ toolName: 'Edit', ruleContent: 'Edit(./.claude/**)' }],
+      }),
+    ).toBe('Edit(./.claude/**)');
+  });
+
+  it('falls back to type/destination when rules missing', () => {
+    expect(
+      summarizePermissionSuggestion({
+        type: 'setMode',
+        destination: 'session',
+      }),
+    ).toBe('setMode/session');
+  });
+
+  it('returns placeholder on totally malformed input', () => {
+    expect(summarizePermissionSuggestion(null)).toBe('<unknown suggestion>');
+    expect(summarizePermissionSuggestion(42)).toBe('<unknown suggestion>');
+    expect(summarizePermissionSuggestion('string')).toBe('<unknown suggestion>');
+  });
+});
+
+describe('ai-router — renderPermissionRequestPrompt', () => {
+  const ONE_PENDING = {
+    tabName: 'frontend',
+    toolName: 'Bash',
+    toolInputSummary: 'mkdir -p .claude/hooks',
+    permissionSuggestions: [
+      {
+        type: 'addRules',
+        behavior: 'allow',
+        destination: 'session',
+        rules: [{ toolName: 'Edit', ruleContent: 'Edit(./.claude/**)' }],
+      },
+    ],
+  };
+
+  it('renders tab + tool + path summary + numbered suggestion(s)', () => {
+    const out = renderPermissionRequestPrompt({
+      userMsg: 'always',
+      pendings: [ONE_PENDING],
+    });
+    expect(out).toContain('tab=frontend');
+    expect(out).toContain('tool=Bash');
+    expect(out).toContain('mkdir -p .claude/hooks');
+    expect(out).toMatch(/1\. Edit\(.\/.claude\/\*\*\)/);
+  });
+
+  it('explicit "(none)" line when permission_suggestions is empty (defensive)', () => {
+    const out = renderPermissionRequestPrompt({
+      userMsg: 'no',
+      pendings: [{ ...ONE_PENDING, permissionSuggestions: [] }],
+    });
+    expect(out).toMatch(/\(none — cc offered no always-allow suggestions\)/);
+  });
+
+  it('OUTPUT spec mandates allow/deny answer shape + 1-based appliedSuggestionIndex', () => {
+    const out = renderPermissionRequestPrompt({
+      userMsg: '2',
+      pendings: [ONE_PENDING],
+    });
+    expect(out).toContain('"behavior": "allow"');
+    expect(out).toContain('"appliedSuggestionIndex"');
+    expect(out).toContain('"behavior": "deny"');
+    expect(out).toContain('"message"');
+    expect(out).toMatch(/1-based index/);
+    // No allow/deny conflation with PreToolUse permissionDecision
+    expect(out).not.toMatch(/permissionDecision/);
+  });
+
+  it('forbids AI from synthesizing always-allow not in the list (D6-A)', () => {
+    const out = renderPermissionRequestPrompt({
+      userMsg: 'always allow /etc/',
+      pendings: [ONE_PENDING],
+    });
+    expect(out).toMatch(/Never invent a new index/);
+    // The prompt has a multi-line "Never\n  fabricate ..." block — match
+    // each token separately rather than try to bridge newlines in regex.
+    expect(out).toContain('fabricate');
+    expect(out).toContain("custom always-allow that wasn't in the list");
+  });
+
+  it('interpolates the user message verbatim', () => {
+    const out = renderPermissionRequestPrompt({
+      userMsg: '我选第二个：始终允许 .claude/ 编辑',
+      pendings: [ONE_PENDING],
+    });
+    expect(out).toContain('我选第二个：始终允许 .claude/ 编辑');
+  });
+});
+
+describe('ai-router — parsePermissionRequestOutput', () => {
+  function wrapEnvelope(inner: unknown): string {
+    return JSON.stringify({
+      result: typeof inner === 'string' ? inner : JSON.stringify(inner),
+      session_id: 'test',
+    });
+  }
+
+  it('parses single-yes allow (no appliedSuggestionIndex)', () => {
+    const result = parsePermissionRequestOutput(
+      wrapEnvelope({
+        target: 'frontend',
+        reason: 'user said yes',
+        answer: { behavior: 'allow' },
+      }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.answer).toEqual({ behavior: 'allow' });
+  });
+
+  it('parses always-allow with 1-based appliedSuggestionIndex', () => {
+    const result = parsePermissionRequestOutput(
+      wrapEnvelope({
+        target: 'frontend',
+        reason: 'picked option 1',
+        answer: { behavior: 'allow', appliedSuggestionIndex: 1 },
+      }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.answer).toEqual({
+      behavior: 'allow',
+      appliedSuggestionIndex: 1,
+    });
+  });
+
+  it('parses deny with message', () => {
+    const result = parsePermissionRequestOutput(
+      wrapEnvelope({
+        target: 'frontend',
+        answer: { behavior: 'deny', message: '用户拒绝' },
+      }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.answer).toEqual({ behavior: 'deny', message: '用户拒绝' });
+  });
+
+  it('rejects appliedSuggestionIndex=0 (must be 1-based)', () => {
+    expect(
+      parsePermissionRequestOutput(
+        wrapEnvelope({
+          target: 'frontend',
+          answer: { behavior: 'allow', appliedSuggestionIndex: 0 },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects unknown behavior', () => {
+    expect(
+      parsePermissionRequestOutput(
+        wrapEnvelope({
+          target: 'frontend',
+          answer: { behavior: 'maybe' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects missing target', () => {
+    expect(
+      parsePermissionRequestOutput(
+        wrapEnvelope({
+          answer: { behavior: 'allow' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('strips markdown fence around inner JSON', () => {
+    const inner =
+      '```json\n' +
+      JSON.stringify({
+        target: 'frontend',
+        answer: { behavior: 'allow', appliedSuggestionIndex: 1 },
+      }) +
+      '\n```';
+    const result = parsePermissionRequestOutput(
+      JSON.stringify({ result: inner }),
+    );
+    expect(result).not.toBeNull();
+    expect(result!.answer).toEqual({
+      behavior: 'allow',
+      appliedSuggestionIndex: 1,
+    });
+  });
+
+  it('returns null on malformed envelope', () => {
+    expect(parsePermissionRequestOutput('not json')).toBeNull();
+    expect(parsePermissionRequestOutput('{}')).toBeNull();
+    expect(parsePermissionRequestOutput('{"result": 123}')).toBeNull();
   });
 });
