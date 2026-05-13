@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneId } from '@multi-cc-im/shared';
-import { matchSession, RESERVED_BRIDGE_NAME, type SessionInfo } from './matcher.js';
+import { matchSession, type SessionInfo } from './matcher.js';
 
 function s(tabTitle: string, paneId = 1): SessionInfo {
   return {
@@ -122,11 +122,18 @@ describe('matchSession — tmux-style 4-level fallback over tabTitle', () => {
     });
   });
 
-  describe('reserved bridge name', () => {
-    it('#multi-cc-im never resolves to a session', () => {
-      const a = s(RESERVED_BRIDGE_NAME);
-      expect(matchSession(RESERVED_BRIDGE_NAME, [a])).toEqual({
-        type: 'none',
+  describe('no reserved tab title', () => {
+    it("#multi-cc-im resolves to a cc named 'multi-cc-im' like any other tab title", () => {
+      // Regression: previously matchSession silently rejected the bridge
+      // package name. Users developing on this repo who /rename their cc to
+      // `multi-cc-im` got "not found" with no hint; daemon /list still
+      // listed the pane as addressable. Bridge commands use bare-slash
+      // (`/list`), `#<tab>` references go through matcher — namespaces
+      // don't collide, so no tab title is reserved.
+      const a = s('multi-cc-im');
+      expect(matchSession('multi-cc-im', [a])).toEqual({
+        type: 'unique',
+        session: a,
       });
     });
   });

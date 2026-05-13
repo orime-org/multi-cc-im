@@ -1,14 +1,6 @@
 import type { PaneId } from '@multi-cc-im/shared';
 
 /**
- * Reserved tab name that always refers to the bridge daemon itself rather
- * than any cc session. Bridge commands live under bare-slash syntax
- * (`/list`, `/start`, etc.). Users cannot legitimately /rename a cc to
- * this string (router rejects it on matcher entry).
- */
-export const RESERVED_BRIDGE_NAME = 'multi-cc-im';
-
-/**
  * Per-pane info needed for routing decisions. Bridge orchestrator builds
  * this directly from `TermListPanes.listPanes()` (wezterm cli list) — no
  * file-system join with SessionStart files.
@@ -54,15 +46,16 @@ export type MatchResult =
  * candidates verbatim back to user as a numbered list so they can fix
  * the duplicate names.
  *
- * Reserved name `multi-cc-im` is filtered out before matching — even if a
- * user manages to /rename a cc to that string, it's never resolvable.
+ * No tab title is reserved: bridge commands use bare-slash syntax (`/list`,
+ * `/start`), `#<tab>` references go through this matcher — the two namespaces
+ * don't collide at the parser level, so a user is free to /rename a cc to
+ * any string (including the bridge package name itself).
  */
 export function matchSession(
   query: string,
   sessions: readonly SessionInfo[],
 ): MatchResult {
   if (query.length === 0) return { type: 'none' };
-  if (query === RESERVED_BRIDGE_NAME) return { type: 'none' };
 
   // Level 1: =<exact> — strict exact tabTitle
   if (query.startsWith('=')) {
