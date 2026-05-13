@@ -314,29 +314,42 @@ describe('createCcCliAdapter', () => {
         async onStop() {
           inFlight++;
           maxInFlight = Math.max(maxInFlight, inFlight);
-          await new Promise((r) => setTimeout(r, 80));
+          // Wide enough overlap window for chokidar's file-event delivery on
+          // CI runners (where load can push event latency past the 80ms used
+          // earlier — see 2026-05-13 flaky CI on main post-PR-#160).
+          await new Promise((r) => setTimeout(r, 200));
           inFlight--;
         },
       };
       await adapter.start(handler);
 
-      await writeStopFile({
-        stateDir,
-        paneId: PANE_ID,
-        sessionId: SID,
-        timestamp: 'T1',
-        last_assistant_message: 'a',
-      });
-      await writeStopFile({
-        stateDir,
-        paneId: PANE_ID2,
-        sessionId: SID2,
-        timestamp: 'T1',
-        last_assistant_message: 'b',
-      });
+      // Concurrent writes so chokidar observes both events nearly
+      // simultaneously. Sequential awaits would let chokidar dispatch
+      // the first file and finish its 200ms handler before the second
+      // file's event ever fires — the original race that flaked CI.
+      await Promise.all([
+        writeStopFile({
+          stateDir,
+          paneId: PANE_ID,
+          sessionId: SID,
+          timestamp: 'T1',
+          last_assistant_message: 'a',
+        }),
+        writeStopFile({
+          stateDir,
+          paneId: PANE_ID2,
+          sessionId: SID2,
+          timestamp: 'T1',
+          last_assistant_message: 'b',
+        }),
+      ]);
 
-      await waitFor(() => maxInFlight === 2 || inFlight === 0);
-      await new Promise((r) => setTimeout(r, 200));
+      // Strong wait: only success is maxInFlight reaching 2. No escape
+      // hatch on `inFlight === 0` — that's what masked the failure
+      // before (waitFor returned early when dispatch 1 completed before
+      // dispatch 2 even started). If the contract breaks, waitFor times
+      // out at 2s and the test fails correctly.
+      await waitFor(() => maxInFlight === 2);
       expect(maxInFlight).toBe(2);
 
       await adapter.stop();
