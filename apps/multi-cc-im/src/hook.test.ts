@@ -9,12 +9,13 @@ import {
   writeIMOriginFile,
   writeIMWorkFile,
 } from '@multi-cc-im/cli-cc';
+import type { PaneId } from '@multi-cc-im/shared';
 import { runHookCommand } from './hook.js';
 
 const SID = '11111111-3606-4fe4-b01d-aaaaaaaaaaaa';
 const TX = '/Users/x/.claude/projects/-private-tmp/abc.jsonl';
 const CWD = '/private/tmp/cc-probe';
-const PANE_ID = 42;
+const PANE_ID = 42 as unknown as PaneId;
 
 const PRE_TOOL_USE_BASH = JSON.stringify({
   session_id: SID,

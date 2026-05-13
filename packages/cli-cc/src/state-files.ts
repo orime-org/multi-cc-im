@@ -6,6 +6,7 @@ import { atomicWrite } from '@multi-cc-im/storage-files';
 import {
   IMReplyContextSchema,
   type IMReplyContext,
+  type PaneId,
 } from '@multi-cc-im/shared';
 
 /**
@@ -104,13 +105,30 @@ export const DAEMON_PID_FILE_NAME = 'daemon.pid';
 export interface PerPaneIO {
   stateDir: string;
   /** Wezterm pane id (numeric, from `process.env.WEZTERM_PANE`). */
-  paneId: number;
+  paneId: PaneId;
   /** cc session id (UUID v4, from hook payload). */
   sessionId: string;
 }
 
-function paneSidPrefix(paneId: number, sessionId: string): string {
+function paneSidPrefix(paneId: PaneId, sessionId: string): string {
   return `${paneId}_${sessionId}`;
+}
+
+/**
+ * Inverse of `${paneId}_${sid}` filename serialization. WezTerm pane ids are
+ * numeric and arrive in filenames as digit strings — restore them to
+ * `number` so reverse-routing keys (Map lookups, etc.) match producers that
+ * still pass numeric ids. iTerm2 pane ids are UUID strings and stay strings.
+ *
+ * Per [DD: iTerm2 adapter §8](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#8-protocol-facts-from-upstream-research-source-cited):
+ * the two-shape brand union is the deliberate consequence of supporting
+ * both terminals; this helper centralizes the inverse mapping.
+ */
+function brandPaneIdFromFilename(raw: string): PaneId {
+  if (/^\d+$/.test(raw)) {
+    return Number(raw) as unknown as PaneId;
+  }
+  return raw as unknown as PaneId;
 }
 
 // ============================================================================
@@ -121,10 +139,10 @@ function paneSidPrefix(paneId: number, sessionId: string): string {
 // ============================================================================
 
 const PANE_SID_PATTERN =
-  /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
+  /^([A-Za-z0-9-]+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
 
 export interface ParsedStopFilename {
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   /** Timestamp suffix verbatim (e.g. `2026-05-08T01-43-40-131Z`). */
   timestamp: string;
@@ -140,18 +158,18 @@ export interface ParsedStopFilename {
 export function parseStopFilename(name: string): ParsedStopFilename | null {
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(
-    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Stop\.(.+)$/,
+    /^([A-Za-z0-9-]+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Stop\.(.+)$/,
   );
   if (!m) return null;
   return {
-    paneId: Number(m[1]),
+    paneId: brandPaneIdFromFilename(m[1]!),
     sessionId: m[2]!,
     timestamp: m[3]!,
   };
 }
 
 export interface ParsedPermissionFilename {
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   /** 8-char hex request id. */
   requestId: string;
@@ -163,11 +181,11 @@ export function parsePermissionFilename(
 ): ParsedPermissionFilename | null {
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(
-    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Permission(Request|Response)\.([0-9a-f]+)\.json$/,
+    /^([A-Za-z0-9-]+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.Permission(Request|Response)\.([0-9a-f]+)\.json$/,
   );
   if (!m) return null;
   return {
-    paneId: Number(m[1]),
+    paneId: brandPaneIdFromFilename(m[1]!),
     sessionId: m[2]!,
     kind: m[3] === 'Request' ? 'request' : 'response',
     requestId: m[4]!,
@@ -175,7 +193,7 @@ export function parsePermissionFilename(
 }
 
 export interface ParsedPermissionDialogFilename {
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   /** 8-char hex request id. */
   requestId: string;
@@ -194,11 +212,11 @@ export function parsePermissionDialogFilename(
 ): ParsedPermissionDialogFilename | null {
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(
-    /^(\d+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.PermissionDialog(Request|Response)\.([0-9a-f]+)\.json$/,
+    /^([A-Za-z0-9-]+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.PermissionDialog(Request|Response)\.([0-9a-f]+)\.json$/,
   );
   if (!m) return null;
   return {
-    paneId: Number(m[1]),
+    paneId: brandPaneIdFromFilename(m[1]!),
     sessionId: m[2]!,
     kind: m[3] === 'Request' ? 'request' : 'response',
     requestId: m[4]!,
@@ -206,7 +224,7 @@ export function parsePermissionDialogFilename(
 }
 
 export interface ParsedLegacyPaneOriginFilename {
-  paneId: number;
+  paneId: PaneId;
 }
 
 /**
@@ -222,7 +240,7 @@ export function parseLegacyPaneOriginFilename(
   const base = name.includes('/') ? name.split('/').pop()! : name;
   const m = base.match(/^(\d+)\.IMOrigin$/);
   if (!m) return null;
-  return { paneId: Number(m[1]) };
+  return { paneId: brandPaneIdFromFilename(m[1]!) };
 }
 
 /**
@@ -481,7 +499,7 @@ export async function listPermissionResponseFiles(
  * Request body fields.
  */
 export interface PendingPermissionRequest {
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   requestId: string;
   toolName: string;
@@ -736,7 +754,7 @@ export async function listPermissionDialogResponseFiles(
  * actual cc PermissionUpdate from `permissionSuggestions[]`.
  */
 export interface PendingPermissionDialog {
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   requestId: string;
   toolName: string;

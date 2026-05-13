@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   CLIHandler,
+  PaneId,
   PreToolUsePayload,
   SessionId,
   StopPayload,
@@ -19,14 +20,14 @@ import {
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
 const SID2 = '5780668a-0000-4fe4-b01d-aaaaaaaaaaaa';
-const PANE_ID = 42;
-const PANE_ID2 = 99;
+const PANE_ID = 42 as unknown as PaneId;
+const PANE_ID2 = 99 as unknown as PaneId;
 
 interface RecordedEvent {
   kind: 'PreToolUse' | 'Stop';
   payload:
-    | (PreToolUsePayload & { requestId: string; paneId: number })
-    | (StopPayload & { paneId: number });
+    | (PreToolUsePayload & { requestId: string; paneId: PaneId })
+    | (StopPayload & { paneId: PaneId });
 }
 
 function makeRecorder(overrides?: {
@@ -40,7 +41,7 @@ function makeRecorder(overrides?: {
         kind: 'PreToolUse',
         payload: p as PreToolUsePayload & {
           requestId: string;
-          paneId: number;
+          paneId: PaneId;
         },
       });
       if (overrides?.onPreToolUseThrow) throw overrides.onPreToolUseThrow;
@@ -48,7 +49,7 @@ function makeRecorder(overrides?: {
     async onStop(p) {
       events.push({
         kind: 'Stop',
-        payload: p as StopPayload & { paneId: number },
+        payload: p as StopPayload & { paneId: PaneId },
       });
       if (overrides?.onStopThrow) throw overrides.onStopThrow;
     },
@@ -135,7 +136,7 @@ describe('createCcCliAdapter', () => {
         ),
       );
       const ev = events.find((e) => e.kind === 'Stop')!;
-      expect((ev.payload as StopPayload & { paneId: number }).paneId).toBe(
+      expect((ev.payload as StopPayload & { paneId: PaneId }).paneId).toBe(
         PANE_ID,
       );
       expect(ev.payload.session_id).toBe(SID);
@@ -223,7 +224,7 @@ describe('createCcCliAdapter', () => {
       const ev = events[0]!;
       expect(ev.kind).toBe('PreToolUse');
       const p = ev.payload as PreToolUsePayload & {
-        paneId: number;
+        paneId: PaneId;
         requestId: string;
       };
       expect(p.paneId).toBe(PANE_ID);
@@ -431,7 +432,7 @@ describe('createCcCliAdapter', () => {
     it('calls onHandlerError with kind/paneId/sessionId on Stop throw', async () => {
       const errors: Array<{
         err: unknown;
-        context: { kind: string; paneId: number; sessionId: string };
+        context: { kind: string; paneId: PaneId; sessionId: string };
       }> = [];
       const adapter = createCcCliAdapter({
         stateDir,

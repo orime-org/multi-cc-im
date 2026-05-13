@@ -159,7 +159,7 @@ export interface CreateOrchestratorOpts {
   /** Non-fatal error sink. */
   onError?: (
     err: unknown,
-    context: { phase: string; paneId?: number; sessionId?: string },
+    context: { phase: string; paneId?: PaneId; sessionId?: string },
   ) => void;
   /** INFO-level event sink for routing decisions / forwards. */
   log?: (line: string) => void;
@@ -292,7 +292,7 @@ export function createOrchestrator(
     } catch (err) {
       onError(err, {
         phase: 'sendText',
-        paneId: d.session.paneId as unknown as number,
+        paneId: d.session.paneId,
       });
       const msg2 = err instanceof Error ? err.message : String(err);
       return `❌ ${displayName(d.session)} send failed: ${msg2}`;
@@ -413,7 +413,7 @@ export function createOrchestrator(
     // "IM user replied /1|/2" string.
     if (result.permissionResponse) {
       await handlePermissionResponseFromIM(
-        result.permissionResponse.session.paneId as unknown as number,
+        result.permissionResponse.session.paneId,
         result.permissionResponse.decision,
         msg.replyCtx as IMReplyContext,
         result.permissionResponse.reason,
@@ -423,7 +423,7 @@ export function createOrchestrator(
 
     if (result.permissionDialogResponse) {
       await handlePermissionDialogResponseFromIM(
-        result.permissionDialogResponse.session.paneId as unknown as number,
+        result.permissionDialogResponse.session.paneId,
         result.permissionDialogResponse.answer,
         msg.replyCtx as IMReplyContext,
       );
@@ -498,7 +498,7 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handleStop(
-    p: StopPayload & { paneId: number },
+    p: StopPayload & { paneId: PaneId },
   ): Promise<HookDecision | void> {
     const { paneId } = p;
 
@@ -536,7 +536,7 @@ export function createOrchestrator(
     let prefix = `(pane ${paneId})`;
     try {
       const panes = await opts.termAdapter.listPanes();
-      const me = panes.find((pi) => (pi.paneId as unknown as number) === paneId);
+      const me = panes.find((pi) => (pi.paneId) === paneId);
       if (me && me.title.length > 0) prefix = me.title;
     } catch (err) {
       onError(err, { phase: 'forwardStopListPanes', paneId });
@@ -558,7 +558,7 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handlePermissionResponseFromIM(
-    paneId: number,
+    paneId: PaneId,
     decision: 'allow' | 'deny',
     replyCtx: IMReplyContext,
     /**
@@ -657,7 +657,7 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handlePermissionDialogResponseFromIM(
-    paneId: number,
+    paneId: PaneId,
     answer: import('@multi-cc-im/shared').PermissionDialogAnswer,
     replyCtx: IMReplyContext,
   ): Promise<void> {
@@ -775,7 +775,7 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handlePreToolUse(
-    p: PreToolUsePayload & { requestId: string; paneId: number },
+    p: PreToolUsePayload & { requestId: string; paneId: PaneId },
   ): Promise<void> {
     const { paneId } = p;
 
@@ -809,7 +809,7 @@ export function createOrchestrator(
     let tabName = `(pane ${paneId})`;
     try {
       const panes = await opts.termAdapter.listPanes();
-      const me = panes.find((pi) => (pi.paneId as unknown as number) === paneId);
+      const me = panes.find((pi) => (pi.paneId) === paneId);
       if (me && me.title.length > 0) tabName = me.title;
     } catch (err) {
       onError(err, { phase: 'preToolUseListPanes', paneId });
@@ -923,7 +923,7 @@ export function createOrchestrator(
   // ============================================================================
 
   function scheduleReaper(o: {
-    paneId: number;
+    paneId: PaneId;
     sessionId: string;
     requestId: string;
     toolName: string;
@@ -1012,7 +1012,7 @@ export function createOrchestrator(
    *   silent-exited too; race-condition defensive only).
    */
   async function handlePermissionDialog(
-    p: PermissionRequestPayload & { requestId: string; paneId: number },
+    p: PermissionRequestPayload & { requestId: string; paneId: PaneId },
   ): Promise<void> {
     const { paneId } = p;
 
@@ -1055,7 +1055,7 @@ export function createOrchestrator(
     try {
       const panes = await opts.termAdapter.listPanes();
       const me = panes.find(
-        (pi) => (pi.paneId as unknown as number) === paneId,
+        (pi) => (pi.paneId) === paneId,
       );
       if (me && me.title.length > 0) tabName = me.title;
     } catch (err) {

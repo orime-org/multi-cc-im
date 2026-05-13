@@ -1,4 +1,5 @@
 import { parseHookPayload, runHookReceiver } from '@multi-cc-im/cli-cc';
+import type { PaneId } from '@multi-cc-im/shared';
 
 export interface RunHookCommandOpts {
   /** Raw stdin payload (JSON string from cc hook protocol). */
@@ -6,11 +7,13 @@ export interface RunHookCommandOpts {
   /** Where state files live (e.g. `~/.multi-cc-im/state/`). */
   stateDir: string;
   /**
-   * Override `process.env.WEZTERM_PANE` lookup for tests / sandboxed
-   * environments. Returning undefined simulates "cc not in wezterm" — hook
+   * Override the pane-id detector chain for tests / sandboxed environments.
+   * Returning undefined simulates "cc not in a supported terminal" — hook
    * silently exits per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
+   * Per [DD: iTerm2 adapter](../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md),
+   * the detector chain replaces the WezTerm-only env lookup.
    */
-  resolvePaneId?: () => number | undefined;
+  resolvePaneId?: () => PaneId | undefined;
 }
 
 export interface HookCommandResult {

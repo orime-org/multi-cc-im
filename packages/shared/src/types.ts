@@ -9,7 +9,23 @@ export type Brand<T, B> = T & { readonly [__brand]: B };
 export type SessionId = Brand<string, 'SessionId'>;
 export type CwdAbs = Brand<string, 'CwdAbs'>;
 export type TranscriptPath = Brand<string, 'TranscriptPath'>;
-export type PaneId = Brand<number, 'PaneId'>;
+/**
+ * Opaque per-pane identifier used throughout the bridge to address terminal
+ * panes. The concrete representation is **terminal-adapter-specific**:
+ *
+ * - **WezTerm**: numeric pane index from `wezterm cli list` / the
+ *   `WEZTERM_PANE` env var (stable, non-negative integer).
+ * - **iTerm2** (per [DD: iTerm2 adapter](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md)):
+ *   UUID suffix of `ITERM_SESSION_ID` (e.g. `"C3D91F33-3805-47E2-A3F6-B8AED6EC2209"`).
+ *   The full env value `w<W>t<T>p<P>:UUID` has an unstable `w/t/p` prefix
+ *   that shifts when other panes close — the cli-cc pane-id detector
+ *   strips it before branding.
+ *
+ * Consumers must treat `PaneId` as opaque: no arithmetic, no ordering, no
+ * substring assumptions. Equality / map-key / serialization-as-string are
+ * the only supported operations.
+ */
+export type PaneId = Brand<number | string, 'PaneId'>;
 
 /** UUID v4 issued by Claude Code as session_id (hook+wezterm DD H1). */
 export const SessionIdSchema = z
@@ -31,12 +47,22 @@ export const TranscriptPathSchema = z
   .endsWith('.jsonl')
   .transform((s) => s as TranscriptPath);
 
-/** WezTerm pane id (non-negative integer). Hook env `WEZTERM_PANE` is the source. */
+/**
+ * PaneId runtime validator. Accepts either:
+ *   - **non-negative integer** (WezTerm-style; source: `WEZTERM_PANE` env)
+ *   - **non-empty string** (iTerm2-style; source: UUID suffix of
+ *     `ITERM_SESSION_ID`)
+ *
+ * The schema does not enforce UUID format on the string variant; the
+ * pane-id detector that produces the value is responsible for that. Schema
+ * stays permissive so future terminals can plug in without re-versioning.
+ */
 export const PaneIdSchema = z
-  .number()
-  .int()
-  .nonnegative()
-  .transform((n) => n as PaneId);
+  .union([
+    z.number().int().nonnegative(),
+    z.string().min(1),
+  ])
+  .transform((v) => v as PaneId);
 
 /**
  * @deprecated Per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):

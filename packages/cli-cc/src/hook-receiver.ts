@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { AskUserQuestionToolInputSchema } from '@multi-cc-im/shared';
+import { AskUserQuestionToolInputSchema, type PaneId } from '@multi-cc-im/shared';
 import { popInjection } from './injection-queue.js';
+import { DEFAULT_DETECTORS, runDetectors } from './pane-id-detectors.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
   deletePermissionDialogRequestFile,
@@ -196,11 +197,13 @@ export interface RunHookReceiverOpts {
    */
   now?: () => Date;
   /**
-   * Override `process.env.WEZTERM_PANE` lookup. Tests inject a numeric paneId
-   * (or undefined to simulate "not in wezterm" filter path). Default reads
-   * the env directly.
+   * Override the pane-id detector chain. Tests inject a concrete paneId
+   * (or undefined to simulate "cc not in any supported terminal" filter
+   * path). Default runs `DEFAULT_DETECTORS` against `process.env` per
+   * [DD: iTerm2 adapter](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md)
+   * P1 — currently just the WezTerm detector; iTerm2 detector lands in P2.
    */
-  resolvePaneId?: () => number | undefined;
+  resolvePaneId?: () => PaneId | undefined;
   /** Override PreToolUse poll interval (ms). Tests use a small value. */
   permissionPollIntervalMs?: number;
   /** Override PreToolUse total wait budget (ms). Tests use a small value. */
@@ -220,18 +223,23 @@ export interface RunHookReceiverOpts {
 }
 
 /**
- * Read `process.env.WEZTERM_PANE` as a numeric paneId. Returns undefined
- * when env is unset (cc not running in wezterm) or non-numeric (corrupt env).
+ * Default pane-id resolver. Runs the `DEFAULT_DETECTORS` list against the
+ * current process env; returns the first non-undefined hit, or undefined
+ * if no supported terminal is detected.
  *
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
  * this is the **filter** that gates whether the hook writes anything to
- * disk — undefined means cc is in ssh / VS Code terminal / non-wezterm
- * environment, and multi-cc-im has nothing to do with it.
+ * disk — undefined means cc is in ssh / VS Code terminal / non-supported
+ * terminal, and multi-cc-im has nothing to do with it.
+ *
+ * Per [DD: iTerm2 adapter](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+ * the hardcoded `WEZTERM_PANE` lookup was replaced with the detector chain
+ * so any future `term-<name>` adapter can plug in via `pane-id-detectors`.
+ * The branded result is `number | string`; downstream code uses it as an
+ * opaque key (state file naming, IMOrigin map, etc.).
  */
-function defaultResolvePaneId(): number | undefined {
-  const env = process.env.WEZTERM_PANE;
-  if (env && /^\d+$/.test(env)) return Number(env);
-  return undefined;
+function defaultResolvePaneId(): PaneId | undefined {
+  return runDetectors(DEFAULT_DETECTORS, process.env);
 }
 
 /**

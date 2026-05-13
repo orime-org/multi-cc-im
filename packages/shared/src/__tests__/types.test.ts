@@ -63,12 +63,23 @@ describe('PaneIdSchema', () => {
     expect(PaneIdSchema.safeParse(-1).success).toBe(false);
   });
 
-  it('rejects non-integer', () => {
+  it('rejects non-integer number', () => {
     expect(PaneIdSchema.safeParse(1.5).success).toBe(false);
   });
 
-  it('rejects string', () => {
-    expect(PaneIdSchema.safeParse('20').success).toBe(false);
+  it('accepts non-empty string (iTerm2 UUID-style pane id)', () => {
+    // Per [DD: iTerm2 adapter §8](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+    // iTerm2's stable pane id is the UUID suffix of ITERM_SESSION_ID
+    // (e.g. "C3D91F33-3805-47E2-A3F6-B8AED6EC2209"). The schema accepts any
+    // non-empty string; the detector is responsible for shape correctness.
+    expect(PaneIdSchema.parse('C3D91F33-3805-47E2-A3F6-B8AED6EC2209')).toBe(
+      'C3D91F33-3805-47E2-A3F6-B8AED6EC2209',
+    );
+    expect(PaneIdSchema.parse('any-non-empty')).toBe('any-non-empty');
+  });
+
+  it('rejects empty string', () => {
+    expect(PaneIdSchema.safeParse('').success).toBe(false);
   });
 });
 
