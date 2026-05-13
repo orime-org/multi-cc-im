@@ -98,6 +98,21 @@ export async function runIterM2Helper(
       );
     });
 
+    // Swallow stdin EPIPE / ECONNRESET. The subprocess is free to ignore
+    // stdin entirely (test stubs do this when they just echo a canned
+    // response; the real iterm2-helper.py reads stdin before doing
+    // anything, so this branch is dead code in production). What matters
+    // is the 'close' handler, which decides success/failure based on
+    // exit code + stdout. Without this listener, an unhandled error
+    // event on stdin crashes the process on Linux CI where bash exits
+    // faster than Node can flush the write — see 2026-05-13 PR #163 CI.
+    child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
     child.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       const stdout = Buffer.concat(stdoutChunks).toString('utf8');
