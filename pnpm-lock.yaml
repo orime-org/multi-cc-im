@@ -47,6 +47,9 @@ importers:
       '@multi-cc-im/storage-files':
         specifier: workspace:*
         version: link:../../packages/storage-files
+      '@multi-cc-im/term-iterm2':
+        specifier: workspace:*
+        version: link:../../packages/term-iterm2
       '@multi-cc-im/term-wezterm':
         specifier: workspace:*
         version: link:../../packages/term-wezterm
@@ -129,6 +132,15 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
+
+  packages/term-iterm2:
+    dependencies:
+      '@multi-cc-im/cli-cc':
+        specifier: workspace:*
+        version: link:../cli-cc
+      '@multi-cc-im/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/term-wezterm:
     dependencies:

@@ -55,6 +55,37 @@ export const detectWezTermPaneId: PaneIdDetector = (env) => {
 };
 
 /**
+ * iTerm2 `ITERM_SESSION_ID` format. Per
+ * [DD: iTerm2 adapter §8](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#8-protocol-facts-from-upstream-research-source-cited):
+ * iTerm2 auto-exports this env in every child shell as
+ * `"w<W>t<T>p<P>:<UUID>"`. The `w/t/p` prefix is position-based and
+ * shifts when other panes close; only the UUID suffix is stable.
+ *
+ * The detector accepts either:
+ *   - full `w0t1p0:UUID` form (live iTerm2 shells), or
+ *   - bare UUID (if a user already stripped it manually — defensive
+ *     branch that costs nothing to keep)
+ *
+ * UUID is a standard hyphen-separated 36-char hex string. We don't
+ * loosen the regex further: anything else is rejected as "not iTerm2"
+ * and falls through to the next detector / silent-exit.
+ */
+const ITERM2_UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export const detectIterm2PaneId: PaneIdDetector = (env) => {
+  const value = env.ITERM_SESSION_ID;
+  if (!value) return undefined;
+
+  // Strip the unstable `w<W>t<T>p<P>:` prefix if present.
+  const colonIdx = value.indexOf(':');
+  const uuid = colonIdx >= 0 ? value.slice(colonIdx + 1) : value;
+
+  if (!ITERM2_UUID_RE.test(uuid)) return undefined;
+  return uuid as unknown as PaneId;
+};
+
+/**
  * Run a list of detectors in order; return the first non-`undefined`
  * result. Order matters: list the most specific / most reliable detector
  * first. If no detector matches, returns `undefined` and the hook
@@ -72,10 +103,18 @@ export function runDetectors(
 }
 
 /**
- * Default detector set wired into the hook receiver. P1 ships only the
- * WezTerm detector — iTerm2 detector lands in P2 of the
- * [iTerm2 adapter milestone chain](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#9-implementation-milestone-plan-to-be-detailed-after-lock).
+ * Default detector set wired into the hook receiver. Order is
+ * **wezterm before iterm2**: a hook subprocess could in principle
+ * inherit both env vars (e.g. user opens iTerm2 inside a wezterm
+ * session, or vice versa), and the wezterm pane id is more reliable
+ * (stable numeric vs UUID position-prefix) so it wins ties. In
+ * practice the two terminals never co-export their env, so the order
+ * is a defensive tiebreaker rather than load-bearing.
+ *
+ * Per the [iTerm2 adapter DD milestone chain](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#9-implementation-milestone-plan-to-be-detailed-after-lock):
+ * P1 wired the WezTerm detector only; P2 (this commit) appends iTerm2.
  */
 export const DEFAULT_DETECTORS: readonly PaneIdDetector[] = [
   detectWezTermPaneId,
+  detectIterm2PaneId,
 ];

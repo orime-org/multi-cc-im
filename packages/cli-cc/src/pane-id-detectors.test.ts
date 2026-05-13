@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  detectIterm2PaneId,
   detectWezTermPaneId,
   runDetectors,
   DEFAULT_DETECTORS,
@@ -38,6 +39,47 @@ describe('detectWezTermPaneId', () => {
   });
 });
 
+describe('detectIterm2PaneId', () => {
+  const UUID = 'C3D91F33-3805-47E2-A3F6-B8AED6EC2209';
+
+  it('extracts UUID from "w<W>t<T>p<P>:UUID" form', () => {
+    const result = detectIterm2PaneId({ ITERM_SESSION_ID: `w0t1p0:${UUID}` });
+    expect(result).toBe(UUID);
+  });
+
+  it('accepts bare UUID (no w/t/p prefix)', () => {
+    const result = detectIterm2PaneId({ ITERM_SESSION_ID: UUID });
+    expect(result).toBe(UUID);
+  });
+
+  it('returns undefined when ITERM_SESSION_ID is unset', () => {
+    expect(detectIterm2PaneId({})).toBeUndefined();
+  });
+
+  it('returns undefined when ITERM_SESSION_ID is empty string', () => {
+    expect(detectIterm2PaneId({ ITERM_SESSION_ID: '' })).toBeUndefined();
+  });
+
+  it('returns undefined when UUID portion is malformed', () => {
+    // Defends against corrupt envs / unexpected format upstream.
+    expect(
+      detectIterm2PaneId({ ITERM_SESSION_ID: 'w0t1p0:not-a-uuid' }),
+    ).toBeUndefined();
+    expect(
+      detectIterm2PaneId({ ITERM_SESSION_ID: 'w0t1p0:' }),
+    ).toBeUndefined();
+    expect(
+      detectIterm2PaneId({ ITERM_SESSION_ID: 'garbage' }),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for a wezterm-style numeric value', () => {
+    // A numeric "42" would fail the iTerm2 UUID regex — letting the
+    // wezterm detector win when both env vars somehow co-exist.
+    expect(detectIterm2PaneId({ ITERM_SESSION_ID: '42' })).toBeUndefined();
+  });
+});
+
 describe('runDetectors', () => {
   it('returns first non-undefined detector result', () => {
     const a: PaneIdDetector = () => undefined;
@@ -70,23 +112,36 @@ describe('runDetectors', () => {
 });
 
 describe('DEFAULT_DETECTORS', () => {
-  it('includes the wezterm detector', () => {
-    // Order-stable contract: wezterm-first. iTerm2 detector will append in
-    // P2 of the iTerm2 adapter milestone chain.
-    expect(DEFAULT_DETECTORS).toContain(detectWezTermPaneId);
+  const UUID = 'C3D91F33-3805-47E2-A3F6-B8AED6EC2209';
+
+  it('includes both terminal detectors in order (wezterm then iterm2)', () => {
+    expect(DEFAULT_DETECTORS).toEqual([detectWezTermPaneId, detectIterm2PaneId]);
   });
 
   it('resolves WEZTERM_PANE via the default chain', () => {
     expect(runDetectors(DEFAULT_DETECTORS, { WEZTERM_PANE: '99' })).toBe(99);
   });
 
-  it('returns undefined when no supported env var is present', () => {
-    expect(runDetectors(DEFAULT_DETECTORS, {})).toBeUndefined();
+  it('resolves ITERM_SESSION_ID via the default chain', () => {
     expect(
       runDetectors(DEFAULT_DETECTORS, {
-        // iTerm2 env present but no iTerm2 detector wired yet (P2 work)
-        ITERM_SESSION_ID: 'w0t0p0:C3D91F33-3805-47E2-A3F6-B8AED6EC2209',
+        ITERM_SESSION_ID: `w0t1p0:${UUID}`,
       }),
-    ).toBeUndefined();
+    ).toBe(UUID);
+  });
+
+  it('wezterm wins when both env vars are co-present', () => {
+    // Detector order makes this deterministic — see DEFAULT_DETECTORS
+    // TSDoc rationale.
+    expect(
+      runDetectors(DEFAULT_DETECTORS, {
+        WEZTERM_PANE: '7',
+        ITERM_SESSION_ID: `w0t1p0:${UUID}`,
+      }),
+    ).toBe(7);
+  });
+
+  it('returns undefined when no supported env var is present', () => {
+    expect(runDetectors(DEFAULT_DETECTORS, {})).toBeUndefined();
   });
 });

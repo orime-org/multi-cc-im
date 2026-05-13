@@ -20,6 +20,7 @@
     "@multi-cc-im/im-lark": "workspace:*",
     "@multi-cc-im/shared": "workspace:*",
     "@multi-cc-im/storage-files": "workspace:*",
+    "@multi-cc-im/term-iterm2": "workspace:*",
     "@multi-cc-im/term-wezterm": "workspace:*",
     "open": "^11.0.0",
     "proper-lockfile": "^4.1.2",
