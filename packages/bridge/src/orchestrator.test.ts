@@ -179,11 +179,11 @@ function incoming(
 }
 
 function makeStop(opts: {
-  paneId: number;
+  paneId: PaneId;
   sessionId?: SessionId;
   message: string;
   active?: boolean;
-}): StopPayload & { paneId: number } {
+}): StopPayload & { paneId: PaneId } {
   return {
     session_id: opts.sessionId ?? SID_A,
     transcript_path: '/tmp/x.jsonl' as TranscriptPath,
@@ -197,12 +197,12 @@ function makeStop(opts: {
 }
 
 function makePreToolUse(opts: {
-  paneId: number;
+  paneId: PaneId;
   sessionId?: SessionId;
   toolName?: string;
   toolInput?: Record<string, unknown>;
   requestId: string;
-}): PreToolUsePayload & { paneId: number; requestId: string } {
+}): PreToolUsePayload & { paneId: PaneId; requestId: string } {
   return {
     session_id: opts.sessionId ?? SID_A,
     transcript_path: '/tmp/x.jsonl' as TranscriptPath,
@@ -218,13 +218,13 @@ function makePreToolUse(opts: {
 }
 
 function makePermissionDialog(opts: {
-  paneId: number;
+  paneId: PaneId;
   sessionId?: SessionId;
   toolName?: string;
   toolInput?: Record<string, unknown>;
   permissionSuggestions?: readonly unknown[];
   requestId: string;
-}): PermissionRequestPayload & { paneId: number; requestId: string } {
+}): PermissionRequestPayload & { paneId: PaneId; requestId: string } {
   return {
     session_id: opts.sessionId ?? SID_A,
     transcript_path: '/tmp/x.jsonl' as TranscriptPath,
@@ -593,7 +593,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     im.sent.length = 0;
 
     await cli.handler!.onStop(
-      makeStop({ paneId: FRONTEND_PANE as unknown as number, message: 'done' }),
+      makeStop({ paneId: FRONTEND_PANE, message: 'done' }),
     );
 
     expect(im.sent).toHaveLength(1);
@@ -622,7 +622,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'should not forward',
       }),
     );
@@ -647,7 +647,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     im.sent.length = 0;
 
     await cli.handler!.onStop(
-      makeStop({ paneId: FRONTEND_PANE as unknown as number, message: '' }),
+      makeStop({ paneId: FRONTEND_PANE, message: '' }),
     );
     expect(im.sent).toEqual([]);
     // Per DD: IMOrigin global — Stop forward never deletes IMOrigin
@@ -675,7 +675,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'first reply',
       }),
     );
@@ -687,7 +687,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     // multi-cc fix: cc#1 reply doesn't starve cc#2 reply.
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'second reply',
       }),
     );
@@ -720,7 +720,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
       im.sent.length = 0;
       await cli.handler!.onStop(
         makeStop({
-          paneId: FRONTEND_PANE as unknown as number,
+          paneId: FRONTEND_PANE,
           message: `reply ${turn}`,
         }),
       );
@@ -749,7 +749,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'awakened',
         active: true,
       }),
@@ -784,14 +784,14 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         sessionId: SID_A,
         message: 'frontend reply',
       }),
     );
     await cli.handler!.onStop(
       makeStop({
-        paneId: API_PANE as unknown as number,
+        paneId: API_PANE,
         sessionId: SID_B,
         message: 'api reply',
       }),
@@ -822,7 +822,7 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     });
     await orch.start();
 
-    await cli.handler!.onStop(makeStop({ paneId: 99, message: 'lone' }));
+    await cli.handler!.onStop(makeStop({ paneId: 99 as PaneId, message: 'lone' }));
     expect(im.sent).toHaveLength(1);
     expect(im.sent[0]?.content).toBe('[(pane 99)]\nlone');
     await orch.stop();
@@ -1062,7 +1062,7 @@ describe('createOrchestrator — log sink', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'cc replied',
       }),
     );
@@ -1088,7 +1088,7 @@ describe('createOrchestrator — log sink', () => {
     await orch.start();
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'lone reply',
       }),
     );
@@ -1149,7 +1149,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'Bash',
         toolInput: { command: 'rm -rf /important', description: 'cleanup' },
         requestId: 'abc12345',
@@ -1187,7 +1187,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'AskUserQuestion',
         toolInput: {
           questions: [
@@ -1250,7 +1250,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'AskUserQuestion',
         toolInput: {
           questions: [
@@ -1298,7 +1298,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'AskUserQuestion',
         toolInput: { not_questions: 'oops' },
         requestId: 'abcd3333',
@@ -1329,7 +1329,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId: 'abc12345',
       }),
     );
@@ -1344,7 +1344,7 @@ describe('createOrchestrator — IM permission gate', () => {
     const requestId = 'aabb9999';
     const reqPath = permissionRequestPath({
       stateDir: permStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1373,7 +1373,7 @@ describe('createOrchestrator — IM permission gate', () => {
 
     const respPath = permissionResponsePath({
       stateDir: permStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1390,7 +1390,7 @@ describe('createOrchestrator — IM permission gate', () => {
     const requestId = 'ccdd8888';
     const reqPath = permissionRequestPath({
       stateDir: permStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1420,7 +1420,7 @@ describe('createOrchestrator — IM permission gate', () => {
     const resp = await readPermissionResponseFile(
       permissionResponsePath({
         stateDir: permStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         sessionId: SID_A,
         requestId,
       }),
@@ -1557,7 +1557,7 @@ describe('createOrchestrator — IMWork toggle', () => {
 
     await cli.handler!.onStop(
       makeStop({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         message: 'reply',
       }),
     );
@@ -1598,7 +1598,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     const requestId = 'reaper-test-1';
     const reqPath = permissionRequestPath({
       stateDir: reaperStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1627,7 +1627,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId,
       }),
     );
@@ -1645,7 +1645,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     const requestId = 'reaper-test-2';
     const reqPath = permissionRequestPath({
       stateDir: reaperStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1676,7 +1676,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId,
       }),
     );
@@ -1708,7 +1708,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     const requestId = 'auqreaper1';
     const reqPath = permissionRequestPath({
       stateDir: reaperStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1738,7 +1738,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
 
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'AskUserQuestion',
         toolInput: { questions: [{ question: 'q', options: [] }] },
         requestId,
@@ -1774,7 +1774,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     await orch.start();
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId,
       }),
     );
@@ -1793,7 +1793,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     const requestId = 'reaper-test-3';
     const reqPath = permissionRequestPath({
       stateDir: reaperStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });
@@ -1821,7 +1821,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
     await orch.start();
     await cli.handler!.onPreToolUse(
       makePreToolUse({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId,
       }),
     );
@@ -1977,7 +1977,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
   }): Promise<void> {
     const path = permissionRequestPath({
       stateDir: aiPermStateDir,
-      paneId: opts.paneId as unknown as number,
+      paneId: opts.paneId,
       sessionId: opts.sessionId,
       requestId: opts.requestId,
     });
@@ -2071,7 +2071,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
     const resp = await readPermissionResponseFile(
       permissionResponsePath({
         stateDir: aiPermStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         sessionId: SID_A,
         requestId,
       }),
@@ -2119,7 +2119,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
     const resp = await readPermissionResponseFile(
       permissionResponsePath({
         stateDir: aiPermStateDir,
-        paneId: API_PANE as unknown as number,
+        paneId: API_PANE,
         sessionId: SID_B,
         requestId,
       }),
@@ -2193,7 +2193,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
     const resp = await readPermissionResponseFile(
       permissionResponsePath({
         stateDir: aiPermStateDir,
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         sessionId: SID_A,
         requestId,
       }),
@@ -2396,7 +2396,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'Bash',
         toolInput: { command: 'mkdir -p .claude/hooks' },
         requestId: 'd7e57001',
@@ -2406,7 +2406,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // Response file written: single-yes allow, no updatedPermissions
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e57001',
     });
@@ -2443,7 +2443,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId: 'd7e50ff1',
       }),
     );
@@ -2451,7 +2451,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // No Response file (P6+P7 not wired yet)
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e50ff1',
     });
@@ -2484,14 +2484,14 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId: 'd7e5ace1',
       }),
     );
 
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e5ace1',
     });
@@ -2517,7 +2517,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'Edit',
         toolInput: {
           file_path: '/Users/me/work/.claude/hooks/auto-format.sh',
@@ -2555,7 +2555,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // SIGKILL'd hook orphan.
     const reqPath = permissionDialogRequestPath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e5eee1',
     });
@@ -2573,7 +2573,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // Trigger handler (will write a Response too because auto=true)
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         requestId: 'd7e5eee1',
       }),
     );
@@ -2588,7 +2588,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     expect(existsSync(reqPath)).toBe(false);
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e5eee1',
     });
@@ -2598,7 +2598,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // (defense against the reaper-kind regression).
     const regularReqPath = permissionRequestPath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e5eee1',
     });
@@ -2629,7 +2629,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         toolName: 'Bash',
         toolInput: { command: 'mkdir -p .claude/hooks' },
         permissionSuggestions: [
@@ -2661,7 +2661,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // No Response written yet — waiting for user reply
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId: 'd7e50ff2',
     });
@@ -2706,7 +2706,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     const requestId = 'de00003';
     await writePermissionDialogRequestFile({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
       toolName: 'Bash',
@@ -2716,7 +2716,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     });
     await cli.handler!.onPermissionDialog!(
       makePermissionDialog({
-        paneId: FRONTEND_PANE as unknown as number,
+        paneId: FRONTEND_PANE,
         permissionSuggestions: [sampleSuggestion],
         requestId,
       }),
@@ -2728,7 +2728,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     // Step 3: Response file written with the resolved PermissionUpdate
     const respPath = permissionDialogResponsePath({
       stateDir: dialogStateDir,
-      paneId: FRONTEND_PANE as unknown as number,
+      paneId: FRONTEND_PANE,
       sessionId: SID_A,
       requestId,
     });

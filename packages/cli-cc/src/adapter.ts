@@ -4,6 +4,7 @@ import type {
   CLIAdapter,
   CLIHandler,
   CwdAbs,
+  PaneId,
   PermissionRequestPayload,
   PreToolUsePayload,
   SessionId,
@@ -37,7 +38,7 @@ export interface CreateCcCliAdapterOpts {
     err: unknown,
     context: {
       kind: 'PreToolUse' | 'PermissionDialog' | 'Stop';
-      paneId: number;
+      paneId: PaneId;
       sessionId: string;
     },
   ) => void;
@@ -45,14 +46,14 @@ export interface CreateCcCliAdapterOpts {
 
 interface ClassifiedStopFile {
   kind: 'Stop';
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   filePath: string;
 }
 
 interface ClassifiedPreToolUseFile {
   kind: 'PreToolUse';
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   requestId: string;
   filePath: string;
@@ -60,7 +61,7 @@ interface ClassifiedPreToolUseFile {
 
 interface ClassifiedPermissionDialogFile {
   kind: 'PermissionDialog';
-  paneId: number;
+  paneId: PaneId;
   sessionId: string;
   requestId: string;
   filePath: string;
@@ -272,7 +273,7 @@ async function dispatchOne(
       if (!file) return; // ENOENT — file already cleaned up
       const payload: PreToolUsePayload & {
         requestId: string;
-        paneId: number;
+        paneId: PaneId;
       } = {
         session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
@@ -297,7 +298,7 @@ async function dispatchOne(
       if (!handler.onPermissionDialog) return; // handler doesn't subscribe
       const payload: PermissionRequestPayload & {
         requestId: string;
-        paneId: number;
+        paneId: PaneId;
       } = {
         session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
@@ -318,7 +319,7 @@ async function dispatchOne(
     case 'Stop': {
       const file = await readStopFile(classified.filePath);
       if (!file) return; // ENOENT — already processed by another tick
-      const payload: StopPayload & { paneId: number } = {
+      const payload: StopPayload & { paneId: PaneId } = {
         session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
         cwd: '' as unknown as CwdAbs,

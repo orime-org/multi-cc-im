@@ -1,4 +1,4 @@
-import type { CwdAbs, SessionId, TranscriptPath } from '../types.js';
+import type { CwdAbs, PaneId, SessionId, TranscriptPath } from '../types.js';
 
 /**
  * Common fields present on every cc hook stdin payload.
@@ -108,7 +108,7 @@ export interface Handler {
    * timeout — daemon doesn't drive timeouts).
    */
   onPreToolUse(
-    p: PreToolUsePayload & { requestId: string; paneId: number },
+    p: PreToolUsePayload & { requestId: string; paneId: PaneId },
   ): Promise<void>;
   /**
    * On PermissionRequest: adapter sees fresh
@@ -121,7 +121,7 @@ export interface Handler {
    * Per [DD: PermissionRequest hook IM bridge](../../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md).
    */
   onPermissionDialog?(
-    p: PermissionRequestPayload & { requestId: string; paneId: number },
+    p: PermissionRequestPayload & { requestId: string; paneId: PaneId },
   ): Promise<void>;
   /**
    * On Stop, the handler may return a `HookDecision` to inject a follow-up
@@ -130,7 +130,7 @@ export interface Handler {
    * Implementations MUST guard `p.stop_hook_active === true` and return
    * `void` in that case to avoid infinite block loops.
    */
-  onStop(p: StopPayload & { paneId: number }): Promise<HookDecision | void>;
+  onStop(p: StopPayload & { paneId: PaneId }): Promise<HookDecision | void>;
 }
 
 /**

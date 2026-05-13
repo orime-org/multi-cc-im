@@ -61,12 +61,12 @@ import {
   listPermissionDialogRequestFiles,
   listPermissionDialogResponseFiles,
 } from './state-files.js';
-import type { IMReplyContext } from '@multi-cc-im/shared';
+import type { IMReplyContext, PaneId } from '@multi-cc-im/shared';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
 const SID2 = '00000000-1111-2222-3333-444444444444';
-const PANE_ID = 42;
-const PANE_ID2 = 99;
+const PANE_ID = 42 as unknown as PaneId;
+const PANE_ID2 = 99 as unknown as PaneId;
 
 const LARK_CTX: IMReplyContext = {
   imType: 'lark',

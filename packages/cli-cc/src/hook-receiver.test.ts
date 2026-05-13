@@ -23,12 +23,12 @@ import {
 } from './state-files.js';
 import { enqueueInjection } from './injection-queue.js';
 import type { ParsedHookPayload } from './payloads.js';
-import type { IMReplyContext } from '@multi-cc-im/shared';
+import type { IMReplyContext, PaneId } from '@multi-cc-im/shared';
 
 const SID = '91215578-3606-4fe4-b01d-c436bf804790';
 const TX = '/Users/x/.claude/projects/-private-tmp/91215578.jsonl';
 const CWD = '/private/tmp/cc-probe';
-const PANE_ID = 42;
+const PANE_ID = 42 as unknown as PaneId;
 
 const LARK_CTX: IMReplyContext = {
   imType: 'lark',
@@ -119,7 +119,7 @@ async function readStateDirEntries(stateDir: string): Promise<string[]> {
   }
 }
 
-const stubPaneId = (): number => PANE_ID;
+const stubPaneId = (): PaneId => PANE_ID;
 const noPane = (): undefined => undefined;
 
 describe('runHookReceiver — WEZTERM_PANE filter', () => {
