@@ -558,6 +558,107 @@ describe('router — permission_response #<tab> /1 /2', () => {
     expect(result.permissionResponse).toBeUndefined();
     expect(result.echo).toMatch(/ambiguous/i);
   });
+
+  // ---------------------------------------------------------------
+  // Cross-channel rigid syntax (2026-05-13): `#<tab> /1` `/2` must
+  // ALSO answer PermissionDialog pending (v1.12 DD), not just
+  // PreToolUse PermissionRequest. User should not have to remember
+  // which channel is which — daemon checks both, prefers PermissionDialog.
+  // ---------------------------------------------------------------
+
+  it('#frontend /1 with PermissionDialog pending → permissionDialogResponse single-yes (NOT permissionResponse)', async () => {
+    const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+    const state = memState(null);
+    const result = await routeOn(incoming('#frontend /1'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      listPendingPermissionDialogs: async () => [
+        {
+          paneId: FRONTEND.paneId,
+          sessionId: SID,
+          requestId: 'abc12345',
+          toolName: 'Bash',
+          toolInput: { command: 'mkdir -p .claude/hooks' },
+          permissionSuggestions: [
+            {
+              type: 'addRules',
+              behavior: 'allow',
+              destination: 'session',
+              rules: [{ toolName: 'Edit', ruleContent: 'Edit(./.claude/**)' }],
+            },
+          ],
+          createdAt: 1700000000000,
+        },
+      ],
+    });
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.permissionDialogResponse).toEqual({
+      session: FRONTEND,
+      answer: { behavior: 'allow' },
+    });
+    expect(result.echo).toMatch(/PermissionDialog 同意一次/);
+  });
+
+  it('#frontend /2 with PermissionDialog pending → permissionDialogResponse deny + message', async () => {
+    const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+    const result = await routeOn(incoming('#frontend /2'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      listPendingPermissionDialogs: async () => [
+        {
+          paneId: FRONTEND.paneId,
+          sessionId: SID,
+          requestId: 'abc12345',
+          toolName: 'Bash',
+          toolInput: {},
+          permissionSuggestions: [],
+          createdAt: 1700000000000,
+        },
+      ],
+    });
+    expect(result.permissionResponse).toBeUndefined();
+    expect(result.permissionDialogResponse?.answer.behavior).toBe('deny');
+    if (result.permissionDialogResponse?.answer.behavior !== 'deny') {
+      throw new Error('expected deny');
+    }
+    expect(result.permissionDialogResponse.answer.message).toContain('/2');
+  });
+
+  it('#frontend /1 with NO PermissionDialog pending → falls back to permissionResponse (v1.7 backward compat)', async () => {
+    const result = await routeOn(incoming('#frontend /1'), {
+      registry: fixedRegistry([FRONTEND]),
+      state: memState(null),
+      listPendingPermissionDialogs: async () => [], // empty: no Dialog pending
+    });
+    expect(result.permissionDialogResponse).toBeUndefined();
+    expect(result.permissionResponse).toEqual({
+      session: FRONTEND,
+      decision: 'allow',
+    });
+  });
+
+  it('#frontend /1 with PermissionDialog pending for DIFFERENT pane → falls back to permissionResponse', async () => {
+    // Dialog pending lives on API pane, user replied #frontend — match
+    // resolves to FRONTEND pane, no Dialog for THIS pane → v1.7 path.
+    const SID = '91215578-3606-4fe4-b01d-c436bf804790';
+    const result = await routeOn(incoming('#frontend /1'), {
+      registry: fixedRegistry([FRONTEND, API]),
+      state: memState(null),
+      listPendingPermissionDialogs: async () => [
+        {
+          paneId: API.paneId,
+          sessionId: SID,
+          requestId: 'abc12345',
+          toolName: 'Bash',
+          toolInput: {},
+          permissionSuggestions: [],
+          createdAt: 1700000000000,
+        },
+      ],
+    });
+    expect(result.permissionDialogResponse).toBeUndefined();
+    expect(result.permissionResponse?.session.tabTitle).toBe('frontend');
+  });
 });
 
 describe('router — IMWork off gate', () => {

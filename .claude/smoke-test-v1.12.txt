@@ -1,0 +1,4 @@
+v1.12 PermissionRequest hook IM bridge smoke test — 2026-05-13.
+This file is a throwaway used to trigger cc's sensitive-path ask gate
+so we can verify the daemon's PermissionDialog forward / IM audit
+notification / numbered-options dialog flow end-to-end.

@@ -386,8 +386,27 @@ export async function route(
           )
         : handlePlain(parsed.body, sessions, opts.state);
 
-    case 'permission_response':
-      return handlePermissionResponse(parsed.tabName, parsed.decision, sessions);
+    case 'permission_response': {
+      // `#<tab> /1` and `#<tab> /2` rigid syntax serves BOTH channels:
+      //   - PreToolUse PermissionRequest (v1.7): allow/deny generic tool
+      //   - PermissionRequest hook event PermissionDialog (v1.12 DD 2026-05-13):
+      //     sensitive-path edit dialog (.claude/* / .git/* / etc.)
+      //
+      // handlePermissionResponse below checks PermissionDialog pending
+      // FIRST — if found, routes to v1.12 channel; otherwise falls back
+      // to v1.7 generic permission path. Same UX from user's POV: any
+      // pending gets answered with `#<tab> /1` (allow) or `/2` (deny).
+      const dialogPendings: readonly RouterPendingDialog[] =
+        opts.listPendingPermissionDialogs
+          ? await opts.listPendingPermissionDialogs()
+          : [];
+      return handlePermissionResponse(
+        parsed.tabName,
+        parsed.decision,
+        sessions,
+        dialogPendings,
+      );
+    }
   }
 }
 
@@ -399,6 +418,7 @@ function handlePermissionResponse(
   tabName: string,
   decision: 'allow' | 'deny',
   sessions: readonly SessionInfo[],
+  dialogPendings: readonly RouterPendingDialog[],
 ): RouterResult {
   const result = matchSession(tabName, sessions);
   if (result.type === 'none') {
@@ -415,6 +435,33 @@ function handlePermissionResponse(
       dispatches: [],
     };
   }
+
+  // Priority: PermissionDialog pending takes precedence over the v1.7
+  // PreToolUse path. If the matched tab has a pending PermissionDialog,
+  // route the user's `/1` `/2` into the PermissionDialog channel —
+  // daemon will write a `PermissionDialogResponse` file (single-yes
+  // allow / deny) rather than a `PermissionResponse` file. Mirrors the
+  // handlePlainWithAI priority (PermissionDialog beats AUQ beats
+  // force-perm beats routing).
+  const dialogForTab = dialogPendings.find(
+    (p) => (p.paneId as unknown as number) ===
+      (result.session.paneId as unknown as number),
+  );
+  if (dialogForTab) {
+    const verb = decision === 'allow' ? '同意一次' : '拒绝';
+    return {
+      echo: `→ ${displayName(result.session)} PermissionDialog ${verb}`,
+      dispatches: [],
+      permissionDialogResponse: {
+        session: result.session,
+        answer:
+          decision === 'allow'
+            ? { behavior: 'allow' } // single-yes (D2-A no updatedPermissions)
+            : { behavior: 'deny', message: 'IM user replied /2' },
+      },
+    };
+  }
+
   const verb = decision === 'allow' ? '允许' : '拒绝';
   return {
     echo: `→ ${displayName(result.session)} permission ${verb}`,

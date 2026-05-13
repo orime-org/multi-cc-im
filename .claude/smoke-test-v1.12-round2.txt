@@ -1,0 +1,4 @@
+v1.12 PermissionRequest hook IM bridge smoke test — round 2.
+Fresh file in .claude/ to trigger cc's sensitive-path ask gate again.
+Whether daemon forwards 🛡️ audit (auto) or numbered options (off)
+depends on the IMWork.auto state at the moment cc fires the hook.
