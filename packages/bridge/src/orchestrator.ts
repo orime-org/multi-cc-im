@@ -8,6 +8,7 @@ import type {
   IMReplyContext,
   IncomingMessage,
   PaneId,
+  PermissionRequestPayload,
   PreToolUsePayload,
   StopPayload,
   TermAdapter,
@@ -22,11 +23,14 @@ import {
   deletePermissionFileByPath,
   existsIMWorkFile,
   listPendingPermissionRequests,
+  permissionDialogRequestPath,
+  permissionDialogResponsePath,
   permissionRequestPath,
   permissionResponsePath,
   readIMOriginFile,
   writeIMOriginFile,
   writeIMWorkFile,
+  writePermissionDialogResponseFile,
   writePermissionResponseFile,
   parsePermissionFilename,
 } from '@multi-cc-im/cli-cc';
@@ -85,6 +89,14 @@ const ASK_USER_QUESTION_REAPER_DELAY_MS = 130_000;
 
 const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
+/**
+ * PermissionDialog reaper window (ms). Mirror AUQ — hook polls Response
+ * for 110s + 10s cc-side / network margin. Reaping earlier would race
+ * the live Request file like the v1.11 root-cause incident. Per
+ * [DD: PermissionRequest hook IM bridge §3 D8](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md).
+ */
+const PERMISSION_DIALOG_REAPER_DELAY_MS = 130_000;
+
 export interface CreateOrchestratorOpts {
   /** Lark (or future tg / etc.) IM adapter. */
   imAdapter: IMAdapter;
@@ -126,6 +138,15 @@ export interface CreateOrchestratorOpts {
    * value.
    */
   askUserQuestionReaperDelayMs?: number;
+  /**
+   * Reaper window (ms) specifically for PermissionDialog Request/Response
+   * files (cc PermissionRequest hook event — daemon-side IPC for sensitive-
+   * path dialogs). Default `130_000` (cc-side timeout 120s + 10s margin
+   * per DD 2026-05-13 §3 D8). Required because the hook polls for up to
+   * 110s waiting for IM reply / daemon decision — reaping earlier would
+   * race the live Request file.
+   */
+  permissionDialogReaperDelayMs?: number;
   /** Non-fatal error sink. */
   onError?: (
     err: unknown,
@@ -196,6 +217,8 @@ export function createOrchestrator(
   const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
   const askUserQuestionReaperDelayMs =
     opts.askUserQuestionReaperDelayMs ?? ASK_USER_QUESTION_REAPER_DELAY_MS;
+  const permissionDialogReaperDelayMs =
+    opts.permissionDialogReaperDelayMs ?? PERMISSION_DIALOG_REAPER_DELAY_MS;
   // null → AI routing explicitly disabled. undefined → use real routeViaAI.
   // Function → use the provided wrapper (CLI flags / test stub).
   const aiRouter: ((o: AIRoutingOpts) => Promise<AIRoutingResult>) | undefined =
@@ -742,18 +765,30 @@ export function createOrchestrator(
     sessionId: string;
     requestId: string;
     toolName: string;
+    /**
+     * Which IPC file pair this reaper protects. 'permission' for PreToolUse
+     * (`<paneId>_<sid>.PermissionRequest/Response.*`); 'permission-dialog'
+     * for PermissionRequest (`<paneId>_<sid>.PermissionDialogRequest/Response.*`,
+     * per DD 2026-05-13). Default 'permission' (backward-compat with existing
+     * callsite).
+     */
+    kind?: 'permission' | 'permission-dialog';
   }): void {
-    const key = `${o.paneId}:${o.sessionId}:${o.requestId}`;
+    const kind = o.kind ?? 'permission';
+    const key = `${kind}:${o.paneId}:${o.sessionId}:${o.requestId}`;
     const prev = reaperTimers.get(key);
     if (prev !== undefined) clearTimeout(prev);
 
-    // Per-tool reaper delay. AskUserQuestion holds the hook for up to
-    // 290s (vs regular tools' 10s internal poll), so its reaper must
-    // wait correspondingly longer.
+    // Per-tool / per-kind reaper delay.
+    // - PermissionDialog (any tool) → 130s (mirror AUQ; hook holds 110s)
+    // - PreToolUse AskUserQuestion → 130s (special-cased, holds 110s)
+    // - PreToolUse other tools → 30s (regular IM permission gate)
     const delay =
-      o.toolName === ASK_USER_QUESTION_TOOL_NAME
-        ? askUserQuestionReaperDelayMs
-        : reaperDelayMs;
+      kind === 'permission-dialog'
+        ? permissionDialogReaperDelayMs
+        : o.toolName === ASK_USER_QUESTION_TOOL_NAME
+          ? askUserQuestionReaperDelayMs
+          : reaperDelayMs;
 
     const timer = setTimeout(async () => {
       reaperTimers.delete(key);
@@ -763,20 +798,22 @@ export function createOrchestrator(
       // a user's IM reply is the smoking gun for "reaper delay too
       // short for this tool".
       log(
-        `[reaper] unlink pane=${o.paneId} sid=${o.sessionId.slice(0, 8)} reqId=${o.requestId} tool=${o.toolName} delay=${delay}ms`,
+        `[reaper] unlink kind=${kind} pane=${o.paneId} sid=${o.sessionId.slice(0, 8)} reqId=${o.requestId} tool=${o.toolName} delay=${delay}ms`,
       );
-      const reqPath = permissionRequestPath({
+      const ioOpts = {
         stateDir: opts.stateDir,
         paneId: o.paneId,
         sessionId: o.sessionId,
         requestId: o.requestId,
-      });
-      const respPath = permissionResponsePath({
-        stateDir: opts.stateDir,
-        paneId: o.paneId,
-        sessionId: o.sessionId,
-        requestId: o.requestId,
-      });
+      };
+      const reqPath =
+        kind === 'permission-dialog'
+          ? permissionDialogRequestPath(ioOpts)
+          : permissionRequestPath(ioOpts);
+      const respPath =
+        kind === 'permission-dialog'
+          ? permissionDialogResponsePath(ioOpts)
+          : permissionResponsePath(ioOpts);
       try {
         await deletePermissionFileByPath(reqPath);
         await deletePermissionFileByPath(respPath);
@@ -791,9 +828,150 @@ export function createOrchestrator(
     reaperTimers.set(key, timer);
   }
 
+  // ============================================================================
+  // PermissionRequest (cc sensitive-path dialog hook event)
+  // ============================================================================
+
+  /**
+   * Handle cc's PermissionRequest hook event (fires when cc's internal
+   * gates decided to render a TUI permission dialog — e.g. `.claude/*`
+   * sensitive-path edits). Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
+   *
+   * - `/start auto` (IMWork.auto=true) → silent emit single-yes allow
+   *   `{decision: {behavior: 'allow'}}` (no `updatedPermissions` — D2-A
+   *   protects per-call visibility) + fire IM audit notification per D5-B.
+   * - `/start off` (IMWork.auto=false) → forward to IM with cc's
+   *   `permission_suggestions` rendered as numbered options. **P5 scope
+   *   currently leaves this path silent** (hook will timeout-allow at
+   *   110s → cc falls back to TUI dialog as baseline). P6+P7 will wire
+   *   ai-router prompt + router branch + RouterPermissionDialogResponse
+   *   to complete the off-mode flow.
+   * - IMWork off entirely (file absent) → silent skip (hook should have
+   *   silent-exited too; race-condition defensive only).
+   */
+  async function handlePermissionDialog(
+    p: PermissionRequestPayload & { requestId: string; paneId: number },
+  ): Promise<void> {
+    const { paneId } = p;
+
+    // Schedule reaper FIRST (mirror PreToolUse).
+    scheduleReaper({
+      paneId,
+      sessionId: p.session_id,
+      requestId: p.requestId,
+      toolName: p.tool_name,
+      kind: 'permission-dialog',
+    });
+
+    // Read IMOrigin (race defensive — hook E2 should have short-circuited).
+    let replyCtx: IMReplyContext | null;
+    try {
+      replyCtx = await readIMOriginFile(opts.stateDir);
+    } catch (err) {
+      onError(err, { phase: 'permissionDialogReadIMOrigin', paneId });
+      return;
+    }
+    if (replyCtx === null) {
+      log(`[PermissionDialog pane=${paneId}] no IMOrigin (race) — skip forward`);
+      return;
+    }
+
+    // Read IMWork (race defensive — hook E1 should have short-circuited).
+    const imWork = await readIMWorkFile(opts.stateDir).catch((err) => {
+      onError(err, { phase: 'permissionDialogReadIMWork', paneId });
+      return null;
+    });
+    if (imWork === null) {
+      log(
+        `[PermissionDialog pane=${paneId}] IMWork off (race) — skip; hook will timeout-allow`,
+      );
+      return;
+    }
+
+    // Resolve friendly tab name (for audit log + future IM forward).
+    let tabName = `(pane ${paneId})`;
+    try {
+      const panes = await opts.termAdapter.listPanes();
+      const me = panes.find(
+        (pi) => (pi.paneId as unknown as number) === paneId,
+      );
+      if (me && me.title.length > 0) tabName = me.title;
+    } catch (err) {
+      onError(err, { phase: 'permissionDialogListPanes', paneId });
+    }
+
+    const pathSummary = inferSensitivePathFromToolInput(p.tool_input);
+    log(
+      `[PermissionDialog forward pane=${paneId} tab=${tabName} path=${truncate(pathSummary, 60)}] auto=${imWork.auto}`,
+    );
+
+    if (imWork.auto) {
+      // D2-A: silent emit single-yes allow — no updatedPermissions so
+      // cc's sensitive gate still gates subsequent same-session edits
+      // (protects per-call visibility, no silent session-wide grant).
+      try {
+        await writePermissionDialogResponseFile({
+          stateDir: opts.stateDir,
+          paneId,
+          sessionId: p.session_id,
+          requestId: p.requestId,
+          decision: { behavior: 'allow' },
+        });
+      } catch (err) {
+        onError(err, {
+          phase: 'permissionDialogWriteAutoAllow',
+          paneId,
+          sessionId: p.session_id,
+        });
+        return;
+      }
+      // D5-B: IM audit log notification (no user action required).
+      try {
+        await opts.imAdapter.send(
+          `🛡️ daemon auto-allowed cc 编辑敏感路径\n  ${tabName}: ${truncate(pathSummary, 80)}`,
+          replyCtx,
+        );
+      } catch (err) {
+        onError(err, { phase: 'permissionDialogIMAudit', paneId });
+      }
+      return;
+    }
+
+    // IMWork.auto=false → /start off mode. P6+P7 TODO: forward to IM with
+    // permission_suggestions + parse user reply via ai-router + write
+    // Response. For P5, leave silent — hook will timeout-allow at 110s
+    // and cc falls back to TUI dialog (baseline behavior, no regression).
+    log(
+      `[PermissionDialog pane=${paneId}] IMWork.auto=false; P6+P7 forward not yet wired — hook will timeout-allow`,
+    );
+  }
+
+  /**
+   * Best-effort extract of the sensitive path from cc's tool_input.
+   * Different tools put the path under different keys:
+   *   - Edit / Write / Read → `file_path`
+   *   - Bash → `command` (path is somewhere inside the command string)
+   *   - other → fall back to JSON-stringified summary
+   * Used in audit log + IM notification. Truncated by caller.
+   */
+  function inferSensitivePathFromToolInput(
+    input: Record<string, unknown>,
+  ): string {
+    const filePath = input.file_path;
+    if (typeof filePath === 'string' && filePath.length > 0) return filePath;
+    const path = input.path;
+    if (typeof path === 'string' && path.length > 0) return path;
+    const command = input.command;
+    if (typeof command === 'string' && command.length > 0) return command;
+    return '<unknown path>';
+  }
+
   const cliHandler: CLIHandler = {
     async onPreToolUse(p): Promise<void> {
       return handlePreToolUse(p);
+    },
+    async onPermissionDialog(p): Promise<void> {
+      return handlePermissionDialog(p);
     },
     async onStop(p): Promise<HookDecision | void> {
       return handleStop(p);

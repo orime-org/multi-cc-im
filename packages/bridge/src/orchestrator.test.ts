@@ -11,6 +11,9 @@ import {
   existsIMWorkFile,
   readIMOriginFile,
   readPermissionResponseFile,
+  readPermissionDialogResponseFile,
+  permissionDialogRequestPath,
+  permissionDialogResponsePath,
   permissionRequestPath,
   permissionResponsePath,
   writeDaemonPidFile,
@@ -25,6 +28,7 @@ import type {
   IMReplyContext,
   IncomingMessage,
   PaneId,
+  PermissionRequestPayload,
   PreToolUsePayload,
   SessionId,
   StopPayload,
@@ -207,6 +211,29 @@ function makePreToolUse(opts: {
     tool_name: opts.toolName ?? 'Bash',
     tool_input: opts.toolInput ?? { command: 'ls' },
     tool_use_id: 'tu_1',
+    paneId: opts.paneId,
+    requestId: opts.requestId,
+  };
+}
+
+function makePermissionDialog(opts: {
+  paneId: number;
+  sessionId?: SessionId;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  permissionSuggestions?: readonly unknown[];
+  requestId: string;
+}): PermissionRequestPayload & { paneId: number; requestId: string } {
+  return {
+    session_id: opts.sessionId ?? SID_A,
+    transcript_path: '/tmp/x.jsonl' as TranscriptPath,
+    cwd: '/tmp/proj-a' as CwdAbs,
+    hook_event_name: 'PermissionRequest',
+    tool_name: opts.toolName ?? 'Bash',
+    tool_input: opts.toolInput ?? { command: 'mkdir -p .claude/hooks' },
+    permission_suggestions: opts.permissionSuggestions ?? [
+      { type: 'addRules', behavior: 'allow', destination: 'session' },
+    ],
     paneId: opts.paneId,
     requestId: opts.requestId,
   };
@@ -2322,6 +2349,260 @@ describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
     // Route still ran — sent at least one (real echo, the failed pre-ack
     // never made it into im.sent).
     expect(im.sent.length).toBeGreaterThanOrEqual(1);
+    await orch.stop();
+  });
+});
+
+// ============================================================================
+// PermissionRequest hook event (cc sensitive-path dialog forwarder) — P5
+// Per DD: PermissionRequest hook IM bridge (2026-05-13)
+// ============================================================================
+
+describe('createOrchestrator — handlePermissionDialog (P5)', () => {
+  let dialogStateDir: string;
+
+  beforeEach(async () => {
+    dialogStateDir = mkdtempSync(join(tmpdir(), 'orch-dialog-'));
+    await writeIMWorkFile(dialogStateDir, { auto: true });
+    await writeIMOriginFile(dialogStateDir, {
+      imType: 'lark',
+      openId: 'ou_owner',
+      chatId: 'oc_chat',
+    });
+  });
+
+  function makeFrontendInfo(): TermPaneInfo {
+    return {
+      paneId: FRONTEND_PANE,
+      title: 'frontend',
+      cwd: '/tmp/proj-a' as CwdAbs,
+    };
+  }
+
+  it('/start auto → silent emit single-yes allow (NO updatedPermissions) + IM audit log', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: dialogStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([makeFrontendInfo()]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+
+    await cli.handler!.onPermissionDialog!(
+      makePermissionDialog({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'Bash',
+        toolInput: { command: 'mkdir -p .claude/hooks' },
+        requestId: 'pdtest01',
+      }),
+    );
+
+    // Response file written: single-yes allow, no updatedPermissions
+    const respPath = permissionDialogResponsePath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdtest01',
+    });
+    const resp = await readPermissionDialogResponseFile(respPath);
+    expect(resp?.decision.behavior).toBe('allow');
+    if (resp?.decision.behavior !== 'allow') throw new Error('expected allow');
+    expect(resp.decision.updatedPermissions).toBeUndefined();
+
+    // IM audit log notification fired (D5-B)
+    const auditMsg = im.sent.find((s) => s.content.includes('daemon auto-allowed'));
+    expect(auditMsg).toBeDefined();
+    expect(auditMsg!.content).toContain('frontend');
+    expect(auditMsg!.content).toContain('mkdir -p .claude/hooks');
+
+    await orch.stop();
+  });
+
+  it('/start off → does NOT write Response, does NOT send IM audit (P6+P7 will wire forward)', async () => {
+    // Switch IMWork to off mode
+    await writeIMWorkFile(dialogStateDir, { auto: false });
+
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: dialogStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([makeFrontendInfo()]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+
+    await cli.handler!.onPermissionDialog!(
+      makePermissionDialog({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId: 'pdoff0001',
+      }),
+    );
+
+    // No Response file (P6+P7 not wired yet)
+    const respPath = permissionDialogResponsePath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdoff0001',
+    });
+    expect(existsSync(respPath)).toBe(false);
+    // No IM audit log either (audit is auto-mode only per D5-B)
+    expect(im.sent.some((s) => s.content.includes('daemon auto-allowed'))).toBe(
+      false,
+    );
+
+    await orch.stop();
+  });
+
+  it('IMWork file absent (race) → silent skip, no Response, no IM send', async () => {
+    // Remove IMWork to simulate race (hook should have silent-exited but
+    // somehow a Request reached daemon).
+    await unlink(join(dialogStateDir, 'IMWork')).catch(() => {});
+
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: dialogStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([makeFrontendInfo()]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+
+    await cli.handler!.onPermissionDialog!(
+      makePermissionDialog({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId: 'pdrace001',
+      }),
+    );
+
+    const respPath = permissionDialogResponsePath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdrace001',
+    });
+    expect(existsSync(respPath)).toBe(false);
+    expect(im.sent).toHaveLength(0);
+
+    await orch.stop();
+  });
+
+  it('auto-mode audit log extracts file_path from tool_input when present (Edit/Write tools)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: dialogStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([makeFrontendInfo()]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+
+    await cli.handler!.onPermissionDialog!(
+      makePermissionDialog({
+        paneId: FRONTEND_PANE as unknown as number,
+        toolName: 'Edit',
+        toolInput: {
+          file_path: '/Users/me/work/.claude/hooks/auto-format.sh',
+          old_string: 'x',
+          new_string: 'y',
+        },
+        requestId: 'pdedit001',
+      }),
+    );
+
+    const auditMsg = im.sent.find((s) => s.content.includes('daemon auto-allowed'));
+    expect(auditMsg).toBeDefined();
+    expect(auditMsg!.content).toContain('.claude/hooks/auto-format.sh');
+
+    await orch.stop();
+  });
+
+  it('schedules permission-dialog reaper with PermissionDialog file paths (NOT regular permission file paths)', async () => {
+    const REAPER_WINDOW = 50;
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: dialogStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([makeFrontendInfo()]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+      permissionDialogReaperDelayMs: REAPER_WINDOW,
+    });
+    await orch.start();
+
+    // Manually plant a stale PermissionDialogRequest file to simulate a
+    // SIGKILL'd hook orphan.
+    const reqPath = permissionDialogRequestPath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdreap001',
+    });
+    await writeFile(
+      reqPath,
+      JSON.stringify({
+        requestId: 'pdreap001',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        permissionSuggestions: [],
+        createdAt: 0,
+      }),
+    );
+
+    // Trigger handler (will write a Response too because auto=true)
+    await cli.handler!.onPermissionDialog!(
+      makePermissionDialog({
+        paneId: FRONTEND_PANE as unknown as number,
+        requestId: 'pdreap001',
+      }),
+    );
+
+    // Both Request and Response should still exist before reaper fires
+    expect(existsSync(reqPath)).toBe(true);
+
+    // Wait past reaper window
+    await new Promise((resolve) => setTimeout(resolve, REAPER_WINDOW + 50));
+
+    // Reaper should have unlinked both PermissionDialog files
+    expect(existsSync(reqPath)).toBe(false);
+    const respPath = permissionDialogResponsePath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdreap001',
+    });
+    expect(existsSync(respPath)).toBe(false);
+
+    // PermissionDialog reaper must NOT touch regular Permission files
+    // (defense against the reaper-kind regression).
+    const regularReqPath = permissionRequestPath({
+      stateDir: dialogStateDir,
+      paneId: FRONTEND_PANE as unknown as number,
+      sessionId: SID_A,
+      requestId: 'pdreap001',
+    });
+    expect(existsSync(regularReqPath)).toBe(false); // wasn't created, never existed
+
     await orch.stop();
   });
 });
