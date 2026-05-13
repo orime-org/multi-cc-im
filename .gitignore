@@ -21,6 +21,9 @@ coverage/
 .idea/
 *.swp
 
-# v1.12 PermissionDialog smoke-test scratch files (created at runtime to
-# trigger cc's sensitive-path gate; throwaway, never meant to be tracked)
-.claude/smoke-test-*.txt
+# Project-local Claude Code workspace (hooks, settings, scratch files).
+# Personal per-developer — not shared via git. Includes:
+#   - hooks/* (UserPromptSubmit workflow reminder + Stop neat-freak nudge)
+#   - settings.local.json (per-machine Bash permission allowlist)
+#   - smoke-test-*.txt (runtime scratch for sensitive-path gate triggers)
+.claude/
