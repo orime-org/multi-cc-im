@@ -33,6 +33,28 @@ export interface PreToolUsePayload extends BaseHookPayload {
 }
 
 /**
+ * Hook fired when cc decides to render a permission dialog (after all
+ * cc-internal gates: deny rules, ask rules, safety check incl. the
+ * `.claude/* / .git/* / .env*` sensitive-file gate). Per
+ * [DD: PermissionRequest hook IM bridge](../../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
+ * multi-cc-im subscribes to intercept these dialogs so user can answer
+ * from IM instead of being trapped at the cc TUI.
+ *
+ * `permission_suggestions` is cc's own array of `PermissionUpdate`
+ * objects representing the dialog's "Yes, and always allow X" suggestion
+ * buttons. multi-cc-im forwards these verbatim to IM and round-trips the
+ * user's choice back into `decision.updatedPermissions` (DD §2.2).
+ * The exact PermissionUpdate shape lives in cc source and isn't stable
+ * across cc versions; we treat entries as opaque payloads.
+ */
+export interface PermissionRequestPayload extends BaseHookPayload {
+  hook_event_name: 'PermissionRequest';
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  permission_suggestions?: readonly unknown[];
+}
+
+/**
  * Hook fired when cc finishes a single assistant turn (NOT session end).
  * - `stop_hook_active: true` means the current Stop is being invoked inside
  *   a `decision:'block'` injection chain. multi-cc-im MUST `return` early
@@ -49,7 +71,7 @@ export interface StopPayload extends BaseHookPayload {
 }
 
 /** Discriminated union of every cc hook payload multi-cc-im subscribes to. */
-export type HookPayload = PreToolUsePayload | StopPayload;
+export type HookPayload = PreToolUsePayload | PermissionRequestPayload | StopPayload;
 
 /**
  * Stdout response shape that cc's Stop hook treats as an injection request.

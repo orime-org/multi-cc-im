@@ -84,7 +84,7 @@ describe('runSetupHooksCommand', () => {
       expect(r.settings.hooks).not.toBeNull();
     });
 
-    it('all 2 event keys present (Stop: 1 group, PreToolUse: 2 groups)', async () => {
+    it('all 3 event keys present (Stop: 1 group, PreToolUse: 2 groups, PermissionRequest: 1 group)', async () => {
       // Per [DD: pane-keyed state files](docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
       // (DD #61), SessionStart + SessionEnd were dropped — daemon no longer
       // needs WEZTERM_PANE snapshot or cc-death signal from cc hooks.
@@ -93,9 +93,13 @@ describe('runSetupHooksCommand', () => {
       // §6 P1: PreToolUse now has 2 matcher groups — one for AskUserQuestion
       // (long timeout for IM-reply hold), one for everything else (current
       // 20s). Stop is unchanged (1 group, no tool concept).
+      //
+      // Per [DD: PermissionRequest hook IM bridge](docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md)
+      // §6 P1: PermissionRequest added (1 group, empty matcher — fires per
+      // dialog not per tool, timeout 120 mirroring AUQ).
       const r = await run();
       const hooks = r.settings.hooks!;
-      const expectedEvents = ['PreToolUse', 'Stop'];
+      const expectedEvents = ['PreToolUse', 'PermissionRequest', 'Stop'];
       expect(Object.keys(hooks).sort()).toEqual([...expectedEvents].sort());
       const stopGroups = hooks.Stop as Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
       expect(stopGroups).toHaveLength(1);
@@ -107,6 +111,26 @@ describe('runSetupHooksCommand', () => {
         expect(g.hooks[0]!.type).toBe('command');
         expect(g.hooks[0]!.command).toBe(`${repoRoot}/bin/multi-cc-im hook PreToolUse`);
       }
+      const permReqGroups = hooks.PermissionRequest as Array<{
+        matcher: string;
+        hooks: Array<{ type: string; command: string }>;
+      }>;
+      expect(permReqGroups).toHaveLength(1);
+      expect(permReqGroups[0]!.hooks[0]!.command).toBe(`${repoRoot}/bin/multi-cc-im hook PermissionRequest`);
+    });
+
+    it('PermissionRequest group: matcher="" (no tool concept), timeout=120 (mirror AUQ per DD §8 D8)', async () => {
+      // PermissionRequest fires per cc-internal permission dialog, not per
+      // tool — so matcher is empty (cc protocol convention). Timeout 120s
+      // matches AUQ matcher timeout: gives daemon 110s internal poll
+      // budget + 10s margin for stdout/transient retry.
+      const r = await run();
+      const groups = r.settings.hooks!.PermissionRequest as Array<{
+        matcher: string;
+        hooks: Array<{ timeout?: number }>;
+      }>;
+      expect(groups[0]!.matcher).toBe('');
+      expect(groups[0]!.hooks[0]!.timeout).toBe(120);
     });
 
     it('PreToolUse group 1: matcher="AskUserQuestion", timeout=120 (2 min for IM-reply hold per DD §9.5)', async () => {
@@ -198,37 +222,37 @@ describe('runSetupHooksCommand', () => {
   });
 
   describe('basic flows', () => {
-    it('settings.json missing → creates with 2 multi-cc-im hooks', async () => {
+    it('settings.json missing → creates with 3 multi-cc-im hooks', async () => {
       const r = await run();
       expect(r.exitCode).toBe(0);
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks)).toHaveLength(2);
+      expect(Object.keys(hooks)).toHaveLength(3);
     });
 
-    it('settings.json exists but empty `{}` → adds 2 hooks', async () => {
+    it('settings.json exists but empty `{}` → adds 3 hooks', async () => {
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '{}\n', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(3);
     });
 
-    it('settings.json exists but is 0-byte empty file → treats as {}, adds 2 hooks', async () => {
+    it('settings.json exists but is 0-byte empty file → treats as {}, adds 3 hooks', async () => {
       // Common when a previous tool truncated the file (e.g. `> ~/.claude/settings.json`).
       // Pre-fix this would JSON.parse('') and exit 1 with "Unexpected end of JSON input".
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(3);
     });
 
-    it('settings.json with only whitespace → treats as {}, adds 2 hooks', async () => {
+    it('settings.json with only whitespace → treats as {}, adds 3 hooks', async () => {
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(ccSettings, '  \n\t\n  ', 'utf-8');
       const r = await run();
       expect(r.exitCode).toBe(0);
-      expect(Object.keys(r.settings.hooks!)).toHaveLength(2);
+      expect(Object.keys(r.settings.hooks!)).toHaveLength(3);
     });
 
     it('empty file logs "is empty, treating as {}" hint', async () => {
@@ -271,7 +295,7 @@ describe('runSetupHooksCommand', () => {
       });
       expect(result.exitCode).toBe(0);
       const written = JSON.parse(await readFile(ccSettings, 'utf-8'));
-      expect(Object.keys(written.hooks)).toHaveLength(2);
+      expect(Object.keys(written.hooks)).toHaveLength(3);
     });
 
     it('logs progress lines (cc settings path / repo path / handler count) on first write', async () => {
@@ -436,7 +460,7 @@ describe('runSetupHooksCommand', () => {
       const r = await run();
       const hooks = r.settings.hooks!;
       expect(Object.keys(hooks).sort()).toEqual(
-        ['Notification', 'PreToolUse', 'Stop'].sort(),
+        ['Notification', 'PermissionRequest', 'PreToolUse', 'Stop'].sort(),
       );
       const notification = hooks.Notification as Array<{
         matcher: string;
@@ -674,21 +698,25 @@ describe('runSetupHooksCommand', () => {
       );
       const r = await run();
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks).sort()).toEqual(['PreToolUse', 'Stop']);
+      expect(Object.keys(hooks).sort()).toEqual([
+        'PermissionRequest',
+        'PreToolUse',
+        'Stop',
+      ]);
       expect(hooks.UserPromptSubmit).toBeUndefined();
     });
 
-    it('migration: full 6-event multi-cc-im settings (old version) → all 6 stale lines pruned, 2 fresh lines written', async () => {
+    it('migration: full 6-event multi-cc-im settings (old version) → all 6 stale lines pruned, 3 fresh lines written', async () => {
       // End-to-end migration scenario: user previously ran setup-hooks under
       // an older multi-cc-im version that subscribed to 6 events
       // (SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop /
       // SessionEnd) or the more recent 4-event version (SessionStart /
-      // PreToolUse / Stop / SessionEnd). Running the new 2-event version
-      // (DD #61: PreToolUse + Stop only) should detect every old
-      // multi-cc-im hook line via the `bin/multi-cc-im hook ` substring,
-      // prune them all, and write only the 2 current events. The 4 dropped
-      // events (SessionStart / SessionEnd / UserPromptSubmit / PostToolUse)
-      // should NOT appear in the output at all.
+      // PreToolUse / Stop / SessionEnd). Running the new 3-event version
+      // (DD #61 + 2026-05-13: PreToolUse + PermissionRequest + Stop) should
+      // detect every old multi-cc-im hook line via the `bin/multi-cc-im hook `
+      // substring, prune them all, and write only the 3 current events. The
+      // 4 dropped events (SessionStart / SessionEnd / UserPromptSubmit /
+      // PostToolUse) should NOT appear in the output at all.
       await mkdir(join(home, '.claude'), { recursive: true });
       await writeFile(
         ccSettings,
@@ -770,22 +798,29 @@ describe('runSetupHooksCommand', () => {
         string,
         Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> }>
       >;
-      // Only the 2 current events remain — the 4 dropped events
+      // Only the 3 current events remain — the 4 dropped events
       // (SessionStart / SessionEnd / UserPromptSubmit / PostToolUse) were
       // pruned entirely (their groups had only the multi-cc-im command,
       // which got dropped, leaving the groups empty, which got pruned,
       // leaving the event keys empty, which got pruned). PreToolUse + Stop
-      // stale lines were dropped, then fresh PreToolUse + Stop groups were
-      // re-added under the new repoRoot.
-      expect(Object.keys(hooks).sort()).toEqual(['PreToolUse', 'Stop']);
+      // stale lines were dropped, then fresh PreToolUse + PermissionRequest +
+      // Stop groups were re-added under the new repoRoot.
+      expect(Object.keys(hooks).sort()).toEqual([
+        'PermissionRequest',
+        'PreToolUse',
+        'Stop',
+      ]);
       // No `/old/path` substring anywhere — every stale line cleanly removed.
       const allCommands = Object.values(hooks).flatMap((groups) =>
         groups.flatMap((g) => g.hooks.map((h) => h.command)),
       );
       expect(allCommands.filter((c) => c.includes('/old/path'))).toHaveLength(0);
-      // Both 2 current events point at the new repoRoot.
+      // All 3 current events point at the new repoRoot.
       expect(hooks.PreToolUse![0]!.hooks[0]!.command).toBe(
         `${repoRoot}/bin/multi-cc-im hook PreToolUse`,
+      );
+      expect(hooks.PermissionRequest![0]!.hooks[0]!.command).toBe(
+        `${repoRoot}/bin/multi-cc-im hook PermissionRequest`,
       );
       expect(hooks.Stop![0]!.hooks[0]!.command).toBe(
         `${repoRoot}/bin/multi-cc-im hook Stop`,
@@ -819,7 +854,7 @@ describe('runSetupHooksCommand', () => {
       // schema validates: nested-object form, not array
       expect(() => ccHooksSchema.parse(r.settings.hooks)).not.toThrow();
       const hooks = r.settings.hooks!;
-      expect(Object.keys(hooks)).toHaveLength(2);
+      expect(Object.keys(hooks)).toHaveLength(3);
     });
 
     it('legacy migration logs the cleanup count so user knows it happened', async () => {

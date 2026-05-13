@@ -444,6 +444,23 @@ export async function runHookReceiver(
       };
     }
 
+    case 'PermissionRequest': {
+      // P1 stub: subscribed in setup-hooks (per DD §6 P1) but full
+      // forward + IM dialog handler lives in P2-P7 (cli-cc receiver +
+      // shared types + state-files + orchestrator + ai-router + router).
+      //
+      // For P1 we silently return — cc falls back to its TUI dialog as
+      // before, identical to the pre-DD baseline. Zero behavior change
+      // for users until P2-P7 ship.
+      //
+      // TODO(P4): replicate PreToolUse decision tree here:
+      //   - IMWork null → silent exit (current)
+      //   - IMWork.auto=true → emit single-yes allow + IM audit log (D2-A + D5-B)
+      //   - IMWork.auto=false → write PermissionRequest Request file,
+      //     poll for Response, emit cc stdout JSON with decision
+      return;
+    }
+
     case 'Stop': {
       // 3-step short-circuit guards mirror PreToolUse. Order:
       //   E1 !IMWork → return void (local mode)

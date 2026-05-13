@@ -84,6 +84,18 @@ const STOP_HOOK_ACTIVE_TRUE: ParsedHookPayload = {
   stop_hook_active: true,
 };
 
+const PERMISSION_REQUEST_PAYLOAD: ParsedHookPayload = {
+  session_id: SID as never,
+  transcript_path: TX as never,
+  cwd: CWD as never,
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'Bash',
+  tool_input: { command: 'mkdir -p .claude/hooks' },
+  permission_suggestions: [
+    { type: 'addRules', behavior: 'allow', destination: 'session' },
+  ],
+};
+
 /** Build a stateDir with daemon.pid + IMWork + <paneId>.IMOrigin all set up
  * (= "fully bound, daemon alive" — the path that exercises the heavy code). */
 async function setupBoundState(stateDir: string): Promise<void> {
@@ -611,6 +623,48 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
         permissionDecisionReason: expect.stringContaining('auto-approve'),
       },
     });
+  });
+});
+
+describe('runHookReceiver — PermissionRequest stub (DD 2026-05-13 P1)', () => {
+  let stateDir: string;
+
+  beforeEach(async () => {
+    stateDir = await mkdtemp(join(tmpdir(), 'cli-cc-recv-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  it('returns undefined (silent exit) — P1 stub before P2-P7 implementation lands', async () => {
+    // Per DD §6: P1 subscribes the event in setup-hooks + threads the type
+    // through shared/payloads. Full forward + IM dialog handler ships in
+    // P2-P7. Until then we silently return so cc falls back to its TUI
+    // dialog as before — zero behavior change.
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toBeUndefined();
+    // No state files should have been written either.
+    const entries = await readStateDirEntries(stateDir);
+    expect(entries).toEqual([]);
+  });
+
+  it('silent stub fires even with IMWork on (P1 deliberately ignores state to keep behavior minimal)', async () => {
+    // Even if IMWork + IMOrigin + daemon.pid are all set up (the path that
+    // would normally trigger heavy work), P1 stub still returns undefined.
+    // This locks in "P1 is truly minimal — no side effects" until P4
+    // wires the real handler.
+    await setupBoundState(stateDir);
+    const result = await runHookReceiver({
+      stateDir,
+      payload: PERMISSION_REQUEST_PAYLOAD,
+      resolvePaneId: stubPaneId,
+    });
+    expect(result).toBeUndefined();
   });
 });
 
