@@ -145,6 +145,51 @@ The daemon hands your answer back to cc as a normal `AskUserQuestion` tool resul
 
 **Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): each question gets one entry in the injected `answers` map.
 
+## cc sensitive-path dialogs (.claude/* / .git/* / .env / etc.) → IM
+
+cc has a hard-coded ask gate that forces a TUI permission prompt every time it tries to edit a "sensitive" path: anything under `.claude/`, `.git/`, `.vscode/`, `.idea/`, or files like `.bashrc`, `.zshrc`, `.env*`, `.gitconfig`, `.mcp.json`, `.claude.json`, etc. This gate runs **before** any user-level allow rule — even `permissions.allow` in your `~/.claude/settings.json` cannot bypass it (cc designed it this way to prevent accidental over-grants).
+
+Without this bridge feature, IM users would silently get stuck: cc fires the TUI prompt and waits for keystrokes that never arrive. The daemon now intercepts cc's `PermissionRequest` hook and handles both modes:
+
+### `/start` (auto mode)
+
+Daemon emits a single-yes allow for the current call + sends an IM audit notification:
+
+```
+🛡️ daemon auto-allowed cc 编辑敏感路径
+  <tab>: <path>
+```
+
+The audit line is informational — no reply needed. Same-session subsequent edits to the same path will trigger another dialog (single-yes only — daemon never silently grants a session-wide allow rule, preserving per-operation visibility).
+
+### `/start off` (ask mode)
+
+Daemon forwards numbered options to IM:
+
+```
+[<tab>] cc 想编辑敏感路径:
+  <toolName>: <path>
+
+  1. 同意一次（仅本次调用）
+  2. 始终允许: Edit(./.claude/**)    ← cc's permission_suggestions[0]
+  3. 拒绝
+
+请回复（数字 / 自然语言均可）
+```
+
+Reply with:
+- `1` / `好` / `yes` — allow this one call
+- `2` / `总是允许` / `always` — allow + apply cc's session rule so subsequent same-path edits skip the gate (until cc session exits)
+- `3` / `拒绝` / `no` — deny + cc gets a clear "user denied" message
+
+The daemon resolves your choice into the actual `PermissionUpdate` cc proposed (it does **not** synthesize a new always-allow that wasn't in cc's suggestion list — preserves cc's safety semantic).
+
+### Caveats
+
+- **Timeout**: if you don't reply within 2 minutes, the hook self-emits a plain allow (no session rule) so cc proceeds. If you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的 PermissionDialog 回复` in IM.
+- **Session-scoped only**: cc's safety gate only honors `destination: 'session'` rules (in-memory). Project-level / user-level `permissions.allow` settings in JSON files still get vetoed by the gate. The daemon respects this by always writing `destination: 'session'` from cc's suggestion.
+- **Multi-hook**: if you have other tools registered as `PermissionRequest` hooks in `~/.claude/settings.json`, cc's "first-non-null wins" rule applies — whichever hook returns a decision first wins. multi-cc-im assumes it's the only PermissionRequest hook.
+
 ## cc replies → IM rendering
 
 Feishu doesn't render markdown, so cc replies are simplified before sending — you see clean text instead of raw `**` / backticks:

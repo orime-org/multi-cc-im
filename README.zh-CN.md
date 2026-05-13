@@ -145,6 +145,51 @@ daemon 把你的回复作为正常的 `AskUserQuestion` 工具结果交给 cc（
 
 **多问题** AskUserQuestion（少见 —— cc 一次问 2+ 个问题）：每个 question 在注入的 `answers` map 里都有对应 entry。
 
+## cc 敏感路径编辑对话框（.claude/* / .git/* / .env 等）→ IM
+
+cc 对某些"敏感路径"有 hard-coded 的 ask 门槛：任何 `.claude/`、`.git/`、`.vscode/`、`.idea/` 下的文件，或者 `.bashrc`、`.zshrc`、`.env*`、`.gitconfig`、`.mcp.json`、`.claude.json` 这类点开头的配置文件，cc 每次编辑前都会弹 TUI prompt。这个门槛跑在所有 user-level allow rule **之前** — 即使你在 `~/.claude/settings.json` 里加 `permissions.allow` 也绕不过去（cc 故意这么设计防误授权）。
+
+没这个 bridge 功能的话 IM 用户会卡死：cc 弹 TUI 等键盘输入，IM 这边什么都看不到。daemon 现在拦截 cc 的 `PermissionRequest` hook，按模式分别处理：
+
+### `/start`（auto 模式）
+
+daemon 自动批准当前这一次调用，同时给 IM 发一条审计通知：
+
+```
+🛡️ daemon auto-allowed cc 编辑敏感路径
+  <tab>: <path>
+```
+
+这是纯通知不用答。同一 session 后续再编辑同一路径还会触发对话框（每次都是 single-yes，daemon 故意不偷偷加 session-wide allow rule，保留每次操作的可见性）。
+
+### `/start off`（ask 模式）
+
+daemon 把编号选项 forward 到 IM：
+
+```
+[<tab>] cc 想编辑敏感路径:
+  <toolName>: <path>
+
+  1. 同意一次（仅本次调用）
+  2. 始终允许: Edit(./.claude/**)    ← cc 自己给的 permission_suggestions[0]
+  3. 拒绝
+
+请回复（数字 / 自然语言均可）
+```
+
+回复方式：
+- `1` / `好` / `yes` — 单次同意
+- `2` / `总是允许` / `always` — 同意 + 应用 cc 给的 session rule，后续同 path 编辑直到 cc session 退出前都不再弹
+- `3` / `拒绝` / `no` — 拒绝 + cc 收到清晰的"user denied"消息
+
+daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `PermissionUpdate` 对象（**不会**自创 cc 没给的 always-allow — 保持 cc 安全语义）。
+
+### 注意
+
+- **超时**：2 分钟没回复，hook 自己发 plain allow（不带 session rule）让 cc 不卡。超时后才回的 IM 会收到 `⏱ cc 已超时，本轮不再等待你的 PermissionDialog 回复` 提示。
+- **只能 session-scoped**：cc 的敏感路径门槛只认 `destination: 'session'` 的 rule（in-memory）。settings.json 里的 project-level / user-level `permissions.allow` 仍然会被门槛拦截。daemon 始终用 cc 给的 session destination 的 PermissionUpdate。
+- **多 hook 互动**：如果你的 `~/.claude/settings.json` 里还注册了其他 `PermissionRequest` hooks，cc 的"first-non-null wins"规则生效 — 谁先返回 decision 谁赢。multi-cc-im 假设它是唯一的 PermissionRequest hook。
+
 ## cc 回复 → IM 显示
 
 飞书不渲染 markdown，所以 cc 回复在发送前会做简化 — 你看到的是干净文字而不是裸 `**` / 反引号：
