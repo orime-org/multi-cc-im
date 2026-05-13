@@ -2653,6 +2653,10 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
     expect(forwardMsg!.content).toContain('1. 同意一次');
     expect(forwardMsg!.content).toContain('2. 始终允许: Edit(./.claude/**)');
     expect(forwardMsg!.content).toContain('3. 拒绝');
+    // PreToolUse-style reply hint: rigid syntax + plain message both OK
+    expect(forwardMsg!.content).toContain('#frontend /1');
+    expect(forwardMsg!.content).toContain('#frontend /2');
+    expect(forwardMsg!.content).toMatch(/数字 \/ 自然语言/);
 
     // No Response written yet — waiting for user reply
     const respPath = permissionDialogResponsePath({

@@ -20,3 +20,7 @@ coverage/
 .vscode/
 .idea/
 *.swp
+
+# v1.12 PermissionDialog smoke-test scratch files (created at runtime to
+# trigger cc's sensitive-path gate; throwaway, never meant to be tracked)
+.claude/smoke-test-*.txt

@@ -1145,7 +1145,10 @@ export function createOrchestrator(
     }
     lines.push(`  ${o.permissionSuggestions.length + 2}. 拒绝`);
     lines.push('');
-    lines.push('请回复（数字 / 自然语言均可）');
+    lines.push('回复方式（任选其一）:');
+    lines.push(`  #${o.tabName} /1   = 同意一次`);
+    lines.push(`  #${o.tabName} /2   = 拒绝`);
+    lines.push('  或直接发数字 / 自然语言（"1" / "好" / "选 2" / "拒绝"）');
     return lines.join('\n');
   }
 
