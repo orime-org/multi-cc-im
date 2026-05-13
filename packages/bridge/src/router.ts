@@ -2,16 +2,20 @@ import type {
   AskUserQuestionToolInput,
   IncomingMessage,
   PaneId,
+  PermissionDialogAnswer,
 } from '@multi-cc-im/shared';
 import { AskUserQuestionToolInputSchema } from '@multi-cc-im/shared';
 import type {
   AIAskUserQuestionResult,
+  AIPermissionDialogResult,
   AIPermissionResponse,
   AIRoutingOpts,
   AIRoutingResult,
   AskUserQuestionViaAIOpts,
   PendingAskUserQuestion,
+  PendingPermissionDialog,
   PendingRequestForPrompt,
+  PermissionRequestViaAIOpts,
 } from './ai-router.js';
 import { matchSession, type SessionInfo } from './matcher.js';
 import { parse } from './parser.js';
@@ -31,6 +35,23 @@ export interface RouterPendingRequest {
   requestId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
+  createdAt: number;
+}
+
+/**
+ * One pending PermissionDialog (cc PermissionRequest hook event) as the
+ * router receives it. Mirrors cli-cc's `PendingPermissionDialog` shape;
+ * kept local so router stays framework-free.
+ *
+ * Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+ */
+export interface RouterPendingDialog {
+  paneId: PaneId;
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  permissionSuggestions: readonly unknown[];
   createdAt: number;
 }
 
@@ -118,6 +139,15 @@ export interface RouterOpts {
    */
   listPendingPermissionRequests?: () => Promise<readonly RouterPendingRequest[]>;
   /**
+   * Pending PermissionDialog (cc PermissionRequest hook event) approvals.
+   * Same role as `listPendingPermissionRequests` but for the sensitive-
+   * path dialog flow. Bridge orchestrator wires this to
+   * `listPendingPermissionDialogs` from `@multi-cc-im/cli-cc`.
+   *
+   * Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+   */
+  listPendingPermissionDialogs?: () => Promise<readonly RouterPendingDialog[]>;
+  /**
    * AskUserQuestion-specific AI router callback. Invoked when at least one
    * pending PreToolUse has `toolName === 'AskUserQuestion'` — the regular
    * routing / force-permission prompts don't handle AUQ (D5-D answer-
@@ -133,6 +163,20 @@ export interface RouterOpts {
   aiAskUserQuestionRouter?: (
     opts: import('./ai-router.js').AskUserQuestionViaAIOpts,
   ) => Promise<import('./ai-router.js').AIAskUserQuestionResult | null>;
+  /**
+   * PermissionRequest-specific AI router callback. Invoked when any
+   * pending PermissionDialog exists at the moment of routing. Mirror
+   * `aiAskUserQuestionRouter` pattern. Orchestrator wires this to
+   * `routePermissionRequestViaAI` from ai-router module.
+   *
+   * Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+   *
+   * **When omitted**: PermissionDialog branch falls back to safe-default
+   * deny so cc doesn't stall waiting for an answer that never comes.
+   */
+  aiPermissionRequestRouter?: (
+    opts: PermissionRequestViaAIOpts,
+  ) => Promise<AIPermissionDialogResult | null>;
 }
 
 export interface RouterDispatch {
@@ -171,6 +215,22 @@ export interface RouterPermissionResponse {
   updatedInput?: Record<string, unknown>;
 }
 
+/**
+ * PermissionDialog (cc PermissionRequest hook event) reply derived from
+ * an IM user message + AI dispatch. Orchestrator picks this up after
+ * `route()`, locates the matching pending `PermissionDialogRequest`
+ * file for `session.paneId`, resolves `appliedSuggestionIndex` into the
+ * actual cc PermissionUpdate from the Request's `permissionSuggestions`,
+ * and writes a `PermissionDialogResponse` file.
+ *
+ * Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+ */
+export interface RouterPermissionDialogResponse {
+  session: SessionInfo;
+  /** Structured answer from AI (allow / allow+appliedSuggestionIndex / deny+message). */
+  answer: PermissionDialogAnswer;
+}
+
 export interface RouterResult {
   /** Visible feedback to send back to the IM (per CLAUDE.md "routing visible echo required"). */
   echo: string;
@@ -178,6 +238,13 @@ export interface RouterResult {
   dispatches: RouterDispatch[];
   /** Set when the IM message was a `#<tabname> /1` or `/2` permission response. */
   permissionResponse?: RouterPermissionResponse;
+  /**
+   * Set when the IM message was a reply to a cc PermissionRequest dialog
+   * (sensitive-path edit / similar internal cc ask gate). Orchestrator
+   * resolves `answer.appliedSuggestionIndex` into the pending Request's
+   * `permissionSuggestions[index-1]` and writes the on-disk Response.
+   */
+  permissionDialogResponse?: RouterPermissionDialogResponse;
   /**
    * Set when the IM user invoked bare `/start [off]` or `/stop`.
    * Orchestrator acts on it after `route()` returns: writes / deletes
@@ -301,10 +368,12 @@ export async function route(
       // when an aiRouter callback is wired (production default), all plain
       // messages go through it. Without an aiRouter (tests / degraded
       // fallback), use the legacy sticky-current logic. The AUQ-specific
-      // branch (DD §9 R7) is reached via handlePlainWithAI as well, so we
-      // also route through it whenever `aiAskUserQuestionRouter` is set
-      // (e.g. tests that exercise only the AUQ path without the routing AI).
-      return opts.aiRouter || opts.aiAskUserQuestionRouter
+      // branch (DD §9 R7) + PermissionDialog branch (DD 2026-05-13 P7) are
+      // reached via handlePlainWithAI as well, so we also route through it
+      // whenever any of the three AI callbacks is set.
+      return opts.aiRouter ||
+        opts.aiAskUserQuestionRouter ||
+        opts.aiPermissionRequestRouter
         ? handlePlainWithAI(
             parsed.body,
             sessions,
@@ -312,6 +381,8 @@ export async function route(
             opts.aiRouter,
             opts.listPendingPermissionRequests,
             opts.aiAskUserQuestionRouter,
+            opts.listPendingPermissionDialogs,
+            opts.aiPermissionRequestRouter,
           )
         : handlePlain(parsed.body, sessions, opts.state);
 
@@ -419,6 +490,12 @@ async function handlePlainWithAI(
   aiAskUserQuestionRouter:
     | ((opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
     | undefined,
+  listPendingPermissionDialogs:
+    | (() => Promise<readonly RouterPendingDialog[]>)
+    | undefined,
+  aiPermissionRequestRouter:
+    | ((opts: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
+    | undefined,
 ): Promise<RouterResult> {
   const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
   if (namedSessions.length === 0) {
@@ -434,6 +511,22 @@ async function handlePlainWithAI(
     currentPaneId !== null
       ? namedSessions.find((s) => s.paneId === currentPaneId)?.tabTitle ?? null
       : null;
+
+  // PermissionDialog pendings have priority over all other branches —
+  // cc's protocol layer is genuinely blocked at a TUI ask gate, so any
+  // plain reply at this moment MUST be the dialog answer (not a routing
+  // request / not an AUQ answer / not a generic permission reply). Per
+  // [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+  const dialogPendings: readonly RouterPendingDialog[] =
+    listPendingPermissionDialogs ? await listPendingPermissionDialogs() : [];
+  if (dialogPendings.length > 0) {
+    return handlePermissionDialogReply(
+      body,
+      dialogPendings,
+      namedSessions,
+      aiPermissionRequestRouter,
+    );
+  }
 
   // Map cli-cc pending records (paneId-keyed IPC shape) → prompt records
   // (tabName-keyed). Pendings for dead panes are silently dropped so the
@@ -837,6 +930,198 @@ function optionNumberGlyph(n: number): string {
     '⑩',
   ];
   return n >= 1 && n < circled.length ? circled[n]! : `[${n}]`;
+}
+
+/**
+ * PermissionDialog reply branch (DD 2026-05-13 §6 P7). When cc's
+ * PermissionRequest hook event surfaces a sensitive-path ask gate, the
+ * daemon forwards the dialog to IM with numbered options. The user's
+ * plain reply lands here — AI extracts the structured answer per §3 D6
+ * (single-yes / always-allow-suggestion-N / deny), the orchestrator
+ * resolves `appliedSuggestionIndex` into the actual cc PermissionUpdate
+ * from the pending Request's `permissionSuggestions[]` and writes the
+ * Response file.
+ *
+ * Failure modes:
+ *   - No AI router wired → fallback: deny + safe message (cc gets a
+ *     clear deny so it doesn't proceed silently)
+ *   - AI returned null (timeout / parse error) → same deny fallback
+ *   - AI's `target` doesn't match any pending tab → echo error
+ *
+ * Sticky `current` is NOT updated (mirrors AUQ + rigid-syntax behavior).
+ */
+async function handlePermissionDialogReply(
+  body: string,
+  pendings: readonly RouterPendingDialog[],
+  namedSessions: readonly SessionInfo[],
+  aiPermissionRequestRouter:
+    | ((opts: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
+    | undefined,
+): Promise<RouterResult> {
+  const fallback = (
+    matched: RouterPendingDialog,
+    reason: string,
+  ): RouterResult => {
+    const target = namedSessions.find(
+      (s) => (s.paneId as unknown as PaneId) === matched.paneId,
+    );
+    if (!target) {
+      return {
+        echo: `❌ PermissionDialog target pane=${matched.paneId} 不存在；请用 cc TUI 回答`,
+        dispatches: [],
+      };
+    }
+    return {
+      echo:
+        `target: ${displayName(target)}\n` +
+        `你说: ${truncate(body, ECHO_EXCERPT_MAX)}\n` +
+        `⚠️ AI 分诊失败（${reason}），默认拒绝；cc 会回 TUI dialog 让你重选`,
+      dispatches: [],
+      permissionDialogResponse: {
+        session: target,
+        answer: {
+          behavior: 'deny',
+          message: `AI dispatch failed: ${reason}`,
+        },
+      },
+    };
+  };
+
+  if (!aiPermissionRequestRouter) {
+    return fallback(pendings[0]!, 'no AI router wired');
+  }
+
+  // Convert RouterPendingDialog → PendingPermissionDialog (ai-router shape)
+  const aiPendings: PendingPermissionDialog[] = pendings.map((p) => {
+    const session = namedSessions.find(
+      (s) => (s.paneId as unknown as PaneId) === p.paneId,
+    );
+    const tabName = session?.tabTitle ?? `(pane ${p.paneId as unknown as number})`;
+    return {
+      tabName,
+      toolName: p.toolName,
+      toolInputSummary: inferDialogToolInputSummary(p.toolInput),
+      permissionSuggestions: p.permissionSuggestions,
+    };
+  });
+
+  const aiResult = await aiPermissionRequestRouter({
+    userMsg: body,
+    pendings: aiPendings,
+  });
+  if (aiResult === null) {
+    return fallback(pendings[0]!, 'AI returned null');
+  }
+
+  // Match by tab name
+  const matchedDialog =
+    pendings.find((p) => {
+      const session = namedSessions.find(
+        (s) => (s.paneId as unknown as PaneId) === p.paneId,
+      );
+      return session?.tabTitle === aiResult.target;
+    }) ?? pendings[0]!;
+  const target = namedSessions.find(
+    (s) => (s.paneId as unknown as PaneId) === matchedDialog.paneId,
+  );
+  if (!target) {
+    return {
+      echo: `❌ AUQ tab \`${aiResult.target}\` 不存在；请用 cc TUI 回答`,
+      dispatches: [],
+      aiTrace: { target: aiResult.target, intent: null, reason: aiResult.reason },
+    };
+  }
+
+  // Defensive: validate appliedSuggestionIndex stays in range. AI prompt
+  // is told to obey but Haiku/Sonnet drift defense.
+  const answer = applyDialogIndexClamp(aiResult.answer, matchedDialog);
+
+  return {
+    echo:
+      `target: ${displayName(target)}\n` +
+      `你说: ${truncate(body, ECHO_EXCERPT_MAX)}\n` +
+      `${formatDialogAnswerEcho(answer, matchedDialog)}`,
+    dispatches: [],
+    permissionDialogResponse: {
+      session: target,
+      answer,
+    },
+    aiTrace: { target: aiResult.target, intent: null, reason: aiResult.reason },
+  };
+}
+
+/**
+ * Clamp `appliedSuggestionIndex` into valid range. If AI returns an
+ * out-of-range index (e.g. AI saw N suggestions but emitted N+1), we
+ * downgrade to single-yes (omit `appliedSuggestionIndex`) — safer than
+ * synthesizing a wrong cc PermissionUpdate.
+ */
+function applyDialogIndexClamp(
+  answer: PermissionDialogAnswer,
+  matched: RouterPendingDialog,
+): PermissionDialogAnswer {
+  if (answer.behavior !== 'allow') return answer;
+  if (answer.appliedSuggestionIndex === undefined) return answer;
+  const i = answer.appliedSuggestionIndex;
+  if (i < 1 || i > matched.permissionSuggestions.length) {
+    // Strip the bad index — degrade to single-yes
+    return { behavior: 'allow' };
+  }
+  return answer;
+}
+
+/**
+ * IM echo line summarizing the AI-extracted answer for the user's
+ * visual confirmation. Mirrors AUQ echo style.
+ */
+function formatDialogAnswerEcho(
+  answer: PermissionDialogAnswer,
+  matched: RouterPendingDialog,
+): string {
+  if (answer.behavior === 'deny') {
+    return `选择: 拒绝${answer.message ? `（${truncate(answer.message, ECHO_EXCERPT_MAX)}）` : ''}`;
+  }
+  if (answer.appliedSuggestionIndex === undefined) {
+    return '选择: 同意一次';
+  }
+  const idx = answer.appliedSuggestionIndex;
+  const summary = summarizePermissionSuggestionLocal(
+    matched.permissionSuggestions[idx - 1],
+  );
+  return `选择: ${optionNumberGlyph(idx + 1)} 始终允许 ${truncate(summary, ECHO_EXCERPT_MAX)}`;
+}
+
+/**
+ * Local copy of `summarizePermissionSuggestion` (in ai-router) for echo
+ * formatting only. Best-effort extraction of `rules[0].ruleContent`.
+ */
+function summarizePermissionSuggestionLocal(s: unknown): string {
+  if (typeof s !== 'object' || s === null) return '<unknown>';
+  const sug = s as Record<string, unknown>;
+  if (Array.isArray(sug.rules) && sug.rules.length > 0) {
+    const first = sug.rules[0];
+    if (typeof first === 'object' && first !== null) {
+      const rule = first as Record<string, unknown>;
+      if (typeof rule.ruleContent === 'string' && rule.ruleContent.length > 0) {
+        return rule.ruleContent;
+      }
+    }
+  }
+  return '<unknown>';
+}
+
+/**
+ * Best-effort summary of cc's `tool_input` for prompt + IM echo.
+ * Mirrors orchestrator's `inferSensitivePathFromToolInput`.
+ */
+function inferDialogToolInputSummary(input: Record<string, unknown>): string {
+  const filePath = input.file_path;
+  if (typeof filePath === 'string' && filePath.length > 0) return filePath;
+  const path = input.path;
+  if (typeof path === 'string' && path.length > 0) return path;
+  const command = input.command;
+  if (typeof command === 'string' && command.length > 0) return command;
+  return '<unknown path>';
 }
 
 /**

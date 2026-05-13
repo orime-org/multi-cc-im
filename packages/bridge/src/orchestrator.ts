@@ -22,26 +22,35 @@ import {
   readIMWorkFile,
   deletePermissionFileByPath,
   existsIMWorkFile,
+  listPendingPermissionDialogs,
   listPendingPermissionRequests,
   permissionDialogRequestPath,
   permissionDialogResponsePath,
   permissionRequestPath,
   permissionResponsePath,
   readIMOriginFile,
+  readPermissionDialogRequestFile,
   writeIMOriginFile,
   writeIMWorkFile,
   writePermissionDialogResponseFile,
   writePermissionResponseFile,
   parsePermissionFilename,
+  parsePermissionDialogFilename,
 } from '@multi-cc-im/cli-cc';
 import { readdir } from 'node:fs/promises';
 import type {
   AIAskUserQuestionResult,
+  AIPermissionDialogResult,
   AIRoutingOpts,
   AIRoutingResult,
   AskUserQuestionViaAIOpts,
+  PermissionRequestViaAIOpts,
 } from './ai-router.js';
-import { routeAskUserQuestionViaAI, routeViaAI } from './ai-router.js';
+import {
+  routeAskUserQuestionViaAI,
+  routePermissionRequestViaAI,
+  routeViaAI,
+} from './ai-router.js';
 import type { SessionInfo } from './matcher.js';
 import { route, type RouterDispatch, type RouterState, type PaneRegistry } from './router.js';
 import { truncate } from './text.js';
@@ -175,6 +184,16 @@ export interface CreateOrchestratorOpts {
   aiAskUserQuestionRouter?:
     | ((opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
     | null;
+  /**
+   * PermissionRequest AI router callback (DD 2026-05-13 §6 P7). Invoked
+   * when any pending PermissionDialog is waiting for an IM reply.
+   * Default = real `routePermissionRequestViaAI`. Pass `null` to disable
+   * — router's PermissionDialog branch falls back to deny so cc doesn't
+   * stall.
+   */
+  aiPermissionRequestRouter?:
+    | ((opts: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
+    | null;
 }
 
 export interface BridgeOrchestrator {
@@ -231,6 +250,12 @@ export function createOrchestrator(
     opts.aiAskUserQuestionRouter === null
       ? undefined
       : (opts.aiAskUserQuestionRouter ?? routeAskUserQuestionViaAI);
+  const aiPermissionRequestRouter:
+    | ((o: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
+    | undefined =
+    opts.aiPermissionRequestRouter === null
+      ? undefined
+      : (opts.aiPermissionRequestRouter ?? routePermissionRequestViaAI);
 
   // Reaper timers per (paneId, sid, requestId) tuple.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -351,7 +376,15 @@ export function createOrchestrator(
           paneId: p.paneId as unknown as PaneId,
         }));
       },
+      listPendingPermissionDialogs: async () => {
+        const raw = await listPendingPermissionDialogs(opts.stateDir);
+        return raw.map((p) => ({
+          ...p,
+          paneId: p.paneId as unknown as PaneId,
+        }));
+      },
       aiAskUserQuestionRouter,
+      aiPermissionRequestRouter,
     });
 
     // IMWork toggle from /start [auto] /stop
@@ -385,6 +418,14 @@ export function createOrchestrator(
         msg.replyCtx as IMReplyContext,
         result.permissionResponse.reason,
         result.permissionResponse.updatedInput,
+      );
+    }
+
+    if (result.permissionDialogResponse) {
+      await handlePermissionDialogResponseFromIM(
+        result.permissionDialogResponse.session.paneId as unknown as number,
+        result.permissionDialogResponse.answer,
+        msg.replyCtx as IMReplyContext,
       );
     }
 
@@ -601,6 +642,127 @@ export function createOrchestrator(
       } catch (err) {
         onError(err, {
           phase: 'permissionResponseWrite',
+          paneId,
+          sessionId: p.sessionId,
+        });
+      }
+    }
+  }
+
+  // ============================================================================
+  // PermissionDialog response: AI-matched reply to cc PermissionRequest hook
+  // (sensitive-path dialog) — daemon resolves appliedSuggestionIndex into
+  // the pending Request's permission_suggestions[index-1] and writes the
+  // Response. Per [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) §6 P7.
+  // ============================================================================
+
+  async function handlePermissionDialogResponseFromIM(
+    paneId: number,
+    answer: import('@multi-cc-im/shared').PermissionDialogAnswer,
+    replyCtx: IMReplyContext,
+  ): Promise<void> {
+    // Find pending PermissionDialog Request for this paneId. cc serializes
+    // its hooks so we expect 0 or 1 pending.
+    let entries: string[];
+    try {
+      entries = await readdir(opts.stateDir);
+    } catch (err) {
+      onError(err, { phase: 'permissionDialogResponseListDir', paneId });
+      return;
+    }
+    const pending = entries
+      .map((name) => parsePermissionDialogFilename(name))
+      .filter(
+        (
+          x,
+        ): x is NonNullable<ReturnType<typeof parsePermissionDialogFilename>> =>
+          x !== null && x.paneId === paneId && x.kind === 'request',
+      );
+
+    if (pending.length === 0) {
+      // Dead-drop: hook already exited (110s timeout reached + reaper).
+      // User's IM reply arrived too late. Notify so they don't assume
+      // the answer landed; mirror v1.9 AUQ dead-drop pattern.
+      log(
+        `[PermissionDialogResponse pane=${paneId}] dead-drop — hook already exited`,
+      );
+      try {
+        await opts.imAdapter.send(
+          '⏱ cc 已超时，本轮不再等待你的 PermissionDialog 回复（hook 已默认放行，cc 可能弹了 TUI dialog）。',
+          replyCtx,
+        );
+      } catch (err) {
+        onError(err, { phase: 'permissionDialogResponseDeadDropEcho', paneId });
+      }
+      return;
+    }
+
+    for (const p of pending) {
+      // Load the Request to resolve appliedSuggestionIndex (1-based) into
+      // the actual cc PermissionUpdate object the AI router picked from
+      // the suggestions list.
+      let updatedPermissions: unknown[] | undefined;
+      let message: string | undefined;
+      if (answer.behavior === 'allow') {
+        if (answer.appliedSuggestionIndex !== undefined) {
+          const reqPath = permissionDialogRequestPath({
+            stateDir: opts.stateDir,
+            paneId: p.paneId,
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+          });
+          const reqBody = await readPermissionDialogRequestFile(reqPath);
+          if (reqBody) {
+            const idx = answer.appliedSuggestionIndex;
+            const suggestion = reqBody.permissionSuggestions[idx - 1];
+            if (suggestion !== undefined) {
+              updatedPermissions = [suggestion];
+            } else {
+              // Index out of range despite router clamp — defensive log,
+              // proceed as single-yes (no updatedPermissions written).
+              log(
+                `[PermissionDialogResponse pane=${paneId} reqId=${p.requestId}] appliedSuggestionIndex=${idx} out of range (${reqBody.permissionSuggestions.length} suggestions); degrading to single-yes`,
+              );
+            }
+          }
+        }
+      } else {
+        message = answer.message;
+      }
+
+      log(
+        `[PermissionDialogResponse pane=${paneId} sid=${p.sessionId.slice(0, 8)}] ${answer.behavior}${updatedPermissions ? ' +updatedPermissions' : ''}${message ? ` message="${truncate(message, 40)}"` : ''}`,
+      );
+
+      try {
+        if (answer.behavior === 'allow') {
+          await writePermissionDialogResponseFile({
+            stateDir: opts.stateDir,
+            paneId: p.paneId,
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+            decision: {
+              behavior: 'allow',
+              ...(updatedPermissions !== undefined
+                ? { updatedPermissions }
+                : {}),
+            },
+          });
+        } else {
+          await writePermissionDialogResponseFile({
+            stateDir: opts.stateDir,
+            paneId: p.paneId,
+            sessionId: p.sessionId,
+            requestId: p.requestId,
+            decision: {
+              behavior: 'deny',
+              ...(message !== undefined ? { message } : {}),
+            },
+          });
+        }
+      } catch (err) {
+        onError(err, {
+          phase: 'permissionDialogResponseWrite',
           paneId,
           sessionId: p.sessionId,
         });
@@ -937,13 +1099,80 @@ export function createOrchestrator(
       return;
     }
 
-    // IMWork.auto=false → /start off mode. P6+P7 TODO: forward to IM with
-    // permission_suggestions + parse user reply via ai-router + write
-    // Response. For P5, leave silent — hook will timeout-allow at 110s
-    // and cc falls back to TUI dialog (baseline behavior, no regression).
-    log(
-      `[PermissionDialog pane=${paneId}] IMWork.auto=false; P6+P7 forward not yet wired — hook will timeout-allow`,
-    );
+    // IMWork.auto=false → /start off mode (DD 2026-05-13 P7). Format
+    // numbered options from cc's permission_suggestions verbatim per D4
+    // + forward to IM. User's plain reply triggers handlePlainWithAI →
+    // PermissionDialog branch → ai-router → handlePermissionDialogResponseFromIM
+    // which resolves the chosen suggestion + writes the Response file.
+    const body = formatPermissionDialogPrompt({
+      tabName,
+      toolName: p.tool_name,
+      toolInputSummary: pathSummary,
+      permissionSuggestions: p.permission_suggestions ?? [],
+    });
+    try {
+      await opts.imAdapter.send(body, replyCtx);
+    } catch (err) {
+      onError(err, { phase: 'permissionDialogForward', paneId });
+    }
+  }
+
+  /**
+   * Format the IM message shown to the user when cc fires a sensitive-
+   * path PermissionRequest dialog in /start off mode. Mirrors v1.9 AUQ
+   * P3 D3 numbered-options style; uses cc's `permission_suggestions`
+   * verbatim (option labels = cc's own `rules[0].ruleContent`).
+   */
+  function formatPermissionDialogPrompt(o: {
+    tabName: string;
+    toolName: string;
+    toolInputSummary: string;
+    permissionSuggestions: readonly unknown[];
+  }): string {
+    const lines: string[] = [
+      `[${o.tabName}] cc 想编辑敏感路径:`,
+      `  ${o.toolName}: ${truncate(o.toolInputSummary, 80)}`,
+      '',
+      '  1. 同意一次（仅本次调用）',
+    ];
+    // Indices 2..N+1 are "always allow <suggestion>" entries.
+    o.permissionSuggestions.forEach((s, i) => {
+      const label = inferSuggestionLabel(s);
+      lines.push(`  ${i + 2}. 始终允许: ${truncate(label, 80)}`);
+    });
+    if (o.permissionSuggestions.length === 0) {
+      lines.push('  （cc 没给 always-allow 建议；只能回 1 或 N 拒绝）');
+    }
+    lines.push(`  ${o.permissionSuggestions.length + 2}. 拒绝`);
+    lines.push('');
+    lines.push('请回复（数字 / 自然语言均可）');
+    return lines.join('\n');
+  }
+
+  /**
+   * Extract a human-readable label from one cc `permission_suggestions`
+   * entry (PermissionUpdate). Mirrors `summarizePermissionSuggestion`
+   * in ai-router (kept in two places so router + orchestrator stay
+   * independent — both are small).
+   */
+  function inferSuggestionLabel(s: unknown): string {
+    if (typeof s !== 'object' || s === null) return '<unknown>';
+    const sug = s as Record<string, unknown>;
+    if (Array.isArray(sug.rules) && sug.rules.length > 0) {
+      const first = sug.rules[0];
+      if (typeof first === 'object' && first !== null) {
+        const rule = first as Record<string, unknown>;
+        if (
+          typeof rule.ruleContent === 'string' &&
+          rule.ruleContent.length > 0
+        ) {
+          return rule.ruleContent;
+        }
+      }
+    }
+    const t = typeof sug.type === 'string' ? sug.type : '?';
+    const d = typeof sug.destination === 'string' ? sug.destination : '?';
+    return `${t}/${d}`;
   }
 
   /**

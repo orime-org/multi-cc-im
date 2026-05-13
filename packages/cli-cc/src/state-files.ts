@@ -727,6 +727,82 @@ export async function listPermissionDialogResponseFiles(
     .map((name) => join(opts.stateDir, name));
 }
 
+/**
+ * One pending PermissionDialog (cc PermissionRequest hook event) awaiting
+ * IM-side decision. Returned by `listPendingPermissionDialogs`. Combines
+ * parsed-filename metadata (paneId / sessionId / requestId) with the
+ * Request body fields so router can map the IM reply back to the
+ * correct cc session and resolve `appliedSuggestionIndex` into the
+ * actual cc PermissionUpdate from `permissionSuggestions[]`.
+ */
+export interface PendingPermissionDialog {
+  paneId: number;
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  permissionSuggestions: readonly unknown[];
+  createdAt: number;
+}
+
+/**
+ * Scan `<stateDir>` for all `<paneId>_<sid>.PermissionDialogRequest.<id>.json`
+ * files that don't yet have a matching `.PermissionDialogResponse.<id>.json`
+ * sibling — i.e. cc PermissionRequest dialogs still waiting for the IM
+ * user to decide.
+ *
+ * Used by router's plain-message AI path (DD §6 P7): daemon enumerates
+ * pending dialogs before forwarding a plain IM message to cc-triage so
+ * the AI can recognize the message as a permission dialog reply rather
+ * than a routing request.
+ *
+ * Returns the list sorted by `createdAt` ascending. ENOENT on the
+ * state dir resolves to `[]`.
+ */
+export async function listPendingPermissionDialogs(
+  stateDir: string,
+): Promise<PendingPermissionDialog[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(stateDir);
+  } catch (err) {
+    if (isENOENT(err)) return [];
+    throw err;
+  }
+
+  const responseKeys = new Set<string>();
+  for (const name of entries) {
+    const parsed = parsePermissionDialogFilename(name);
+    if (parsed && parsed.kind === 'response') {
+      responseKeys.add(
+        `${parsed.paneId}_${parsed.sessionId}.${parsed.requestId}`,
+      );
+    }
+  }
+
+  const pending: PendingPermissionDialog[] = [];
+  for (const name of entries) {
+    const parsed = parsePermissionDialogFilename(name);
+    if (!parsed || parsed.kind !== 'request') continue;
+    const key = `${parsed.paneId}_${parsed.sessionId}.${parsed.requestId}`;
+    if (responseKeys.has(key)) continue;
+    const body = await readPermissionDialogRequestFile(join(stateDir, name));
+    if (body === null) continue;
+    pending.push({
+      paneId: parsed.paneId,
+      sessionId: parsed.sessionId,
+      requestId: parsed.requestId,
+      toolName: body.toolName,
+      toolInput: body.toolInput,
+      permissionSuggestions: body.permissionSuggestions,
+      createdAt: body.createdAt,
+    });
+  }
+
+  pending.sort((a, b) => a.createdAt - b.createdAt);
+  return pending;
+}
+
 // ============================================================================
 // IMWork: global IM-mode flag — file exists ⇔ user is in IM mode (manual
 // switch via bare `/start [off]` / `/stop`.
