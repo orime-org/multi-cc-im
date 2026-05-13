@@ -25,8 +25,12 @@ import {
  * PTY parsing + state-pollution mitigation + hang detection. `claude --print`
  * is one-shot by design — perfect fit for our triage call.
  *
- * **Latency**: ~2-3s per call (cc cold start + haiku inference). Acceptable
- * in IM context (user expects seconds not ms).
+ * **Latency**: ~3-6s per call (cc cold start + Sonnet 4.6 inference).
+ * Slower than Haiku 4.5 (~2-3s) — trade-off accepted per 2026-05-13:
+ * Haiku was fragile on complex multi-sentence + multi-topic messages
+ * (failed to strip routing cues / rewrite 3rd-person pronouns); Sonnet
+ * 4.6's stronger instruction-following is worth the extra 1-3s.
+ * Acceptable in IM context (user expects seconds not ms).
  */
 
 const execFileAsync = promisify(execFile);
@@ -102,8 +106,11 @@ export interface AIRoutingOpts {
    */
   claudeBinary?: string;
   /**
-   * Model to spawn cc with. Default: `'claude-haiku-4-5'` (fast + cheap).
-   * Override only for testing or if user wants higher-quality routing.
+   * Model to spawn cc with. Default: `'claude-sonnet-4-6'` (per 2026-05-13
+   * swap from Haiku 4.5 — Haiku misread routing cues in complex
+   * multi-sentence messages, Sonnet's instruction-following is the
+   * trade-off worth the ~1-3s extra latency).
+   * Override only for testing or if user wants different quality/latency.
    */
   model?: string;
   /** Spawn timeout in ms. Default 15s. */
@@ -131,14 +138,23 @@ export interface AIRoutingResult {
 
 /**
  * Default subprocess timeout. Bumped from 15s → 30s per user smoke
- * 2026-05-11: cc cold-start (≈2-5 s) + Haiku inference (≈2-10 s) + a
- * 10-tab routing prompt can easily push past 15 s on a slow network,
- * leading to SIGTERM-kill (exit 143) of an otherwise-valid request.
- * 30 s gives generous headroom; if it's still hitting timeout, the
- * reason text now distinguishes timeout from other exit modes.
+ * 2026-05-11: cc cold-start (≈2-5 s) + Sonnet 4.6 inference (≈3-8 s,
+ * up from Haiku's ≈2-10 s ceiling — Sonnet is slightly faster on
+ * inference but slower on first-token; net latency similar) + a 10-tab
+ * routing prompt can easily push past 15 s on a slow network, leading
+ * to SIGTERM-kill (exit 143) of an otherwise-valid request. 30 s gives
+ * generous headroom; if it's still hitting timeout, the reason text
+ * now distinguishes timeout from other exit modes.
  */
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_MODEL = 'claude-haiku-4-5';
+/**
+ * Default cc model used for IM-routing triage. Per 2026-05-13 swap:
+ * Sonnet 4.6 replaces Haiku 4.5 because Haiku was fragile on complex
+ * multi-sentence + multi-topic messages (failed to strip routing cues
+ * / rewrite 3rd-person pronouns). Exported so tests can verify the
+ * default without spawning the actual cc binary.
+ */
+export const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_CLAUDE_BINARY = 'claude';
 
 /**
@@ -369,7 +385,38 @@ Example D (no meta-instructions — passthrough with pronoun rewrite):
           meta="他自己决定怎么清" → "你自己决定怎么清"
   intent: "把那个旧的 cache 清一下，你自己决定怎么清。"
   target: "backend"
+
+Example E (real case 2026-05-13 — multi-sentence with discourse marker
+"那" + 3rd-person pronoun mid-body):
+  User:   "那你跟 work temp 说，那个文件位置就不用动了，那个原理我都
+           清楚了。然后现在来讲的话，就是已经改完了吧？他改完的话，
+           然后怎么测试？"
+  Split:  routing="那你跟 work temp 说" (含 conversational marker "那"; STRIP)
+          body="那个文件位置就不用动了，那个原理我都清楚了。然后现在来
+                讲的话，就是已经改完了吧？他改完的话，然后怎么测试？"
+          pronoun rewrite: "他改完的话" → "你改完的话"
+          (no separable meta — every sentence is task content)
+  intent: "那个文件位置就不用动了，那个原理我都清楚了。然后现在来讲的
+           话，就是已经改完了吧？你改完的话，然后怎么测试？"
+  target: "work_temp"
+
+  KEY POINT: even when the message is 4 sentences across multiple
+  topics, the routing-cue strip + 3rd→2nd pronoun rewrite STILL apply.
+  Conversational starters like "那" / "OK" / "好" / "那么" / "Then" /
+  "So" before the routing cue are part of the routing cue — STRIP
+  them too.
 ------------------------------------------------------------------
+
+LENGTH IS NOT AN EXCUSE — even if the message is 4+ sentences or
+contains multiple topics, you MUST still:
+  (a) strip the routing cue at the start (incl. conversational
+      starters like "那" / "OK" / "好" / "那么" / "Then" / "So")
+  (b) rewrite 3rd-person pronouns about cc into 2nd-person
+      addressed AT cc
+
+Do NOT pass the user's verbatim message through just because it's
+long or complex — the routing cue and pronoun rewrites apply
+regardless of message length.
 
 If you cannot distinguish (2) from (3), default to keeping the segment
 as TASK BODY — extra wording is better than dropped intent. Likewise if
@@ -617,7 +664,7 @@ function formatToolInputForPrompt(input: Record<string, unknown>): string {
  *
  * Flags (per DD #73 §6.4):
  * - `--print`                    — headless one-shot (no TUI)
- * - `--model claude-haiku-4-5`   — fastest/cheapest model
+ * - `--model claude-sonnet-4-6`  — Sonnet 4.6 for robust instruction-following
  * - `--output-format json`       — structured cc envelope around our inner JSON
  * - `--permission-mode bypassPermissions` — no tool prompts (we don't call tools)
  * - `--disable-slash-commands`   — skip skills/commands loading

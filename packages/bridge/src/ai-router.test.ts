@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  DEFAULT_MODEL,
   buildClaudeArgs,
   explainExecError,
   parseAskUserQuestionOutput,
@@ -319,6 +320,49 @@ describe('ai-router — renderRoutingPrompt', () => {
       expect(out).toMatch(/no\.js|nojs/);
       expect(out).toMatch(/work tamp|walk temp/);
     });
+
+    it('INTENT EXTRACTION includes Example E (multi-sentence work_temp real case 2026-05-13)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['work_temp'],
+        currentTab: null,
+      });
+      // Anchor: the exact 4-sentence user case where AI verbatim-forwarded
+      // the routing cue ("那你跟 work temp 说") + 3rd-person pronoun
+      // ("他改完的话") instead of stripping/rewriting.
+      expect(out).toMatch(/Example E/);
+      expect(out).toMatch(/那你跟 work temp 说/);
+      expect(out).toMatch(/他改完的话/);
+      expect(out).toMatch(/你改完的话/);
+      expect(out).toMatch(/discourse marker|conversational marker/i);
+    });
+
+    it('INTENT EXTRACTION has a LENGTH IS NOT AN EXCUSE directive', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // Explicit directive: even on long / multi-topic messages, the
+      // routing-cue strip and 3rd→2nd pronoun rewrite still apply.
+      expect(out).toMatch(/LENGTH IS NOT AN EXCUSE/);
+      expect(out).toContain('Do NOT pass');
+      expect(out).toContain('verbatim message through');
+      expect(out).toMatch(/long or complex|message length/);
+    });
+
+    it('lists conversational starters (那 / OK / 好 / 那么 / Then / So) as part of routing cues to strip', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['frontend'],
+        currentTab: null,
+      });
+      // 2026-05-13 case had "那你跟 work temp 说" — the "那" prefix is
+      // a discourse marker that's part of the routing cue, not body.
+      expect(out).toContain('那');
+      expect(out).toMatch(/那么|Then|So/);
+      expect(out).toMatch(/conversational starters|discourse marker/i);
+    });
   });
 
   // P2 — natural-language permission reply (DD 2026-05-11)
@@ -545,6 +589,16 @@ describe('ai-router — renderRoutingPrompt', () => {
 // ============================================================================
 // buildClaudeArgs — flag layout
 // ============================================================================
+
+describe('ai-router — DEFAULT_MODEL', () => {
+  it('DEFAULT_MODEL is claude-sonnet-4-6 (2026-05-13 swap from Haiku 4.5)', () => {
+    // Sonnet 4.6 replaces Haiku 4.5 — Haiku was fragile on complex
+    // multi-sentence + multi-topic messages (failed to strip routing
+    // cues / rewrite 3rd-person pronouns). Sonnet's instruction-
+    // following is worth the ~1-3s extra latency.
+    expect(DEFAULT_MODEL).toBe('claude-sonnet-4-6');
+  });
+});
 
 describe('ai-router — buildClaudeArgs', () => {
   it('puts --print first and prompt last', () => {
