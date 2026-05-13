@@ -1,4 +1,0 @@
-v1.12 PermissionRequest hook IM bridge smoke test — round 3.
-/start off mode active (IMWork.auto=false). Triggering sensitive
-gate again so user can observe the IM forward + reply in time +
-verify Response file writes with the user's chosen decision.
