@@ -1,4 +1,7 @@
 import { defineConfig } from 'tsup';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Bundle `apps/multi-cc-im/src/cli.ts` → `dist/cli.js` for fast startup
@@ -61,4 +64,25 @@ export default defineConfig({
   // shims: __filename / __dirname / require ESM-CJS interop helpers (still
   // needed by a handful of deps, e.g. some-cjs using module.createRequire).
   shims: true,
+  // Copy the iTerm2 Python helper script next to the bundled cli.js so
+  // the daemon can resolve it at runtime via `import.meta.url`. Per
+  // [DD: iTerm2 adapter](../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+  // the helper is a sibling Python program the term-iterm2 adapter
+  // spawns once per call. tsup inlines TypeScript / JS but leaves the
+  // `.py` file untouched — we must copy it ourselves.
+  //
+  // Function form (not string command) because tsup mangles `..` in
+  // string commands. Function callback resolves paths relative to the
+  // config file's own location via `import.meta.url`, independent of
+  // tsup's runtime cwd.
+  onSuccess: async () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = resolve(
+      here,
+      '../../packages/term-iterm2/bin/iterm2-helper.py',
+    );
+    const dest = resolve(here, 'dist/iterm2-helper.py');
+    await mkdir(dirname(dest), { recursive: true });
+    await copyFile(src, dest);
+  },
 });

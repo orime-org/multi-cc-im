@@ -3,7 +3,11 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IMAdapter } from '@multi-cc-im/shared';
-import { runStartCommand } from './start.js';
+import {
+  defaultResolvePython3,
+  resolveIterm2HelperPath,
+  runStartCommand,
+} from './start.js';
 import type { AdapterRegistryEntry } from './adapters.js';
 import type { SelectAdapterResult } from './adapter-selector.js';
 
@@ -399,5 +403,34 @@ describe('runStartCommand — default orchestrator branch wires entry.buildAdapt
     expect(typeof passed.paths.credentialFor).toBe('function');
     expect(typeof passed.log).toBe('function');
     await result.shutdown!();
+  });
+});
+
+describe('defaultResolvePython3 (P3)', () => {
+  it('returns an absolute executable python3 path when one is on the system', async () => {
+    // CI runners + macOS dev machines all have python3. Smoke check only —
+    // discovery logic is covered by
+    // `packages/term-iterm2/src/path-resolver.test.ts`.
+    const result = await defaultResolvePython3();
+    expect(result).toMatch(/python3$/);
+  });
+
+  it('uses the cached path when it is still executable', async () => {
+    const realPython = await defaultResolvePython3();
+    const result = await defaultResolvePython3(realPython);
+    expect(result).toBe(realPython);
+  });
+});
+
+describe('resolveIterm2HelperPath (P3)', () => {
+  it('resolves to a readable iterm2-helper.py via either bundled or dev-tree location', async () => {
+    // Under vitest, `import.meta.url` points at
+    // `apps/multi-cc-im/src/start.ts`; the dev-tree branch finds
+    // `packages/term-iterm2/bin/iterm2-helper.py`. After
+    // `pnpm --filter multi-cc-im build`, the bundled branch finds
+    // `dist/iterm2-helper.py`. Either way the function must return
+    // without throwing.
+    const path = await resolveIterm2HelperPath();
+    expect(path).toMatch(/iterm2-helper\.py$/);
   });
 });

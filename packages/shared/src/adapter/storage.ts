@@ -59,10 +59,23 @@ export const ACLConfigSchema = z.object({
 });
 export type ACLConfig = z.infer<typeof ACLConfigSchema>;
 
-/** Schema for `[wezterm]` etc. — cached external CLI absolute paths (architecture.md). */
+/**
+ * Schema for cached external CLI / interpreter absolute paths (per
+ * architecture.md "External CLI tool path strategy"). Each field is the
+ * resolved absolute path written back to `config.toml` after the first
+ * successful startup discovery — subsequent starts hit the cache first
+ * and only re-discover if the cached path is stale.
+ *
+ * - `wezterm`: WezTerm CLI binary (when user's terminal adapter is wezterm)
+ * - `claude`: cc CLI binary (for daemon-spawned AI dispatch subprocesses)
+ * - `python3`: Python 3 interpreter (when user's terminal adapter is
+ *   iterm2 — daemon spawns it once per call to run `iterm2-helper.py`).
+ *   Per [DD: iTerm2 adapter](../../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md).
+ */
 export const ExternalPathsSchema = z.object({
   wezterm: z.string().optional(),
   claude: z.string().optional(),
+  python3: z.string().optional(),
 });
 export type ExternalPaths = z.infer<typeof ExternalPathsSchema>;
 

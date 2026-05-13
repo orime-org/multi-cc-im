@@ -42,8 +42,29 @@ describe('ExternalPathsSchema', () => {
     expect(ExternalPathsSchema.parse(valid)).toEqual(valid);
   });
 
+  it('accepts python3 path (iTerm2 adapter prerequisite)', () => {
+    // Per [DD: iTerm2 adapter](../../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+    // when user picks iterm2 the daemon caches `python3` binary path so
+    // every hook subprocess re-uses it without rediscovery.
+    const valid = { python3: '/opt/homebrew/bin/python3' };
+    expect(ExternalPathsSchema.parse(valid)).toEqual(valid);
+  });
+
+  it('accepts all three paths together', () => {
+    const valid = {
+      wezterm: '/opt/homebrew/bin/wezterm',
+      claude: '/Users/x/.local/bin/claude',
+      python3: '/opt/homebrew/bin/python3',
+    };
+    expect(ExternalPathsSchema.parse(valid)).toEqual(valid);
+  });
+
   it('rejects non-string wezterm value', () => {
     expect(ExternalPathsSchema.safeParse({ wezterm: 42 }).success).toBe(false);
+  });
+
+  it('rejects non-string python3 value', () => {
+    expect(ExternalPathsSchema.safeParse({ python3: 42 }).success).toBe(false);
   });
 });
 
