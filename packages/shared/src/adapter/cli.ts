@@ -88,9 +88,10 @@ export interface HookDecision {
  * Handler an CLIAdapter pushes hook events into. The bridge implements this
  * to wire cc → router → IM.
  *
- * Per [DD: pane-keyed state files](../../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md),
- * multi-cc-im subscribes to **only 2 hook events**: `PreToolUse` and `Stop`.
- * SessionStart / SessionEnd were dropped because daemon now uses
+ * Per [DD: pane-keyed state files](../../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+ * + [DD: PermissionRequest hook IM bridge](../../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md),
+ * multi-cc-im subscribes to **3 hook events**: `PreToolUse`, `PermissionRequest`,
+ * and `Stop`. SessionStart / SessionEnd were dropped because daemon now uses
  * `wezterm cli list` as the live source of truth for "which panes have cc"
  * and trusts user-side knowledge from the IM `/start` listing for cc
  * lifecycle.
@@ -108,6 +109,19 @@ export interface Handler {
    */
   onPreToolUse(
     p: PreToolUsePayload & { requestId: string; paneId: number },
+  ): Promise<void>;
+  /**
+   * On PermissionRequest: adapter sees fresh
+   * `<paneId>_<sid>.PermissionDialogRequest.<id>.json` land in state/.
+   * Daemon's handler decides per IMWork mode whether to silent-allow
+   * (auto) or forward to IM (off), then writes a matching
+   * `PermissionDialogResponse` file. Optional because not every CLIHandler
+   * impl wires it (tests / minimal adapters may skip).
+   *
+   * Per [DD: PermissionRequest hook IM bridge](../../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md).
+   */
+  onPermissionDialog?(
+    p: PermissionRequestPayload & { requestId: string; paneId: number },
   ): Promise<void>;
   /**
    * On Stop, the handler may return a `HookDecision` to inject a follow-up

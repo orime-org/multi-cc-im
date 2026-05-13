@@ -4,6 +4,7 @@ import type {
   CLIAdapter,
   CLIHandler,
   CwdAbs,
+  PermissionRequestPayload,
   PreToolUsePayload,
   SessionId,
   StopPayload,
@@ -12,8 +13,10 @@ import type {
 import { enqueueInjection } from './injection-queue.js';
 import {
   deleteStopFile,
+  parsePermissionDialogFilename,
   parsePermissionFilename,
   parseStopFilename,
+  readPermissionDialogRequestFile,
   readPermissionRequestFile,
   readStopFile,
 } from './state-files.js';
@@ -33,7 +36,7 @@ export interface CreateCcCliAdapterOpts {
   onHandlerError?: (
     err: unknown,
     context: {
-      kind: 'PreToolUse' | 'Stop';
+      kind: 'PreToolUse' | 'PermissionDialog' | 'Stop';
       paneId: number;
       sessionId: string;
     },
@@ -55,19 +58,33 @@ interface ClassifiedPreToolUseFile {
   filePath: string;
 }
 
-type ClassifiedFile = ClassifiedStopFile | ClassifiedPreToolUseFile;
+interface ClassifiedPermissionDialogFile {
+  kind: 'PermissionDialog';
+  paneId: number;
+  sessionId: string;
+  requestId: string;
+  filePath: string;
+}
+
+type ClassifiedFile =
+  | ClassifiedStopFile
+  | ClassifiedPreToolUseFile
+  | ClassifiedPermissionDialogFile;
 
 /**
  * Classify a state-dir basename. Returns null for any file that's not a
  * cc-hook-fired event we route on (i.e. ignores `<paneId>.IMOrigin` /
  * `IMWork` / `daemon.pid` / IM-adapter-owned top-level files like
- * `lark-cursor` / `<paneId>_<sid>.PermissionResponse.*` — the daemon
- * writes Response, hook reads it; daemon does not dispatch Response
- * chokidar events to handlers).
+ * `lark-cursor` / `<paneId>_<sid>.PermissionResponse.*` /
+ * `<paneId>_<sid>.PermissionDialogResponse.*` — the daemon writes
+ * Responses, hook reads them; daemon does not dispatch Response chokidar
+ * events to handlers).
  *
- * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md):
- *   - `<paneId>_<sid>.Stop.<ts>`                    → ClassifiedStopFile
- *   - `<paneId>_<sid>.PermissionRequest.<id>.json`  → ClassifiedPreToolUseFile
+ * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
+ * + [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
+ *   - `<paneId>_<sid>.Stop.<ts>`                          → ClassifiedStopFile
+ *   - `<paneId>_<sid>.PermissionRequest.<id>.json`        → ClassifiedPreToolUseFile
+ *   - `<paneId>_<sid>.PermissionDialogRequest.<id>.json`  → ClassifiedPermissionDialogFile
  */
 function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFile | null {
   const stop = parseStopFilename(fileBasename);
@@ -76,6 +93,21 @@ function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFi
       kind: 'Stop',
       paneId: stop.paneId,
       sessionId: stop.sessionId,
+      filePath,
+    };
+  }
+  // Try PermissionDialog FIRST — the regex for it is more specific than
+  // the older PermissionRequest match (which would otherwise greedily
+  // accept "PermissionDialogRequest" too via its broader pattern). The
+  // parsers' regexes already disambiguate, but the order keeps it
+  // explicit + immune to a future parser tweak.
+  const permDialog = parsePermissionDialogFilename(fileBasename);
+  if (permDialog && permDialog.kind === 'request') {
+    return {
+      kind: 'PermissionDialog',
+      paneId: permDialog.paneId,
+      sessionId: permDialog.sessionId,
+      requestId: permDialog.requestId,
       filePath,
     };
   }
@@ -254,6 +286,30 @@ async function dispatchOne(
         paneId: classified.paneId,
       };
       await handler.onPreToolUse(payload);
+      // Daemon does NOT unlink — hook subprocess polls Response then
+      // cleans both Request and Response itself.
+      return;
+    }
+
+    case 'PermissionDialog': {
+      const file = await readPermissionDialogRequestFile(classified.filePath);
+      if (!file) return; // ENOENT — file already cleaned up
+      if (!handler.onPermissionDialog) return; // handler doesn't subscribe
+      const payload: PermissionRequestPayload & {
+        requestId: string;
+        paneId: number;
+      } = {
+        session_id: classified.sessionId as unknown as SessionId,
+        transcript_path: '' as unknown as TranscriptPath,
+        cwd: '' as unknown as CwdAbs,
+        hook_event_name: 'PermissionRequest',
+        tool_name: file.toolName,
+        tool_input: file.toolInput,
+        permission_suggestions: file.permissionSuggestions,
+        requestId: file.requestId,
+        paneId: classified.paneId,
+      };
+      await handler.onPermissionDialog(payload);
       // Daemon does NOT unlink — hook subprocess polls Response then
       // cleans both Request and Response itself.
       return;
