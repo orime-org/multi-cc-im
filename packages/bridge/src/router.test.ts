@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { IncomingMessage, PaneId } from '@multi-cc-im/shared';
 import type { SessionInfo } from './matcher.js';
-import { route, type PaneRegistry, type RouterState } from './router.js';
+import {
+  route,
+  type PaneRegistry,
+  type RouterOpts,
+  type RouterState,
+} from './router.js';
 
 // ============================================================================
 // Test helpers
@@ -52,7 +57,7 @@ function incoming(text: string): IncomingMessage {
  */
 async function routeOn(
   msg: IncomingMessage,
-  opts: { registry: PaneRegistry; state: RouterState },
+  opts: Omit<RouterOpts, 'imWorkOn'>,
 ) {
   return route(msg, { ...opts, imWorkOn: true });
 }
