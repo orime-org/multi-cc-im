@@ -1,7 +1,7 @@
 # DD: PermissionRequest hook IM bridge (cc sensitive-file dialog → IM 双向)
 
 **Date**: 2026-05-13
-**Status**: 🟡 DRAFT — pending user lock on D1-D9
+**Status**: ✅ LOCKED 2026-05-13 — all 9 dimensions user-locked
 
 ---
 
@@ -190,17 +190,17 @@ Combined behavior:
 
 | Dim | Choice | Status |
 |---|---|---|
-| D1 | A — subscribe all PermissionRequest events | ⏳ pending user lock |
+| D1 | A — subscribe all PermissionRequest events | ✅ accepted 2026-05-13 |
 | D2 | A — `/start auto` silent emit single-yes | ✅ accepted 2026-05-13 |
-| D3 | A — `/start off` forward IM with permission_suggestions | ⏳ pending user lock |
-| D4 | numbered options + cc's suggestion text verbatim | ⏳ pending user lock |
+| D3 | A — `/start off` forward IM with permission_suggestions | ✅ accepted 2026-05-13 |
+| D4 | numbered options + cc's suggestion text verbatim | ✅ accepted 2026-05-13 |
 | D5 | B — `/start auto` IM audit log notification | ✅ accepted 2026-05-13 |
-| D6 | A — no IM override to "always" (only from `permission_suggestions`) | ⏳ pending user lock |
+| D6 | A — no IM override to "always" (only from `permission_suggestions`) | ✅ accepted 2026-05-13 |
 | D7 | Protocol fact (no candidate) | — |
-| D8 | 110 s internal / 120 s cc-side / mirror AUQ | ⏳ pending user lock |
-| D9 | Assume only-hook, document multi-hook caveat | ⏳ pending user lock |
+| D8 | 110 s internal / 120 s cc-side / mirror AUQ | ✅ accepted 2026-05-13 |
+| D9 | Assume only-hook, document multi-hook caveat | ✅ accepted 2026-05-13 |
 
-DD enters **LOCKED** state when all rows above are ✅.
+DD is **LOCKED** 2026-05-13. P1-P9 implementation begins.
 
 ---
 
@@ -234,7 +234,8 @@ Each milestone = one PR (mirrors v1.7 / v1.9 cadence). Total ~6-8 PRs.
 
 ## 8. Review log
 
-- **2026-05-13 (a)** — DD drafted after live `.claude/hooks` edit hangs IM mode. Two prior agent verification runs confirmed cc 2.1.88 protocol (PermissionRequest hook accepts `updatedPermissions`, only `'session'` destination bypasses sensitive gate, hook fires after all gates and before TUI dialog). User locked D2-A + D5-B in same conversation. D1 / D3 / D4 / D6 / D8 / D9 pending lock.
+- **2026-05-13 (a)** — DD drafted after live `.claude/hooks` edit hangs IM mode. Two prior agent verification runs confirmed cc 2.1.88 protocol (PermissionRequest hook accepts `updatedPermissions`, only `'session'` destination bypasses sensitive gate, hook fires after all gates and before TUI dialog). User locked D2-A + D5-B in same conversation. D1 / D3 / D4 / D6 / D8 / D9 pending lock. Doc merged via PR #148.
+- **2026-05-13 (b)** — All remaining 6 dimensions user-locked as "全 A" (= accept all recommendations in §3): D1-A, D3-A, D4 (numbered + cc's suggestion text verbatim), D6-A, D8 (110s/120s mirror AUQ), D9 (assume only-hook + README documentation). DD status flipped to ✅ LOCKED. P1-P9 implementation begins.
 
 ---
 
