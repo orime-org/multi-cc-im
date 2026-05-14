@@ -60,6 +60,24 @@ export const ACLConfigSchema = z.object({
 export type ACLConfig = z.infer<typeof ACLConfigSchema>;
 
 /**
+ * Schema for `[terminal]` — which terminal multiplexer adapter is active.
+ *
+ * Per [DD: iTerm2 adapter](../../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+ * `multi-cc-im start` interactive wizard asks the user once; the choice
+ * is persisted here so future starts skip the prompt and go straight to
+ * adapter construction. Default `wezterm` for backward compatibility —
+ * any config.toml predating iterm2 support is interpreted as
+ * `type = "wezterm"` automatically.
+ */
+export const TerminalIdSchema = z.enum(['wezterm', 'iterm2']);
+export type TerminalId = z.infer<typeof TerminalIdSchema>;
+
+export const TerminalConfigSchema = z.object({
+  type: TerminalIdSchema.default('wezterm'),
+});
+export type TerminalConfig = z.infer<typeof TerminalConfigSchema>;
+
+/**
  * Schema for cached external CLI / interpreter absolute paths (per
  * architecture.md "External CLI tool path strategy"). Each field is the
  * resolved absolute path written back to `config.toml` after the first
@@ -86,6 +104,7 @@ export type ExternalPaths = z.infer<typeof ExternalPathsSchema>;
 export const ConfigSchema = z.object({
   acl: ACLConfigSchema.default({ owners: [] }),
   external_paths: ExternalPathsSchema.default({}),
+  terminal: TerminalConfigSchema.default({ type: 'wezterm' }),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

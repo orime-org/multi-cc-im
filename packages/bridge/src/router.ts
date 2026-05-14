@@ -108,6 +108,18 @@ export interface RouterOpts {
    */
   imWorkAuto?: boolean;
   /**
+   * Active terminal-adapter id (`'wezterm'` or `'iterm2'`) at the moment
+   * of routing. Surfaced in the `/start` echo as `✓ terminal: <id>` so
+   * IM users can verify which adapter the daemon picked at startup.
+   *
+   * Per [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+   * user requested this confirmation line because the term selection
+   * happens once at daemon start and is otherwise invisible from the
+   * IM side. When omitted, the line is suppressed (backward compatible
+   * with tests pre-dating the iterm2 adapter).
+   */
+  terminalId?: 'wezterm' | 'iterm2';
+  /**
    * AI-routed dispatch callback for plain (no-mention) messages. Per
    * [DD: AI-routed IM dispatch](../../../docs/superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md):
    * orchestrator wires this to spawn a `claude --print` subprocess that
@@ -355,6 +367,7 @@ export async function route(
         opts.state,
         imWorkOn,
         imWorkAuto,
+        opts.terminalId,
       );
 
     case 'broadcast':
@@ -1337,6 +1350,7 @@ function handleBridgeCommand(
   state: RouterState,
   imWorkOn: boolean,
   imWorkAuto: boolean,
+  terminalId: 'wezterm' | 'iterm2' | undefined,
 ): RouterResult {
   switch (command) {
     case 'list':
@@ -1413,6 +1427,7 @@ function handleBridgeCommand(
       return {
         echo: [
           headerLine,
+          ...(terminalId ? [`✓ terminal: ${terminalId}`] : []),
           '',
           ...formatSessionInventory(sessions),
           ...formatNumericTabWarning(sessions),

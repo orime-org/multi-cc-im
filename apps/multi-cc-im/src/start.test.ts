@@ -56,6 +56,19 @@ function stubSelectAdapter(
   return async () => ({ status: 'configured', adapter: entry });
 }
 
+/**
+ * Default stub for the P4 terminal-adapter wizard step. Returns
+ * `{status: 'configured', id: 'wezterm'}` so the existing daemon-side
+ * tests stay on the wezterm path they were written for. Tests
+ * specifically exercising the iterm2 branch pass their own override.
+ */
+function stubSelectTerminal(
+  id: 'wezterm' | 'iterm2' = 'wezterm',
+  python3?: string,
+) {
+  return async () => ({ status: 'configured' as const, id, python3 });
+}
+
 describe('runStartCommand — pre-flight failures', () => {
   let root: string;
 
@@ -75,6 +88,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/nonexistent/wezterm',
       selectAdapter: async () => ({
         status: 'error',
@@ -94,6 +108,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/nonexistent/wezterm',
       selectAdapter: async () => ({ status: 'cancelled' }),
       log: () => {},
@@ -107,6 +122,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => {
         throw new Error('wezterm CLI not found. Install via: brew install --cask wezterm');
       },
@@ -123,6 +139,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: startSpy, stop: stopSpy }),
       selectAdapter: stubSelectAdapter(),
@@ -140,6 +157,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -172,6 +190,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -205,6 +224,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -228,6 +248,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -253,6 +274,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -278,6 +300,7 @@ describe('runStartCommand — pre-flight failures', () => {
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -310,6 +333,7 @@ describe('runStartCommand — auto setup-hooks', () => {
     const result = await runStartCommand({
       root,
       setupHooks: setupSpy,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: startSpy, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -327,6 +351,7 @@ describe('runStartCommand — auto setup-hooks', () => {
       skipSetupHooks: true,
       root,
       setupHooks: setupSpy,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -346,6 +371,7 @@ describe('runStartCommand — auto setup-hooks', () => {
     const result = await runStartCommand({
       root,
       setupHooks: setupSpy,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       buildOrchestrator: () => ({ start: startSpy, stop: async () => {} }),
       selectAdapter: stubSelectAdapter(),
@@ -392,6 +418,7 @@ describe('runStartCommand — default orchestrator branch wires entry.buildAdapt
     const result = await runStartCommand({
       skipSetupHooks: true,
       root,
+      selectTerminal: stubSelectTerminal(),
       resolveWezTerm: async () => '/usr/local/bin/wezterm',
       selectAdapter: stubSelectAdapter(entry),
       log: () => {},

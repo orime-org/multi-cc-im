@@ -357,6 +357,10 @@ export function createOrchestrator(
       state: opts.state,
       imWorkOn,
       imWorkAuto,
+      // Surface the active terminal adapter name in `/start` echoes so IM
+      // users can verify the daemon picked the right one. Per
+      // [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md).
+      terminalId: opts.termAdapter.name === 'iterm2' ? 'iterm2' : 'wezterm',
       aiRouter,
       // Bound to this orchestrator's stateDir so the router can enumerate
       // pending PreToolUse approvals when deciding whether to treat the

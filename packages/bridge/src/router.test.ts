@@ -417,6 +417,44 @@ describe('router — bridge commands (bare /<command>)', () => {
     expect(result.echo).toContain('/help');
   });
 
+  it('/start echo includes "term: wezterm" when terminalId is wezterm', async () => {
+    // Per [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+    // IM users want a confirmation line that surfaces which terminal the
+    // daemon picked at startup (which otherwise is invisible from the
+    // IM side).
+    const state = memState(null);
+    const result = await route(incoming('/start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+      terminalId: 'wezterm',
+    });
+    expect(result.echo).toContain('✓ terminal: wezterm');
+  });
+
+  it('/start echo includes "term: iterm2" when terminalId is iterm2', async () => {
+    const state = memState(null);
+    const result = await route(incoming('/start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+      terminalId: 'iterm2',
+    });
+    expect(result.echo).toContain('✓ terminal: iterm2');
+  });
+
+  it('/start echo omits term line when terminalId is undefined (backward compat)', async () => {
+    // Tests pre-dating the P4 wiring don't pass `terminalId`; the echo
+    // shouldn't grow a spurious "term: undefined" line in that case.
+    const state = memState(null);
+    const result = await route(incoming('/start'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      imWorkOn: false,
+    });
+    expect(result.echo).not.toContain('terminal:');
+  });
+
   it('/help echo lists concrete usage examples (mention + broadcast + bridge commands)', async () => {
     const state = memState(null);
     const result = await routeOn(incoming('/help'), {
