@@ -88,34 +88,43 @@ export interface HookCommandResult {
  * (no fixture dependence on `process.stdout` capture).
  */
 /**
- * Best-effort heartbeat: append a one-line trace to `hook-trace.log`
- * BEFORE any parsing / detector / IMWork gate runs. The line records
- * env state at hook-subprocess entry so we can diagnose "cc invoked
- * the hook with what env" without instrumenting cc itself.
+ * Best-effort append to the hook-trace log. Used both for the
+ * entry-trace one-liner AND for inner-receiver gate decisions
+ * (issue 377 follow-up). Failures (ENOENT parent / EACCES / disk
+ * full) are swallowed — this is a diagnostic only; the hook must
+ * never break cc's turn.
+ */
+async function appendTraceLine(
+  traceLogPath: string,
+  line: string,
+): Promise<void> {
+  try {
+    const ts = new Date().toISOString();
+    await appendFile(traceLogPath, `${ts} ${line}\n`, { mode: 0o600 });
+  } catch {
+    /* swallow — diagnostic only */
+  }
+}
+
+/**
+ * Heartbeat trace written BEFORE any parsing / detector / IMWork
+ * gate runs. Records env state at hook-subprocess entry so we can
+ * diagnose "cc invoked the hook with what env" without instrumenting
+ * cc itself.
  *
- * Format (single line, append-only, mode 0600):
- *   {ISO-ts} hook event={argv} pid={pid} ITERM_SESSION_ID={value-or-empty} WEZTERM_PANE={value-or-empty} stdin-bytes={N}
- *
- * Failures (ENOENT parent / EACCES / disk full) are swallowed — this
- * is a diagnostic only; the hook must never break cc's turn.
- *
- * Per issue 377 diagnostic 2026-05-14.
+ * Per issue 377 diagnostic 2026-05-14 (PR #177).
  */
 async function writeHookEntryTrace(
   traceLogPath: string,
   args: { event: string; stdinBytes: number },
 ): Promise<void> {
-  try {
-    const ts = new Date().toISOString();
-    const iterm = process.env.ITERM_SESSION_ID ?? '';
-    const wez = process.env.WEZTERM_PANE ?? '';
-    const line =
-      `${ts} hook event=${args.event} pid=${process.pid} ` +
-      `ITERM_SESSION_ID=${iterm} WEZTERM_PANE=${wez} stdin-bytes=${args.stdinBytes}\n`;
-    await appendFile(traceLogPath, line, { mode: 0o600 });
-  } catch {
-    /* swallow — diagnostic only */
-  }
+  const iterm = process.env.ITERM_SESSION_ID ?? '';
+  const wez = process.env.WEZTERM_PANE ?? '';
+  await appendTraceLine(
+    traceLogPath,
+    `hook event=${args.event} pid=${process.pid} ` +
+      `ITERM_SESSION_ID=${iterm} WEZTERM_PANE=${wez} stdin-bytes=${args.stdinBytes}`,
+  );
 }
 
 export async function runHookCommand(
@@ -137,6 +146,9 @@ export async function runHookCommand(
   }
 
   if (opts.stdin.length === 0) {
+    if (traceLogPath !== null) {
+      await appendTraceLine(traceLogPath, `empty-stdin exit=1`);
+    }
     return {
       exitCode: 1,
       stdout: '',
@@ -148,6 +160,17 @@ export async function runHookCommand(
   try {
     payload = parseHookPayload(opts.stdin);
   } catch (err) {
+    if (traceLogPath !== null) {
+      // Truncate to keep trace lines parsable; include first 200 stdin
+      // chars so we can reconstruct what cc actually sent (the missing /
+      // unexpected field is usually obvious from a peek).
+      const msg = err instanceof Error ? err.message : String(err);
+      const stdinHead = opts.stdin.slice(0, 200).replace(/\n/g, '\\n');
+      await appendTraceLine(
+        traceLogPath,
+        `parse-fail event=${opts.event ?? '<unknown>'} err=${JSON.stringify(msg)} stdin-head=${JSON.stringify(stdinHead)}`,
+      );
+    }
     return {
       exitCode: 1,
       stdout: '',
@@ -176,19 +199,48 @@ export async function runHookCommand(
     };
   }
 
+  // Async-safe trace channel into runHookReceiver. We can't await
+  // inside the synchronous `trace` callback that the receiver calls,
+  // so we buffer messages and flush them after the receiver returns
+  // (or throws). Order preserved.
+  const receiverTraces: string[] = [];
+  const receiverTrace =
+    traceLogPath === null ? undefined : (line: string) => receiverTraces.push(line);
+
   let decision;
+  let receiverErr: unknown = null;
   try {
     decision = await runHookReceiver({
       stateDir: opts.stateDir,
       payload,
       ...(originOverride ? { resolvePaneOrigin: originOverride } : {}),
+      ...(receiverTrace ? { trace: receiverTrace } : {}),
     });
   } catch (err) {
+    receiverErr = err;
+  }
+
+  // Flush receiver trace lines to disk (best-effort).
+  if (traceLogPath !== null) {
+    for (const line of receiverTraces) {
+      await appendTraceLine(traceLogPath, line);
+    }
+    if (receiverErr !== null) {
+      const msg =
+        receiverErr instanceof Error ? receiverErr.message : String(receiverErr);
+      await appendTraceLine(
+        traceLogPath,
+        `receiver-throw err=${JSON.stringify(msg)}`,
+      );
+    }
+  }
+
+  if (receiverErr !== null) {
     return {
       exitCode: 1,
       stdout: '',
       stderr: `multi-cc-im hook: receiver failed: ${
-        err instanceof Error ? err.message : String(err)
+        receiverErr instanceof Error ? receiverErr.message : String(receiverErr)
       }`,
     };
   }

@@ -226,6 +226,19 @@ export interface RunHookReceiverOpts {
    * value to exercise the timeout branch without waiting 110s.
    */
   permissionDialogTimeoutMs?: number;
+  /**
+   * Best-effort diagnostic trace callback. When provided, the receiver
+   * appends one-line annotations at decision points (Stop branch
+   * gates, pre-write, etc.) so callers can pinpoint where a silent
+   * exit happened. Errors swallowed internally — never propagate to
+   * the caller. Default: no-op.
+   *
+   * Per issue 377 follow-up 2026-05-14: PR #177 entry-trace proved
+   * the hook subprocess fires with correct env, but Stop file never
+   * landed on disk for cc-fired iTerm Stops. This callback exposes
+   * the in-receiver decision path to the entry tracer at apps/.
+   */
+  trace?: (line: string) => void;
 }
 
 /**
@@ -293,6 +306,16 @@ export async function runHookReceiver(
 > {
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
+  // Diagnostic tracer (issue 377 follow-up). No-op when caller doesn't
+  // provide one; wraps in try/catch so a misbehaving callback can't
+  // break the hook's job. See `RunHookReceiverOpts.trace` TSDoc.
+  const trace = (line: string): void => {
+    try {
+      opts.trace?.(line);
+    } catch {
+      /* swallow */
+    }
+  };
 
   // Terminal-detector filter — gate everything before we touch disk.
   // Returns BOTH which terminal we're in (`termId`) AND the pane id
@@ -303,10 +326,14 @@ export async function runHookReceiver(
     opts.resolvePaneOrigin ?? defaultResolvePaneOrigin;
   const origin = resolvePaneOrigin();
   if (origin === undefined) {
+    trace(`detector: no supported terminal env, silent-exit`);
     // cc is running outside any supported terminal. Silently exit.
     return;
   }
   const { termId, paneId } = origin;
+  trace(
+    `detector: termId=${termId} paneId=${String(paneId)} event=${payload.hook_event_name}`,
+  );
 
   switch (payload.hook_event_name) {
     case 'PreToolUse': {
@@ -671,10 +698,16 @@ export async function runHookReceiver(
       //   E2 !IMOrigin → return void (no IM thread)
       //   E3 !daemon alive → return void (no listener)
 
-      if (!(await existsIMWorkFile(stateDir, termId))) return;
+      const imWorkExists = await existsIMWorkFile(stateDir, termId);
+      trace(`stop-gate IM${termId[0]!.toUpperCase()}${termId.slice(1)}=${imWorkExists}`);
+      if (!imWorkExists) return;
       // IMOrigin is daemon-global (DD: IMOrigin global) — no paneId.
-      if (!(await existsIMOriginFile(stateDir))) return;
-      if (!(await isDaemonAlive(stateDir))) return;
+      const imOriginExists = await existsIMOriginFile(stateDir);
+      trace(`stop-gate IMOrigin=${imOriginExists}`);
+      if (!imOriginExists) return;
+      const daemonAlive = await isDaemonAlive(stateDir);
+      trace(`stop-gate daemon-alive=${daemonAlive}`);
+      if (!daemonAlive) return;
 
       // Clear stale Stop.* for this pane+sid before writing fresh.
       // (E3 ensures daemon is alive — if it's catching up we still don't
@@ -684,6 +717,10 @@ export async function runHookReceiver(
 
       const now = opts.now ?? (() => new Date());
       const timestamp = formatStopTimestamp(now());
+      const msgLen = payload.last_assistant_message.length;
+      trace(
+        `stop-write paneId=${String(paneId)} sid=${sessionId} ts=${timestamp} msg-len=${msgLen} stop_hook_active=${payload.stop_hook_active}`,
+      );
       await writeStopFile({
         stateDir,
         paneId,
@@ -692,6 +729,7 @@ export async function runHookReceiver(
         last_assistant_message: payload.last_assistant_message,
         termId,
       });
+      trace(`stop-write OK`);
       if (payload.stop_hook_active === false) {
         const reason = await popInjection({ stateDir, sessionId });
         if (reason !== null) return { decision: 'block', reason };

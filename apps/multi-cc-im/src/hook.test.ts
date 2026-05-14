@@ -234,7 +234,11 @@ describe('runHookCommand', () => {
       expect(trace).toMatch(/ITERM_SESSION_ID=w0t0p0:11111111/);
       expect(trace).toMatch(/WEZTERM_PANE= /);
       expect(trace).toMatch(/stdin-bytes=\d+/);
-      expect(trace.split('\n').filter((l) => l.length > 0)).toHaveLength(1);
+      // First line is the entry heartbeat; subsequent lines are
+      // receiver gate decisions (issue 377 follow-up PR adds these).
+      const lines = trace.split('\n').filter((l) => l.length > 0);
+      expect(lines[0]!).toContain('hook event=Stop');
+      expect(lines.length).toBeGreaterThanOrEqual(1);
     } finally {
       if (prevIterm !== undefined) process.env.ITERM_SESSION_ID = prevIterm;
       else delete process.env.ITERM_SESSION_ID;
@@ -254,6 +258,44 @@ describe('runHookCommand', () => {
     const trace = await readFile(tracePath, 'utf-8');
     expect(trace).toMatch(/hook event=Stop/);
     expect(trace).toMatch(/stdin-bytes=0/);
+  });
+
+  it('gate trace: Stop branch logs each gate decision + pre-write line', async () => {
+    await setupBoundState();
+    const tracePath = join(stateDir, 'hook-trace.log');
+    await runHookCommand({
+      event: 'Stop',
+      stdin: STOP,
+      stateDir,
+      traceLogPath: tracePath,
+      resolvePaneId: () => PANE_ID,
+    });
+    const { readFile } = await import('node:fs/promises');
+    const trace = await readFile(tracePath, 'utf-8');
+    // Each gate produces its own line. Order: detector → IMWezterm →
+    // IMOrigin → daemon-alive → stop-write.
+    expect(trace).toMatch(/detector: termId=wezterm paneId=\d+ event=Stop/);
+    expect(trace).toMatch(/stop-gate IMWezterm=true/);
+    expect(trace).toMatch(/stop-gate IMOrigin=true/);
+    expect(trace).toMatch(/stop-gate daemon-alive=true/);
+    expect(trace).toMatch(/stop-write paneId=\d+ sid=.+ ts=.+ msg-len=\d+/);
+    expect(trace).toMatch(/stop-write OK/);
+  });
+
+  it('parse-fail trace: invalid stdin records err + stdin-head to trace', async () => {
+    const tracePath = join(stateDir, 'hook-trace.log');
+    await runHookCommand({
+      event: 'Stop',
+      stdin: 'not-json{{{',
+      stateDir,
+      traceLogPath: tracePath,
+    });
+    const { readFile } = await import('node:fs/promises');
+    const trace = await readFile(tracePath, 'utf-8');
+    expect(trace).toMatch(/parse-fail event=Stop/);
+    expect(trace).toMatch(/stdin-head=/);
+    // Include verbatim head so we can reconstruct what cc actually sent.
+    expect(trace).toMatch(/not-json/);
   });
 
   it('entry trace: traceLogPath=null disables file write (tests + opt-out)', async () => {
