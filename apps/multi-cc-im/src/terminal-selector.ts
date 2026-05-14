@@ -1,6 +1,10 @@
 import { execFile } from 'node:child_process';
+import { access, constants } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { resolvePython3Path } from '@multi-cc-im/term-iterm2';
+import { resolveWezTermPath } from '@multi-cc-im/term-wezterm';
 import type { TerminalId } from '@multi-cc-im/shared';
 import { realClackIO, type WizardPromptIO } from './wizard/io.js';
 
@@ -40,6 +44,20 @@ export interface SelectTerminalDeps {
    * success/failure + the iterm2 `import` smoke check.
    */
   exec: (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  /**
+   * Detect whether WezTerm is installed on this machine. Default tries
+   * `resolveWezTermPath` (PATH scan + macOS .app bundle); returns true if
+   * the resolver succeeded, false otherwise. Surfaced in the select
+   * prompt option hint so the user can pick the terminal they actually
+   * have without trial-and-error.
+   */
+  detectWezTermInstalled: () => Promise<boolean>;
+  /**
+   * Detect whether iTerm2 is installed. Default checks the standard
+   * macOS .app bundle locations (`/Applications/iTerm.app`,
+   * `~/Applications/iTerm.app`). Returns true if either is readable.
+   */
+  detectIterm2Installed: () => Promise<boolean>;
 }
 
 export interface SelectTerminalOpts {
@@ -62,6 +80,15 @@ export interface SelectTerminalOpts {
   currentTerminal?: TerminalId;
 }
 
+async function isReadable(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Default deps wiring — direct passthrough to production implementations.
  * Hoisted so the public `selectTerminal` signature stays tiny.
@@ -73,6 +100,24 @@ function defaultDeps(): SelectTerminalDeps {
       const r = await execFileAsync(cmd, args);
       // Default execFile encoding is utf8, so stdout/stderr are strings.
       return { stdout: String(r.stdout), stderr: String(r.stderr) };
+    },
+    detectWezTermInstalled: async () => {
+      try {
+        await resolveWezTermPath({});
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    detectIterm2Installed: async () => {
+      const candidates = [
+        '/Applications/iTerm.app',
+        join(homedir(), 'Applications', 'iTerm.app'),
+      ];
+      for (const c of candidates) {
+        if (await isReadable(c)) return true;
+      }
+      return false;
     },
   };
 }
@@ -121,14 +166,31 @@ export async function selectTerminal(
   const deps = opts.deps ?? defaultDeps();
   const initial: TerminalId = opts.currentTerminal ?? 'wezterm';
 
+  // Detect installed terminals BEFORE rendering the select so each option
+  // can display its install status. Without this hint the user picks
+  // blindly and then hits a "not found" error at adapter creation time —
+  // the wizard should surface that up front (P7 smoke feedback).
+  const [wezInstalled, it2Installed] = await Promise.all([
+    deps.detectWezTermInstalled(),
+    deps.detectIterm2Installed(),
+  ]);
+
   const choice = await io.select<TerminalId>({
     message: 'Pick a terminal:',
     options: [
-      { value: 'wezterm', label: 'WezTerm', hint: 'native CLI, lowest friction' },
+      {
+        value: 'wezterm',
+        label: 'WezTerm',
+        hint: wezInstalled
+          ? '✓ installed — native CLI, lowest friction'
+          : 'not installed — `brew install --cask wezterm`',
+      },
       {
         value: 'iterm2',
         label: 'iTerm2',
-        hint: 'macOS default — uses Python API helper',
+        hint: it2Installed
+          ? '✓ installed — macOS only, uses Python API helper'
+          : 'not installed — `brew install --cask iterm2`',
       },
     ],
     initialValue: initial,
@@ -165,7 +227,7 @@ export async function selectTerminal(
 
   const prefsDone = await io.confirm({
     message: 'Did you enable Python API in iTerm2 Preferences?',
-    initialValue: false,
+    initialValue: true,
   });
   if (io.isCancel(prefsDone)) return { status: 'cancelled' };
   if (!prefsDone) {
@@ -189,14 +251,29 @@ export async function selectTerminal(
   }
   io.info(`Found python3 at ${python3}`);
 
+  // `--break-system-packages` bypasses PEP 668 ("externally-managed
+  // environment") on Homebrew Python ≥ 3.12 / Debian-managed Python.
+  // Combined with `--user` the package lands in the user site-packages
+  // (e.g. `~/Library/Python/3.12/lib/python/site-packages` on macOS),
+  // NOT the system Python — brew Python's site-packages stays clean.
+  // Without this flag the install fails on most modern macOS installs
+  // (P7 smoke feedback). See https://peps.python.org/pep-0668/.
+  const pipArgs = [
+    '-m',
+    'pip',
+    'install',
+    '--user',
+    '--break-system-packages',
+    'iterm2',
+  ];
   const doInstall = await io.confirm({
-    message: `Install \`iterm2\` PyPI package now? (${python3} -m pip install --user iterm2)`,
+    message: `Install \`iterm2\` PyPI package now? (${python3} ${pipArgs.join(' ')})`,
     initialValue: true,
   });
   if (io.isCancel(doInstall)) return { status: 'cancelled' };
   if (doInstall) {
     try {
-      await deps.exec(python3, ['-m', 'pip', 'install', '--user', 'iterm2']);
+      await deps.exec(python3, pipArgs);
       io.info('Installed iterm2 PyPI package.');
     } catch (err) {
       return {
@@ -204,7 +281,10 @@ export async function selectTerminal(
         exitCode: 1,
         message:
           'multi-cc-im start: `pip install iterm2` failed — ' +
-          (err instanceof Error ? err.message : String(err)),
+          (err instanceof Error ? err.message : String(err)) +
+          '\n  If your Python is managed by an OS package manager, try:' +
+          '\n    pipx install iterm2  (preferred — virtualenv-based)' +
+          '\n  Then re-run `multi-cc-im start`.',
       };
     }
   }
