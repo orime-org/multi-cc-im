@@ -19,6 +19,10 @@ import {
   listAllTabs,
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
+import { resolvePython3Path } from '@multi-cc-im/term-iterm2';
+import { dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { access, constants } from 'node:fs/promises';
 import { adapters, type AdapterRegistryEntry } from './adapters.js';
 import {
   selectAndConfigureAdapter,
@@ -397,6 +401,74 @@ function defaultLog(line: string): void {
  */
 async function defaultResolveWezTerm(cachedPath?: string): Promise<string> {
   return resolveWezTermPath(cachedPath ? { cachedPath } : {});
+}
+
+/**
+ * Default python3 resolver — mirrors `defaultResolveWezTerm`. Used when the
+ * user's terminal adapter is iTerm2; daemon caches the resolved absolute
+ * path to `~/.multi-cc-im/config.toml` `external_paths.python3` so
+ * subsequent starts skip rediscovery. Per
+ * [DD: iTerm2 adapter](../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md).
+ *
+ * P3 ships the resolver only; the call site that wires it into adapter
+ * creation lands in P5 (orchestrator wiring), since `start.ts` currently
+ * hardcodes `createWezTermAdapter`.
+ */
+export async function defaultResolvePython3(
+  cachedPath?: string,
+): Promise<string> {
+  return resolvePython3Path(cachedPath ? { cachedPath } : {});
+}
+
+/**
+ * Locate the bundled `iterm2-helper.py` script at runtime.
+ *
+ * tsup copies the helper from
+ * `packages/term-iterm2/bin/iterm2-helper.py` next to the bundled
+ * `dist/cli.js` (see `tsup.config.ts` `onSuccess`). After bundling, the
+ * helper lives at `<dist>/iterm2-helper.py` regardless of where the user
+ * installed `multi-cc-im` — we resolve it via `import.meta.url` so it
+ * works for both bundled (`dist/cli.js`) and unbundled (`tsx
+ * src/cli.ts`) execution paths.
+ *
+ * For the unbundled (dev) case `import.meta.url` points at
+ * `apps/multi-cc-im/src/start.ts`, so we fall back to the source
+ * location under `packages/term-iterm2/bin/`.
+ *
+ * Throws if neither location holds the file (broken install / missing
+ * post-build copy).
+ */
+export async function resolveIterm2HelperPath(): Promise<string> {
+  const here = dirname(fileURLToPath(import.meta.url));
+
+  // Bundled case: dist/cli.js → sibling dist/iterm2-helper.py
+  const bundled = resolvePath(here, 'iterm2-helper.py');
+  if (await isReadable(bundled)) return bundled;
+
+  // Dev (tsx) case: apps/multi-cc-im/src/start.ts →
+  //   ../../../packages/term-iterm2/bin/iterm2-helper.py
+  // (three levels up: src → apps/multi-cc-im → apps → repo root)
+  const sourceTree = resolvePath(
+    here,
+    '../../../packages/term-iterm2/bin/iterm2-helper.py',
+  );
+  if (await isReadable(sourceTree)) return sourceTree;
+
+  throw new Error(
+    'iterm2-helper.py not found. Looked at:\n' +
+      `  ${bundled} (bundled location)\n` +
+      `  ${sourceTree} (dev source-tree location)\n` +
+      'Run `pnpm --filter multi-cc-im build` to repopulate the bundled copy.',
+  );
+}
+
+async function isReadable(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
