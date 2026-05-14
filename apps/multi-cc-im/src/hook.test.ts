@@ -62,7 +62,7 @@ describe('runHookCommand', () => {
   /** Helper: set up IMWork + global IMOrigin + daemon.pid so Stop / PreToolUse
    * pass the 3 short-circuit guards and exercise the forward path. */
   async function setupBoundState(): Promise<void> {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     await writeIMOriginFile(stateDir, {
       imType: 'lark',
       openId: 'ou_user',

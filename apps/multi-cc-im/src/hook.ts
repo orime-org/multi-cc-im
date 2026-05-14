@@ -1,4 +1,8 @@
-import { parseHookPayload, runHookReceiver } from '@multi-cc-im/cli-cc';
+import {
+  parseHookPayload,
+  runHookReceiver,
+  type PaneOrigin,
+} from '@multi-cc-im/cli-cc';
 import type { PaneId } from '@multi-cc-im/shared';
 
 export interface RunHookCommandOpts {
@@ -7,13 +11,24 @@ export interface RunHookCommandOpts {
   /** Where state files live (e.g. `~/.multi-cc-im/state/`). */
   stateDir: string;
   /**
-   * Override the pane-id detector chain for tests / sandboxed environments.
-   * Returning undefined simulates "cc not in a supported terminal" — hook
-   * silently exits per [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
-   * Per [DD: iTerm2 adapter](../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md),
-   * the detector chain replaces the WezTerm-only env lookup.
+   * Override the pane-origin detector chain for tests / sandboxed
+   * environments. Returning undefined simulates "cc not in a supported
+   * terminal" — hook silently exits per
+   * [DD: pane-keyed state files](../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md).
+   *
+   * A `PaneOrigin` carries BOTH `termId` and `paneId` so the receiver
+   * can pick the right `IM<TermType>` file without inferring terminal
+   * from `typeof paneId` (issue 378 root cause framing). For
+   * convenience, tests may pass a function returning only `PaneId` —
+   * we wrap it as `{termId: 'wezterm', paneId}` for back-compat (the
+   * legacy hook only ever saw wezterm).
    */
   resolvePaneId?: () => PaneId | undefined;
+  /**
+   * Full origin override. Preferred when tests need iterm2 behavior
+   * or to assert the receiver-internal `termId` plumbing.
+   */
+  resolvePaneOrigin?: () => PaneOrigin | undefined;
 }
 
 export interface HookCommandResult {
@@ -71,12 +86,31 @@ export async function runHookCommand(
     };
   }
 
+  // Compose detector overrides. Preference order:
+  //   1. `resolvePaneOrigin` (full info — used by iterm2 tests / cross-
+  //      terminal assertions)
+  //   2. `resolvePaneId` (legacy — wraps as wezterm origin)
+  // If neither set, `runHookReceiver` uses its production
+  // `defaultResolvePaneOrigin` against `process.env`.
+  let originOverride: (() => PaneOrigin | undefined) | undefined;
+  if (opts.resolvePaneOrigin) {
+    originOverride = opts.resolvePaneOrigin;
+  } else if (opts.resolvePaneId) {
+    const resolveId = opts.resolvePaneId;
+    originOverride = () => {
+      const paneId = resolveId();
+      return paneId === undefined
+        ? undefined
+        : { termId: 'wezterm' as const, paneId };
+    };
+  }
+
   let decision;
   try {
     decision = await runHookReceiver({
       stateDir: opts.stateDir,
       payload,
-      ...(opts.resolvePaneId ? { resolvePaneId: opts.resolvePaneId } : {}),
+      ...(originOverride ? { resolvePaneOrigin: originOverride } : {}),
     });
   } catch (err) {
     return {

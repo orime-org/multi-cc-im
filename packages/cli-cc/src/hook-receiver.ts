@@ -3,7 +3,11 @@ import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AskUserQuestionToolInputSchema, type PaneId } from '@multi-cc-im/shared';
 import { popInjection } from './injection-queue.js';
-import { DEFAULT_DETECTORS, runDetectors } from './pane-id-detectors.js';
+import {
+  DEFAULT_DETECTORS,
+  runDetectors,
+  type PaneOrigin,
+} from './pane-id-detectors.js';
 import type { ParsedHookPayload } from './payloads.js';
 import {
   deletePermissionDialogRequestFile,
@@ -197,13 +201,15 @@ export interface RunHookReceiverOpts {
    */
   now?: () => Date;
   /**
-   * Override the pane-id detector chain. Tests inject a concrete paneId
-   * (or undefined to simulate "cc not in any supported terminal" filter
-   * path). Default runs `DEFAULT_DETECTORS` against `process.env` per
-   * [DD: iTerm2 adapter](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md)
-   * P1 — currently just the WezTerm detector; iTerm2 detector lands in P2.
+   * Override the pane-origin detector chain. Tests inject a concrete
+   * `{termId, paneId}` (or undefined to simulate "cc not in any
+   * supported terminal" filter path). Default runs `DEFAULT_DETECTORS`
+   * against `process.env`. The returned `termId` is load-bearing for
+   * issue 378 fix: it selects which `IM<TermType>` file to read,
+   * preventing wezterm cc hooks from being honored when the daemon is
+   * configured for iterm2 (and vice versa).
    */
-  resolvePaneId?: () => PaneId | undefined;
+  resolvePaneOrigin?: () => PaneOrigin | undefined;
   /** Override PreToolUse poll interval (ms). Tests use a small value. */
   permissionPollIntervalMs?: number;
   /** Override PreToolUse total wait budget (ms). Tests use a small value. */
@@ -223,22 +229,23 @@ export interface RunHookReceiverOpts {
 }
 
 /**
- * Default pane-id resolver. Runs the `DEFAULT_DETECTORS` list against the
- * current process env; returns the first non-undefined hit, or undefined
- * if no supported terminal is detected.
+ * Default pane-origin resolver. Runs the `DEFAULT_DETECTORS` list
+ * against the current process env; returns the first match as
+ * `{termId, paneId}`, or undefined if no supported terminal is
+ * detected.
  *
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
  * this is the **filter** that gates whether the hook writes anything to
- * disk — undefined means cc is in ssh / VS Code terminal / non-supported
- * terminal, and multi-cc-im has nothing to do with it.
+ * disk — undefined means cc is in ssh / VS Code terminal /
+ * non-supported terminal, and multi-cc-im has nothing to do with it.
  *
- * Per [DD: iTerm2 adapter](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
- * the hardcoded `WEZTERM_PANE` lookup was replaced with the detector chain
- * so any future `term-<name>` adapter can plug in via `pane-id-detectors`.
- * The branded result is `number | string`; downstream code uses it as an
- * opaque key (state file naming, IMOrigin map, etc.).
+ * Returning `termId` alongside `paneId` (issue 378 fix) lets the gate
+ * pick the per-terminal `IM<TermType>` file directly, rather than
+ * re-deriving terminal from `typeof paneId`. The branded `paneId` is
+ * still `number | string`; downstream uses it as an opaque key (state
+ * file naming, IMOrigin map, etc.).
  */
-function defaultResolvePaneId(): PaneId | undefined {
+function defaultResolvePaneOrigin(): PaneOrigin | undefined {
   return runDetectors(DEFAULT_DETECTORS, process.env);
 }
 
@@ -287,14 +294,19 @@ export async function runHookReceiver(
   const { stateDir, payload } = opts;
   const sessionId = payload.session_id;
 
-  // WEZTERM_PANE filter — gate everything before we touch disk
-  const resolvePaneId = opts.resolvePaneId ?? defaultResolvePaneId;
-  const paneId = resolvePaneId();
-  if (paneId === undefined) {
-    // cc is running outside wezterm. Silently exit; multi-cc-im does not
-    // bridge non-wezterm cc instances.
+  // Terminal-detector filter — gate everything before we touch disk.
+  // Returns BOTH which terminal we're in (`termId`) AND the pane id
+  // within it (`paneId`). The `termId` selects which `IM<TermType>`
+  // file we read for the IM-mode gate, so a cc instance in the
+  // non-active terminal silent-exits even if it has hooks installed.
+  const resolvePaneOrigin =
+    opts.resolvePaneOrigin ?? defaultResolvePaneOrigin;
+  const origin = resolvePaneOrigin();
+  if (origin === undefined) {
+    // cc is running outside any supported terminal. Silently exit.
     return;
   }
+  const { termId, paneId } = origin;
 
   switch (payload.hook_event_name) {
     case 'PreToolUse': {
@@ -329,7 +341,7 @@ export async function runHookReceiver(
       //   `allow`, fast-path without IM round-trip (E1.5).
       //
       // - {auto:false} (IM mode ON, ask mode) → fall through to E3.
-      const imWork = await readIMWorkFile(stateDir);
+      const imWork = await readIMWorkFile(stateDir, termId);
       if (imWork === null) {
         return; // E2: silent exit, defer to cc native permission flow
       }
@@ -531,7 +543,7 @@ export async function runHookReceiver(
       // The auto vs off branching happens in the daemon (orchestrator) so
       // it can emit IM audit log (D5-B) consistently. Hook-side stays simple.
 
-      if ((await readIMWorkFile(stateDir)) === null) return; // E1
+      if ((await readIMWorkFile(stateDir, termId)) === null) return; // E1
       if (!(await existsIMOriginFile(stateDir))) return; // E2
       if (!(await isDaemonAlive(stateDir))) return; // E3
 
@@ -659,7 +671,7 @@ export async function runHookReceiver(
       //   E2 !IMOrigin → return void (no IM thread)
       //   E3 !daemon alive → return void (no listener)
 
-      if (!(await existsIMWorkFile(stateDir))) return;
+      if (!(await existsIMWorkFile(stateDir, termId))) return;
       // IMOrigin is daemon-global (DD: IMOrigin global) — no paneId.
       if (!(await existsIMOriginFile(stateDir))) return;
       if (!(await isDaemonAlive(stateDir))) return;
@@ -678,6 +690,7 @@ export async function runHookReceiver(
         sessionId,
         timestamp,
         last_assistant_message: payload.last_assistant_message,
+        termId,
       });
       if (payload.stop_hook_active === false) {
         const reason = await popInjection({ stateDir, sessionId });

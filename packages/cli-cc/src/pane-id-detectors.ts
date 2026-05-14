@@ -30,7 +30,7 @@
  * iTerm2's lands with the iTerm2 adapter in P2.
  */
 
-import type { PaneId } from '@multi-cc-im/shared';
+import type { PaneId, TerminalId } from '@multi-cc-im/shared';
 
 /**
  * Detector signature: given the subprocess `process.env`, return a branded
@@ -40,6 +40,29 @@ import type { PaneId } from '@multi-cc-im/shared';
 export type PaneIdDetector = (
   env: NodeJS.ProcessEnv,
 ) => PaneId | undefined;
+
+/**
+ * Source-of-truth pair: which terminal a hook subprocess detected itself
+ * in (`termId`), and the pane id within that terminal (`paneId`). Carried
+ * end-to-end from hook entry through state files into daemon-side gates
+ * so we never have to "infer" the terminal from `typeof paneId` (which
+ * would be brittle for any future detector that uses a numeric or UUID
+ * id format — kitty/alacritty/etc.).
+ */
+export interface PaneOrigin {
+  termId: TerminalId;
+  paneId: PaneId;
+}
+
+/**
+ * A detector paired with the terminal id it represents. Used inside
+ * `DEFAULT_DETECTORS` so `runDetectors` can return both pieces of info
+ * (which terminal matched + the pane id within it) from a single pass.
+ */
+export interface TaggedDetector {
+  termId: TerminalId;
+  detect: PaneIdDetector;
+}
 
 /**
  * Detect a WezTerm pane id from `WEZTERM_PANE`. Returns `undefined` when
@@ -86,18 +109,26 @@ export const detectIterm2PaneId: PaneIdDetector = (env) => {
 };
 
 /**
- * Run a list of detectors in order; return the first non-`undefined`
- * result. Order matters: list the most specific / most reliable detector
- * first. If no detector matches, returns `undefined` and the hook
- * receiver silently exits (cc running outside any supported terminal).
+ * Run a list of tagged detectors in order; return the first match as a
+ * `PaneOrigin` carrying BOTH `termId` (which terminal matched) and
+ * `paneId` (the id within it). Order matters: list the most specific /
+ * most reliable detector first. If no detector matches, returns
+ * `undefined` and the hook receiver silently exits (cc running outside
+ * any supported terminal).
+ *
+ * Returning `termId` alongside `paneId` is load-bearing: downstream
+ * gates (`IM<TermType>` lookup, per-terminal IM-mode files) need the
+ * fact of "which terminal" without re-deriving it from `paneId` shape,
+ * which would be brittle for any future detector whose id format
+ * collides with an existing one. Per issue 378 root-cause framing.
  */
 export function runDetectors(
-  detectors: readonly PaneIdDetector[],
+  detectors: readonly TaggedDetector[],
   env: NodeJS.ProcessEnv,
-): PaneId | undefined {
-  for (const detect of detectors) {
-    const result = detect(env);
-    if (result !== undefined) return result;
+): PaneOrigin | undefined {
+  for (const d of detectors) {
+    const paneId = d.detect(env);
+    if (paneId !== undefined) return { termId: d.termId, paneId };
   }
   return undefined;
 }
@@ -112,9 +143,11 @@ export function runDetectors(
  * is a defensive tiebreaker rather than load-bearing.
  *
  * Per the [iTerm2 adapter DD milestone chain](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#9-implementation-milestone-plan-to-be-detailed-after-lock):
- * P1 wired the WezTerm detector only; P2 (this commit) appends iTerm2.
+ * P1 wired the WezTerm detector only; P2 appended iTerm2; issue 378
+ * fix wraps each as a `TaggedDetector` so `runDetectors` can surface
+ * the matched `termId` to callers.
  */
-export const DEFAULT_DETECTORS: readonly PaneIdDetector[] = [
-  detectWezTermPaneId,
-  detectIterm2PaneId,
+export const DEFAULT_DETECTORS: readonly TaggedDetector[] = [
+  { termId: 'wezterm', detect: detectWezTermPaneId },
+  { termId: 'iterm2', detect: detectIterm2PaneId },
 ];

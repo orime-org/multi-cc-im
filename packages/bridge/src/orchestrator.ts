@@ -12,6 +12,7 @@ import type {
   PreToolUsePayload,
   StopPayload,
   TermAdapter,
+  TerminalId,
   TermListPanes,
   TermPaneInfo,
 } from '@multi-cc-im/shared';
@@ -233,6 +234,18 @@ export function createOrchestrator(
     opts.sendKeystrokeDelayMs ?? DEFAULT_SEND_KEYSTROKE_DELAY_MS;
   const onError = opts.onError ?? (() => {});
   const log = opts.log ?? (() => {});
+  /**
+   * Which terminal the daemon was started for. Computed once from the
+   * termAdapter the caller wired in (start.ts picks via wizard). Used
+   * to (a) select which `IM<TermType>` file `/start auto`/`/stop`
+   * writes/deletes, (b) select which file the inbound IM handler
+   * reads to derive `imWorkOn` / `imWorkAuto`. Per issue 378 root
+   * cause: the daemon serves one terminal at a time, so the file
+   * scheme is per-terminal-and-only-the-active-one to block cc-hook
+   * leakage from the other terminal.
+   */
+  const activeTerminalId: TerminalId =
+    opts.termAdapter.name === 'iterm2' ? 'iterm2' : 'wezterm';
   const reaperDelayMs = opts.reaperDelayMs ?? DEFAULT_REAPER_DELAY_MS;
   const askUserQuestionReaperDelayMs =
     opts.askUserQuestionReaperDelayMs ?? ASK_USER_QUESTION_REAPER_DELAY_MS;
@@ -313,12 +326,15 @@ export function createOrchestrator(
       onError(err, { phase: 'writeIMOrigin' });
     }
 
-    // Read IMWork once — derives both `imWorkOn` (file exists?) and
-    // `imWorkAuto` (`{auto:true}`?). Per [DD: PreToolUse auto-approve](../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
-    const imWork = await readIMWorkFile(opts.stateDir).catch((err) => {
-      onError(err, { phase: 'readIMWorkFile' });
-      return null;
-    });
+    // Read IMWork (per-terminal — issue 378) once — derives both
+    // `imWorkOn` (file exists?) and `imWorkAuto` (`{auto:true}`?). Per
+    // [DD: PreToolUse auto-approve](../../docs/superpowers/specs/2026-05-08-pretooluse-auto-approve-dd.md).
+    const imWork = await readIMWorkFile(opts.stateDir, activeTerminalId).catch(
+      (err) => {
+        onError(err, { phase: 'readIMWorkFile' });
+        return null;
+      },
+    );
     const imWorkOn = imWork !== null;
     const imWorkAuto = imWork?.auto ?? false;
 
@@ -391,20 +407,27 @@ export function createOrchestrator(
       aiPermissionRequestRouter,
     });
 
-    // IMWork toggle from /start [auto] /stop
+    // Per-terminal IM<TermType> toggle from /start [auto] /stop. Only
+    // the daemon's active terminal gets a file — the other terminal's
+    // file staying absent is what blocks cross-terminal cc-hook
+    // leakage (issue 378). `activeTerminalId` is hoisted at the top
+    // of createOrchestrator so the same value is used here, in
+    // `handleInbound`'s IMWork read, in the shutdown delete, etc.
     if (result.imWorkAction?.kind === 'enable') {
       try {
-        await writeIMWorkFile(opts.stateDir, { auto: result.imWorkAction.auto });
+        await writeIMWorkFile(opts.stateDir, activeTerminalId, {
+          auto: result.imWorkAction.auto,
+        });
         log(
-          `[IMWork] enabled by /start${result.imWorkAction.auto ? ' auto' : ''}`,
+          `[IMWork] enabled by /start${result.imWorkAction.auto ? ' auto' : ''} for ${activeTerminalId}`,
         );
       } catch (err) {
         onError(err, { phase: 'writeIMWork' });
       }
     } else if (result.imWorkAction?.kind === 'disable') {
       try {
-        await deleteIMWorkFile(opts.stateDir);
-        log('[IMWork] disabled by /stop');
+        await deleteIMWorkFile(opts.stateDir, activeTerminalId);
+        log(`[IMWork] disabled by /stop for ${activeTerminalId}`);
       } catch (err) {
         onError(err, { phase: 'deleteIMWork' });
       }
@@ -502,13 +525,28 @@ export function createOrchestrator(
   // ============================================================================
 
   async function handleStop(
-    p: StopPayload & { paneId: PaneId },
+    p: StopPayload & { paneId: PaneId; termId?: TerminalId },
   ): Promise<HookDecision | void> {
     const { paneId } = p;
 
-    // IMWork is the master switch.
-    if (!(await existsIMWorkFile(opts.stateDir))) {
-      log(`[Stop pane=${paneId}] IMWork off, skip forward`);
+    // Per-terminal IMWork gate (issue 378). Stop files written by hook
+    // subprocess carry `termId` so we don't have to re-derive it from
+    // `typeof paneId` (would be brittle for any future detector with
+    // colliding id format). The `termId` field is optional only for
+    // back-compat with pre-378 Stop files left on disk during upgrade;
+    // missing = skip (the corresponding `IM<TermType>` file definitely
+    // doesn't exist either, so the effect is identical).
+    if (p.termId === undefined) {
+      log(`[Stop pane=${paneId}] legacy Stop file missing termId, skip forward`);
+      return;
+    }
+    if (!(await existsIMWorkFile(opts.stateDir, p.termId))) {
+      // Log surface keeps "IMWork off" substring for back-compat with
+      // log-grep dashboards + tests; appends the per-terminal filename
+      // suffix for issue-378 traceability.
+      log(
+        `[Stop pane=${paneId}] IMWork off (IM${p.termId[0]!.toUpperCase()}${p.termId.slice(1)}), skip forward`,
+      );
       return;
     }
 
@@ -1043,10 +1081,12 @@ export function createOrchestrator(
     }
 
     // Read IMWork (race defensive — hook E1 should have short-circuited).
-    const imWork = await readIMWorkFile(opts.stateDir).catch((err) => {
-      onError(err, { phase: 'permissionDialogReadIMWork', paneId });
-      return null;
-    });
+    const imWork = await readIMWorkFile(opts.stateDir, activeTerminalId).catch(
+      (err) => {
+        onError(err, { phase: 'permissionDialogReadIMWork', paneId });
+        return null;
+      },
+    );
     if (imWork === null) {
       log(
         `[PermissionDialog pane=${paneId}] IMWork off (race) — skip; hook will timeout-allow`,
@@ -1249,7 +1289,7 @@ export function createOrchestrator(
       // [DD: IMOrigin global](../../docs/superpowers/specs/2026-05-08-imorigin-global-dd.md),
       // also wipe IMOrigin so the next daemon start (or interim direct
       // hook fire) doesn't see a stale `context_token`.
-      await deleteIMWorkFile(opts.stateDir).catch((err) => {
+      await deleteIMWorkFile(opts.stateDir, activeTerminalId).catch((err) => {
         onError(err, { phase: 'stop:deleteIMWork' });
       });
       await deleteIMOriginFile(opts.stateDir).catch((err) => {

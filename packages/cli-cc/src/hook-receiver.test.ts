@@ -101,7 +101,7 @@ const PERMISSION_REQUEST_PAYLOAD: ParsedHookPayload = {
 /** Build a stateDir with daemon.pid + IMWork + <paneId>.IMOrigin all set up
  * (= "fully bound, daemon alive" — the path that exercises the heavy code). */
 async function setupBoundState(stateDir: string): Promise<void> {
-  await writeIMWorkFile(stateDir);
+  await writeIMWorkFile(stateDir, 'wezterm');
   await writeIMOriginFile(stateDir, LARK_CTX);
   const lstart = (await captureProcessLstart(process.pid)) ?? 'unknown';
   await writeDaemonPidFile({
@@ -119,7 +119,10 @@ async function readStateDirEntries(stateDir: string): Promise<string[]> {
   }
 }
 
-const stubPaneId = (): PaneId => PANE_ID;
+// Tests treat the stubbed origin as wezterm by default — pre-issue-378
+// IMWork/Stop files were wezterm-shaped (numeric paneId), so the IM<TermType>
+// filename helpers default to wezterm for back-compat.
+const stubPaneOrigin = () => ({ termId: 'wezterm' as const, paneId: PANE_ID });
 const noPane = (): undefined => undefined;
 
 describe('runHookReceiver — WEZTERM_PANE filter', () => {
@@ -139,7 +142,7 @@ describe('runHookReceiver — WEZTERM_PANE filter', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: noPane,
+      resolvePaneOrigin: noPane,
     });
     expect(result).toBeUndefined();
     const after = await readStateDirEntries(stateDir);
@@ -156,7 +159,7 @@ describe('runHookReceiver — WEZTERM_PANE filter', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: noPane,
+      resolvePaneOrigin: noPane,
     });
     expect(result).toBeUndefined();
     const after = await readStateDirEntries(stateDir);
@@ -180,7 +183,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_READ,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toEqual({
       hookSpecificOutput: {
@@ -201,7 +204,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
       const result = await runHookReceiver({
         stateDir,
         payload: { ...PRE_TOOL_USE_READ, tool_name: tool } as ParsedHookPayload,
-        resolvePaneId: stubPaneId,
+        resolvePaneOrigin: stubPaneOrigin,
       });
       const out = result as { hookSpecificOutput: { permissionDecision: string } };
       expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
@@ -213,7 +216,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     // Hook returns void → CLI writes empty stdout → cc treats as "no opinion"
     // and runs its native permission flow (allow rules first, then ask, then
@@ -231,11 +234,11 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
   it('E1.5: IMWork.auto=true → permissionDecision: allow, no Request file (DD #64)', async () => {
     // Just IMWork {auto:true} — no IMOrigin / daemon.pid needed; auto bypasses
     // E3 / E4 entirely.
-    await writeIMWorkFile(stateDir, { auto: true });
+    await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toEqual({
       hookSpecificOutput: {
@@ -254,22 +257,22 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
 
   it('E1.5: IMWork.auto=false → falls through to E3 silent exit (no Request file)', async () => {
     // IMWork {auto:false} but no IMOrigin → should hit E3 silent exit.
-    await writeIMWorkFile(stateDir, { auto: false });
+    await writeIMWorkFile(stateDir, 'wezterm', { auto: false });
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
   });
 
   it('E3: !<paneId>.IMOrigin → silent exit, no Request file (defers to cc native flow + user allow rules)', async () => {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     // No IMOrigin written.
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     expect(
@@ -280,13 +283,13 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
   });
 
   it('E4: !daemon alive → silent exit, no Request file (defers to cc native flow)', async () => {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     await writeIMOriginFile(stateDir, LARK_CTX);
     // No daemon.pid → isDaemonAlive false.
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     expect(
@@ -331,7 +334,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       permissionTimeoutMs: 2_000,
     });
@@ -359,7 +362,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 30,
       permissionTimeoutMs: 100,
     });
@@ -394,7 +397,7 @@ describe('runHookReceiver — PreToolUse decision tree', () => {
     await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 30,
       permissionTimeoutMs: 100,
     });
@@ -422,13 +425,13 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     // Regular tool with IMWork.auto=true → E1.5 short-circuit returns allow
     // without writing Request. AskUserQuestion under same config must NOT
     // short-circuit — D1-B always-forward semantics.
-    await writeIMWorkFile(stateDir, { auto: true });
+    await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
     // No IMOrigin → falls through to E3 silent exit. The key assertion is
     // that we DIDN'T return the auto-allow allow object.
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_ASK,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     expect(
@@ -444,7 +447,7 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_ASK,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
   });
@@ -486,7 +489,7 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_ASK,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       askUserQuestionTimeoutMs: 2_000,
     });
@@ -550,7 +553,7 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_ASK,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       askUserQuestionTimeoutMs: 2_000,
     });
@@ -579,7 +582,7 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_ASK,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       askUserQuestionTimeoutMs: 100, // immediate timeout
     });
@@ -612,11 +615,11 @@ describe('runHookReceiver — PreToolUse AskUserQuestion special-case (DD 2026-0
   it('regular Bash tool with IMWork.auto=true STILL auto-allows (regression guard for D1-B narrow scope)', async () => {
     // D1-B special-cases only AskUserQuestion. Regular tools must keep
     // their existing v1.7 auto-mode behavior.
-    await writeIMWorkFile(stateDir, { auto: true });
+    await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
     const result = await runHookReceiver({
       stateDir,
       payload: PRE_TOOL_USE_BASH,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toEqual({
       hookSpecificOutput: {
@@ -643,7 +646,7 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     const entries = await readStateDirEntries(stateDir);
@@ -651,12 +654,12 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
   });
 
   it('E2 IMOrigin missing → silent exit (no IM thread bound)', async () => {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     // No IMOrigin / daemon.pid setup
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     expect(
@@ -703,7 +706,7 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       permissionDialogTimeoutMs: 2_000,
     });
@@ -757,7 +760,7 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       permissionDialogTimeoutMs: 2_000,
     });
@@ -776,7 +779,7 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
     const result = await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 20,
       permissionDialogTimeoutMs: 100, // immediate timeout
     });
@@ -821,7 +824,7 @@ describe('runHookReceiver — PermissionRequest handler (DD 2026-05-13 P4)', () 
     await runHookReceiver({
       stateDir,
       payload: PERMISSION_REQUEST_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       permissionPollIntervalMs: 50,
       permissionDialogTimeoutMs: 200,
     });
@@ -850,7 +853,7 @@ describe('runHookReceiver — Stop event', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     const after = await readStateDirEntries(stateDir);
@@ -858,11 +861,11 @@ describe('runHookReceiver — Stop event', () => {
   });
 
   it('!IMOrigin → silent exit, no Stop file', async () => {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     const after = await readStateDirEntries(stateDir);
@@ -870,12 +873,12 @@ describe('runHookReceiver — Stop event', () => {
   });
 
   it('!daemon alive → silent exit, no Stop file', async () => {
-    await writeIMWorkFile(stateDir);
+    await writeIMWorkFile(stateDir, 'wezterm');
     await writeIMOriginFile(stateDir, LARK_CTX);
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toBeUndefined();
     const after = await readStateDirEntries(stateDir);
@@ -888,7 +891,7 @@ describe('runHookReceiver — Stop event', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       now: () => fixedNow,
     });
     // No injection queued → returns void.
@@ -924,7 +927,7 @@ describe('runHookReceiver — Stop event', () => {
     await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
       now: () => fixedNow,
     });
     const list = await listStopFiles({
@@ -942,7 +945,7 @@ describe('runHookReceiver — Stop event', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_HOOK_ACTIVE_TRUE,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     // Should NOT consume the injection queue → returns void.
     expect(result).toBeUndefined();
@@ -954,7 +957,7 @@ describe('runHookReceiver — Stop event', () => {
     const result = await runHookReceiver({
       stateDir,
       payload: STOP_PAYLOAD,
-      resolvePaneId: stubPaneId,
+      resolvePaneOrigin: stubPaneOrigin,
     });
     expect(result).toEqual({ decision: 'block', reason: 'wake-cc' });
   });

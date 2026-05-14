@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
   IM_ORIGIN_FILE_NAME,
-  IM_WORK_FILE_NAME,
+  imWorkFileName,
   STOP_PREFIX,
   PERMISSION_REQUEST_PREFIX,
   PERMISSION_RESPONSE_PREFIX,
@@ -184,6 +184,7 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: ts,
         last_assistant_message: '多行\n第二行 ✨',
+        termId: 'wezterm',
       });
       const path = stopFilePath({
         stateDir,
@@ -213,6 +214,7 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: 'T2',
         last_assistant_message: 'b',
+        termId: 'wezterm',
       });
       await writeStopFile({
         stateDir,
@@ -220,6 +222,7 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: 'T1',
         last_assistant_message: 'a',
+        termId: 'wezterm',
       });
       // Different pane shouldn't appear.
       await writeStopFile({
@@ -228,6 +231,7 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: 'T1',
         last_assistant_message: 'other-pane',
+        termId: 'wezterm',
       });
       const list = await listStopFiles({
         stateDir,
@@ -257,6 +261,7 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: ts,
         last_assistant_message: 'x',
+        termId: 'wezterm',
       });
       const path = stopFilePath({
         stateDir,
@@ -627,8 +632,9 @@ describe('state-files', () => {
         sessionId: SID,
         timestamp: '2026-05-11T00-00-00-000Z',
         last_assistant_message: 'hi',
+        termId: 'wezterm',
       });
-      await writeIMWorkFile(stateDir, { auto: false });
+      await writeIMWorkFile(stateDir, 'wezterm', { auto: false });
       await writeIMOriginFile(stateDir, LARK_CTX);
       await writeDaemonPidFile({
         stateDir,
@@ -868,57 +874,57 @@ describe('state-files', () => {
 
   describe('IMWork file (top-level JSON, post-DD #64)', () => {
     it('writeIMWorkFile zero-arg writes {auto:false} JSON at top-level', async () => {
-      await writeIMWorkFile(stateDir);
-      const path = imWorkPath(stateDir);
-      expect(path).toBe(join(stateDir, IM_WORK_FILE_NAME));
+      await writeIMWorkFile(stateDir, 'wezterm');
+      const path = imWorkPath(stateDir, "wezterm");
+      expect(path).toBe(join(stateDir, imWorkFileName('wezterm')));
       const buf = await readFile(path, 'utf-8');
       expect(JSON.parse(buf)).toEqual({ auto: false });
     });
 
     it('writeIMWorkFile({auto:true}) writes {auto:true} JSON', async () => {
-      await writeIMWorkFile(stateDir, { auto: true });
-      const buf = await readFile(imWorkPath(stateDir), 'utf-8');
+      await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
+      const buf = await readFile(imWorkPath(stateDir, "wezterm"), 'utf-8');
       expect(JSON.parse(buf)).toEqual({ auto: true });
     });
 
     it('readIMWorkFile returns null on ENOENT', async () => {
-      expect(await readIMWorkFile(stateDir)).toBeNull();
+      expect(await readIMWorkFile(stateDir, 'wezterm')).toBeNull();
     });
 
     it('readIMWorkFile returns {auto:false} for legacy 0-byte file (back-compat)', async () => {
-      await writeFile(imWorkPath(stateDir), '');
-      expect(await readIMWorkFile(stateDir)).toEqual({ auto: false });
+      await writeFile(imWorkPath(stateDir, "wezterm"), '');
+      expect(await readIMWorkFile(stateDir, 'wezterm')).toEqual({ auto: false });
     });
 
     it('readIMWorkFile round-trips JSON {auto:true} written by writeIMWorkFile', async () => {
-      await writeIMWorkFile(stateDir, { auto: true });
-      expect(await readIMWorkFile(stateDir)).toEqual({ auto: true });
+      await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
+      expect(await readIMWorkFile(stateDir, 'wezterm')).toEqual({ auto: true });
     });
 
     it('readIMWorkFile throws on JSON corruption (loud failure, not silent default)', async () => {
-      await writeFile(imWorkPath(stateDir), 'not-json');
-      await expect(readIMWorkFile(stateDir)).rejects.toThrow();
+      await writeFile(imWorkPath(stateDir, "wezterm"), 'not-json');
+      await expect(readIMWorkFile(stateDir, 'wezterm')).rejects.toThrow();
     });
 
     it('readIMWorkFile throws on schema mismatch (e.g. future version with extra required field, or wrong type)', async () => {
-      await writeFile(imWorkPath(stateDir), JSON.stringify({ auto: 'yes' }));
-      await expect(readIMWorkFile(stateDir)).rejects.toThrow();
+      await writeFile(imWorkPath(stateDir, "wezterm"), JSON.stringify({ auto: 'yes' }));
+      await expect(readIMWorkFile(stateDir, 'wezterm')).rejects.toThrow();
     });
 
     it('writeIMWorkFile rejects non-IMWorkFile-shape content via zod', async () => {
       await expect(
-        writeIMWorkFile(stateDir, { auto: 'yes' } as unknown as { auto: boolean }),
+        writeIMWorkFile(stateDir, 'wezterm', { auto: 'yes' } as unknown as { auto: boolean }),
       ).rejects.toThrow();
     });
 
     it('existsIMWorkFile / deleteIMWorkFile lifecycle', async () => {
-      expect(await existsIMWorkFile(stateDir)).toBe(false);
-      await writeIMWorkFile(stateDir);
-      expect(await existsIMWorkFile(stateDir)).toBe(true);
-      await deleteIMWorkFile(stateDir);
-      expect(await existsIMWorkFile(stateDir)).toBe(false);
+      expect(await existsIMWorkFile(stateDir, 'wezterm')).toBe(false);
+      await writeIMWorkFile(stateDir, 'wezterm');
+      expect(await existsIMWorkFile(stateDir, 'wezterm')).toBe(true);
+      await deleteIMWorkFile(stateDir, 'wezterm');
+      expect(await existsIMWorkFile(stateDir, 'wezterm')).toBe(false);
       // Idempotent.
-      await expect(deleteIMWorkFile(stateDir)).resolves.toBeUndefined();
+      await expect(deleteIMWorkFile(stateDir, 'wezterm')).resolves.toBeUndefined();
     });
   });
 

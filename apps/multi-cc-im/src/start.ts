@@ -432,8 +432,13 @@ export async function runStartCommand(
   // `context_token` from a SIGKILL'd / OOM'd previous daemon would 4xx /
   // RST against the iLink server (server only honors latest token issued
   // for the current user-bot conversation).
+  // Delete BOTH per-terminal IM<TermType> tombstones on start (issue
+  // 378 split). At this point we know which terminal the daemon was
+  // configured for, but wiping both is cheap and removes any stale
+  // file left by a previous-terminal session — defensive only.
   try {
-    await deleteIMWorkFile(paths.stateDir);
+    await deleteIMWorkFile(paths.stateDir, 'wezterm');
+    await deleteIMWorkFile(paths.stateDir, 'iterm2');
   } catch (err) {
     log(
       `  ⚠️  failed to reset IMWork on start: ${err instanceof Error ? err.message : String(err)}`,
