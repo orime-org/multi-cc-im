@@ -90,6 +90,29 @@ async function isReadable(path: string): Promise<boolean> {
 }
 
 /**
+ * Spotlight-backed lookup by macOS bundle identifier. Catches every
+ * .app install location Spotlight has indexed — `/Applications/`,
+ * `~/Applications/`, `/Applications/Setapp/`, `~/Downloads/...`, etc.
+ * Returns true if at least one hit; false if `mdfind` exits with no
+ * output OR if `mdfind` is unavailable (non-macOS, Spotlight disabled,
+ * `mdutil -i off` on the volume).
+ *
+ * Per P7 smoke 2026-05-14 user feedback — hard-coding `/Applications/`
+ * + `~/Applications/` missed users who installed terminals to custom
+ * paths.
+ */
+async function mdfindByBundleId(bundleId: string): Promise<boolean> {
+  try {
+    const r = await execFileAsync('mdfind', [
+      `kMDItemCFBundleIdentifier == '${bundleId}'`,
+    ]);
+    return String(r.stdout).trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default deps wiring — direct passthrough to production implementations.
  * Hoisted so the public `selectTerminal` signature stays tiny.
  */
@@ -102,14 +125,22 @@ function defaultDeps(): SelectTerminalDeps {
       return { stdout: String(r.stdout), stderr: String(r.stderr) };
     },
     detectWezTermInstalled: async () => {
+      // Try the binary-PATH-scan resolver first (matches Linux + macOS
+      // PATH installs / brew); then fall back to Spotlight lookup so
+      // custom .app install locations (Setapp / ~/Downloads / etc.) are
+      // covered on macOS.
       try {
         await resolveWezTermPath({});
         return true;
       } catch {
-        return false;
+        return mdfindByBundleId('com.github.wez.wezterm');
       }
     },
     detectIterm2Installed: async () => {
+      // Spotlight first so any non-standard install location is covered;
+      // fall back to the two canonical .app paths if Spotlight is
+      // disabled or hasn't indexed yet.
+      if (await mdfindByBundleId('com.googlecode.iterm2')) return true;
       const candidates = [
         '/Applications/iTerm.app',
         join(homedir(), 'Applications', 'iTerm.app'),
