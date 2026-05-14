@@ -1,6 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { selectTerminal } from './terminal-selector.js';
+import type { SelectTerminalDeps } from './terminal-selector.js';
 import type { WizardPromptIO } from './wizard/io.js';
+
+/**
+ * Per-test deps base — both terminals reported installed by default so
+ * the select-prompt detection doesn't interfere with the prompt scripts.
+ * Individual tests override fields as needed.
+ */
+function baseDeps(over: Partial<SelectTerminalDeps>): SelectTerminalDeps {
+  return {
+    resolvePython3: async () => '/usr/bin/python3',
+    exec: async () => ({ stdout: '', stderr: '' }),
+    detectWezTermInstalled: async () => true,
+    detectIterm2Installed: async () => true,
+    ...over,
+  };
+}
 
 /**
  * Scripted I/O surface for deterministic wizard tests — replaces
@@ -59,14 +75,14 @@ describe('selectTerminal', () => {
     const io = makeScripted({ selects: ['wezterm'] });
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => {
           throw new Error('should not resolve python3 for wezterm');
         },
         exec: async () => {
           throw new Error('should not exec for wezterm');
         },
-      },
+      }),
     });
     expect(result).toEqual({ status: 'configured', id: 'wezterm' });
   });
@@ -79,13 +95,13 @@ describe('selectTerminal', () => {
     });
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => '/opt/homebrew/bin/python3',
         exec: async (cmd, args) => {
           execCalls.push({ cmd, args });
           return { stdout: '', stderr: '' };
         },
-      },
+      }),
     });
     expect(result).toEqual({
       status: 'configured',
@@ -95,7 +111,7 @@ describe('selectTerminal', () => {
     // First exec: pip install. Second exec: import smoke.
     expect(execCalls).toHaveLength(2);
     expect(execCalls[0]!.args).toEqual([
-      '-m', 'pip', 'install', '--user', 'iterm2',
+      '-m', 'pip', 'install', '--user', '--break-system-packages', 'iterm2',
     ]);
     expect(execCalls[1]!.args).toEqual(['-c', 'import iterm2']);
   });
@@ -104,10 +120,9 @@ describe('selectTerminal', () => {
     const io = makeScripted({ selects: ['iterm2'], confirms: [false] });
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => '/opt/homebrew/bin/python3',
-        exec: async () => ({ stdout: '', stderr: '' }),
-      },
+      }),
     });
     expect(result.status).toBe('error');
     if (result.status === 'error') {
@@ -123,14 +138,14 @@ describe('selectTerminal', () => {
     });
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => '/opt/homebrew/bin/python3',
         exec: async (_cmd, args) => {
           // Skip-install path only runs the smoke import.
           expect(args).toEqual(['-c', 'import iterm2']);
           return { stdout: '', stderr: '' };
         },
-      },
+      }),
     });
     expect(result).toEqual({
       status: 'configured',
@@ -143,12 +158,11 @@ describe('selectTerminal', () => {
     const io = makeScripted({ selects: ['iterm2'], confirms: [true] });
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => {
           throw new Error('python3 not found on PATH');
         },
-        exec: async () => ({ stdout: '', stderr: '' }),
-      },
+      }),
     });
     expect(result.status).toBe('error');
     if (result.status === 'error') {
@@ -164,7 +178,7 @@ describe('selectTerminal', () => {
     let calls = 0;
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => '/opt/homebrew/bin/python3',
         exec: async () => {
           calls += 1;
@@ -173,12 +187,77 @@ describe('selectTerminal', () => {
           }
           return { stdout: '', stderr: '' };
         },
-      },
+      }),
     });
     expect(result.status).toBe('error');
     if (result.status === 'error') {
       expect(result.message).toMatch(/cannot import.*iterm2/);
     }
+  });
+
+  it('select prompt hints reflect installed status (both installed)', async () => {
+    // The hint text only flows through io.select's options; we capture by
+    // intercepting the select call. Both terminals reported installed.
+    let capturedHints: string[] = [];
+    const io: WizardPromptIO = {
+      ...makeScripted({}),
+      select: async (opts) => {
+        capturedHints = opts.options.map((o) => o.hint ?? '');
+        return 'wezterm' as never;
+      },
+    };
+    await selectTerminal({
+      io,
+      deps: baseDeps({
+        detectWezTermInstalled: async () => true,
+        detectIterm2Installed: async () => true,
+      }),
+    });
+    expect(capturedHints[0]).toContain('✓ installed');
+    expect(capturedHints[1]).toContain('✓ installed');
+  });
+
+  it('select prompt hints show install commands when terminals are missing', async () => {
+    let capturedHints: string[] = [];
+    const io: WizardPromptIO = {
+      ...makeScripted({}),
+      select: async (opts) => {
+        capturedHints = opts.options.map((o) => o.hint ?? '');
+        return 'wezterm' as never;
+      },
+    };
+    await selectTerminal({
+      io,
+      deps: baseDeps({
+        detectWezTermInstalled: async () => false,
+        detectIterm2Installed: async () => false,
+      }),
+    });
+    expect(capturedHints[0]).toContain('brew install --cask wezterm');
+    expect(capturedHints[1]).toContain('brew install --cask iterm2');
+  });
+
+  it('pip install uses --break-system-packages flag (PEP 668 bypass)', async () => {
+    const io = makeScripted({
+      selects: ['iterm2'],
+      confirms: [true, true],
+    });
+    const execCalls: Array<{ cmd: string; args: string[] }> = [];
+    await selectTerminal({
+      io,
+      deps: baseDeps({
+        resolvePython3: async () => '/opt/homebrew/bin/python3',
+        exec: async (cmd, args) => {
+          execCalls.push({ cmd, args });
+          return { stdout: '', stderr: '' };
+        },
+      }),
+    });
+    // First call is the pip install; verify the flag is present so
+    // macOS Homebrew Python ≥ 3.12 (PEP 668 enforced) accepts the
+    // install without `externally-managed-environment` rejecting.
+    expect(execCalls[0]!.args).toContain('--break-system-packages');
+    expect(execCalls[0]!.args).toContain('--user');
   });
 
   it('cancel at terminal select → cancelled', async () => {
@@ -190,14 +269,14 @@ describe('selectTerminal', () => {
     };
     const result = await selectTerminal({
       io,
-      deps: {
+      deps: baseDeps({
         resolvePython3: async () => {
           throw new Error('should not reach');
         },
         exec: async () => {
           throw new Error('should not reach');
         },
-      },
+      }),
     });
     expect(result).toEqual({ status: 'cancelled' });
   });
