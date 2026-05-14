@@ -30,7 +30,8 @@ import {
 } from './terminal-selector.js';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { access, constants } from 'node:fs/promises';
+import { access, constants, mkdir } from 'node:fs/promises';
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { adapters, type AdapterRegistryEntry } from './adapters.js';
 import {
   selectAndConfigureAdapter,
@@ -168,7 +169,43 @@ export async function runStartCommand(
   const paths = opts.root
     ? resolveAppPaths({ env: { MULTI_CC_IM_HOME: opts.root } })
     : resolveAppPaths();
-  const log = opts.log ?? defaultLog;
+
+  // Diagnostic daemon log file. Only created when caller does NOT inject
+  // `opts.log` — production daemon gets the dual-write (stderr + file)
+  // logger; tests pass their own `opts.log` stub and bypass file I/O.
+  // File is append-only across daemon restarts so post-mortem inspection
+  // survives Ctrl+C / SIGKILL.
+  let logStream: WriteStream | null = null;
+  if (opts.log === undefined) {
+    try {
+      await mkdir(paths.root, { recursive: true });
+      logStream = createWriteStream(paths.daemonLog, {
+        flags: 'a',
+        mode: 0o600,
+      });
+      // Swallow stream-level errors (disk full / permission revoked mid-
+      // run); the daemon should keep running even if the log file goes
+      // bad — stderr is the primary output.
+      logStream.on('error', () => {
+        /* intentional swallow */
+      });
+      const ts = new Date().toISOString();
+      logStream.write(
+        `${ts} === daemon started PID=${process.pid} root=${paths.root} ===\n`,
+      );
+    } catch {
+      // If the file can't be opened at all, fall back to stderr-only.
+      logStream = null;
+    }
+  }
+
+  const log = opts.log ?? ((line: string) => {
+    process.stderr.write(`${line}\n`);
+    if (logStream) {
+      const ts = new Date().toISOString();
+      logStream.write(`${ts} ${line}\n`);
+    }
+  });
 
   log(`multi-cc-im start (root: ${paths.root})`);
 
@@ -472,6 +509,11 @@ export async function runStartCommand(
       : createITerm2Adapter({
           python: { path: python3! },
           helperScript: { path: iterm2HelperPath! },
+          // Thread the daemon's dual-write logger so each iterm2-helper
+          // subprocess invocation lands in `~/.multi-cc-im/daemon.log`
+          // alongside the daemon's own stderr — gives users + AI a single
+          // source for post-mortem when iTerm2 stops responding.
+          log,
         });
   const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,
@@ -516,13 +558,18 @@ export async function runStartCommand(
     stderr: '',
     shutdown: async () => {
       await orchestrator.stop();
+      // Close the diagnostic log stream cleanly so the shutdown banner
+      // ends up on disk before the process exits. Tests with injected
+      // opts.log never created logStream so this is a no-op for them.
+      if (logStream) {
+        const ts = new Date().toISOString();
+        logStream.write(
+          `${ts} === daemon stopped PID=${process.pid} ===\n`,
+        );
+        await new Promise<void>((r) => logStream!.end(r));
+      }
     },
   };
-}
-
-/** Default log sink writes to stderr (stdout reserved for hook protocol). */
-function defaultLog(line: string): void {
-  process.stderr.write(`${line}\n`);
 }
 
 /**

@@ -57,6 +57,33 @@ export interface RunIterM2HelperOpts {
    * (one-time on first run); too tight invites flake on a slow runner.
    */
   timeoutMs?: number;
+  /**
+   * Optional diagnostic log sink. When provided, every invocation prints
+   * a single line before the subprocess spawns
+   * (`[iterm2-helper] action=<X> ...`) and another line on result
+   * (`[iterm2-helper] action=<X> ok` / `[iterm2-helper] action=<X> error: <msg>`).
+   * Default: silent — production wires this from `start.ts` so daemon
+   * stderr surfaces helper invocations alongside its other lifecycle
+   * logs; tests pass nothing.
+   */
+  log?: (line: string) => void;
+}
+
+/**
+ * Format a one-line action signature for logging. UUIDs are truncated
+ * to keep the log readable; text payloads are length-summarized rather
+ * than dumped verbatim (avoids spilling sensitive content to terminal
+ * logs).
+ */
+function summarizeRequest(req: IterM2HelperRequest): string {
+  switch (req.action) {
+    case 'listSessions':
+      return 'action=listSessions';
+    case 'sendText':
+      return `action=sendText sessionId=${req.sessionId.slice(0, 8)}… textLen=${req.text.length}`;
+    case 'sendKeystroke':
+      return `action=sendKeystroke sessionId=${req.sessionId.slice(0, 8)}… key=${JSON.stringify(req.key)}`;
+  }
 }
 
 /**
@@ -73,6 +100,9 @@ export async function runIterM2Helper(
   opts: RunIterM2HelperOpts,
 ): Promise<IterM2HelperResult> {
   const timeoutMs = opts.timeoutMs ?? 8000;
+  const log = opts.log;
+  const sig = summarizeRequest(opts.request);
+  log?.(`[iterm2-helper] ${sig} (timeout=${timeoutMs}ms)`);
 
   return new Promise<IterM2HelperResult>((resolve, reject) => {
     const child = spawn(opts.python.path, [opts.helperScript.path], {
@@ -119,6 +149,7 @@ export async function runIterM2Helper(
       const stderr = Buffer.concat(stderrChunks).toString('utf8');
 
       if (timedOut) {
+        log?.(`[iterm2-helper] ${sig} timeout after ${timeoutMs}ms`);
         reject(
           new Error(
             `iterm2-helper timed out after ${timeoutMs}ms ` +
@@ -129,6 +160,7 @@ export async function runIterM2Helper(
       }
 
       if (code !== 0) {
+        log?.(`[iterm2-helper] ${sig} exit=${code} stderr=${stderr.trim() || '<empty>'}`);
         // helper script may have emitted a JSON {ok:false,error:"..."} on stdout
         // before exiting 1; surface that error string verbatim if present.
         const parsed = tryParseHelperFailure(stdout);

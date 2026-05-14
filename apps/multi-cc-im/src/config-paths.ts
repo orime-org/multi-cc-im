@@ -16,6 +16,15 @@ export interface AppPaths {
   credentialsDir: string;
   /** `<root>/inbound/` — per-IM decrypted inbound media. */
   inboundDir: string;
+  /**
+   * `<root>/daemon.log` — diagnostic log mirroring everything the daemon
+   * writes to stderr, with timestamps + a `=== daemon started PID=X ===`
+   * banner on each launch. Append-only across restarts so post-mortem
+   * inspection survives Ctrl+C / SIGKILL. Mode 0600 (same caution as
+   * credentials, even though log shouldn't carry secrets — argv / paths
+   * can leak host info).
+   */
+  daemonLog: string;
   /** Path to `<credentialsDir>/<im>.json`. */
   credentialFor(im: string): string;
   /** Path to `<inboundDir>/<im>/`. */
@@ -67,6 +76,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOpts = {}): AppPaths {
     stateDir,
     credentialsDir,
     inboundDir,
+    daemonLog: join(root, 'daemon.log'),
     credentialFor: (im) => join(credentialsDir, `${im}.json`),
     inboundFor: (im) => join(inboundDir, im),
   };
