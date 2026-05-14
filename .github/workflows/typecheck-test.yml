@@ -113,10 +113,11 @@ jobs:
             exit 1
           }
 
-      - name: Smoke — Stop hook short-circuits in local mode (WEZTERM_PANE set, no IMWork)
-        # Per DD #61 + [DD: IMWork+IMOrigin]: even with WEZTERM_PANE set, Stop
-        # hook short-circuits when IMWork is absent (= user in local mode).
-        # state/ dir won't be created since no atomicWrite runs.
+      - name: Smoke — Stop hook short-circuits in local mode (WEZTERM_PANE set, no IMWezterm)
+        # Per DD #61 + [DD: IMWork+IMOrigin] + issue 378 split: even with
+        # WEZTERM_PANE set, Stop hook short-circuits when the per-terminal
+        # `IMWezterm` file is absent (= user in local mode for this
+        # terminal). state/ dir won't be created since no atomicWrite runs.
         run: |
           set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
@@ -131,9 +132,15 @@ jobs:
           }
 
       - name: Smoke — Stop hook writes <paneId>_<sid>.Stop file in IM mode (forward path)
-        # When WEZTERM_PANE + IMWork + global IMOrigin + daemon.pid are all
-        # set, Stop hook writes <home>/state/<paneId>_<sid>.Stop.<ISO-ts>.
-        # Daemon would forward + unlink, but no daemon here so the file persists.
+        # When WEZTERM_PANE + IMWezterm + global IMOrigin + daemon.pid are
+        # all set, Stop hook writes <home>/state/<paneId>_<sid>.Stop.<ISO-ts>.
+        # Daemon would forward + unlink, but no daemon here so the file
+        # persists.
+        #
+        # Per issue 378 split: IMWork was renamed to per-terminal
+        # `IM<TermType>` files. With `WEZTERM_PANE=42` set, the hook
+        # detects termId='wezterm' and reads `IMWezterm` (not the legacy
+        # `IMWork`).
         run: |
           set -x
           export MULTI_CC_IM_HOME="$(mktemp -d)"
@@ -141,11 +148,11 @@ jobs:
           SID="11111111-3606-4fe4-b01d-aaaaaaaaaaaa"
 
           # Set up forward-path prerequisites per DD #61 + DD: IMOrigin global:
-          #   - IMWork tombstone (top-level)
+          #   - IMWezterm tombstone (per-terminal IMWork — issue 378 split)
           #   - state/IMOrigin (global, no paneId — overwritten by every inbound)
           #   - daemon.pid pointing at this shell (PID + lstart match)
           mkdir -p "$MULTI_CC_IM_HOME/state"
-          : > "$MULTI_CC_IM_HOME/state/IMWork"
+          : > "$MULTI_CC_IM_HOME/state/IMWezterm"
           echo '{"imType":"wechat","to":"u","contextToken":"smoke-test"}' \
             > "$MULTI_CC_IM_HOME/state/IMOrigin"
           SHELL_PID=$$
