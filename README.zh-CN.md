@@ -207,6 +207,7 @@ daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `Permi
 
 - `~/.multi-cc-im/credentials/lark.json` — 飞书凭据（mode 0600）
 - `~/.multi-cc-im/state/` — 运行时状态，daemon 自管理
+- `~/.multi-cc-im/daemon.log` — 诊断日志（mode 0600，跨重启 append-only）。stderr 每行都 mirror 一份带 ISO-8601 时间戳 + iterm2-helper 子进程调用 trace。`tail -f ~/.multi-cc-im/daemon.log` 实时看 daemon 在干嘛；Ctrl+C 退出后还能 grep 回查。
 
 要换路径设 `MULTI_CC_IM_HOME` 环境变量。
 

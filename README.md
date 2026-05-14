@@ -207,6 +207,7 @@ Feishu doesn't render markdown, so cc replies are simplified before sending — 
 
 - `~/.multi-cc-im/credentials/lark.json` — your Feishu credentials (mode 0600)
 - `~/.multi-cc-im/state/` — runtime state, daemon self-manages
+- `~/.multi-cc-im/daemon.log` — diagnostic log (mode 0600, append-only across restarts). Every stderr line mirrored with ISO-8601 timestamp + iterm2-helper subprocess invocation trace. Use `tail -f ~/.multi-cc-im/daemon.log` to watch what the daemon is doing in real time, or grep it for post-mortem after Ctrl+C.
 
 Override the root with the `MULTI_CC_IM_HOME` env var.
 
