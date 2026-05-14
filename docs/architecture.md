@@ -2,7 +2,7 @@
 
 > CLAUDE.md 的硬约束补充。本文记录架构图、包依赖、目录结构、数据存储 schema、外部 CLI 工具路径策略。任何与 CLAUDE.md「核心约束」「关键规范」冲突的实现 = 违规，回 CLAUDE.md 处置。
 
-> **历史遗留警告（2026-05-11）**：本文部分章节是 v1.4 wechat 时代留下来的，文字里仍可能出现 `im-wechat` / `iLink` / `openclaw` 字样 —— **仅作历史参考**。当前 packages 实际是 `shared / storage-files / im-lark / term-wezterm / cli-cc / bridge`：wechat 整包已在 DD #86 M1 删除，飞书 (Lark) adapter 在 DD #86 M2-M7 + interactive setup wizard DD (W1-W8) 全部实施完成。当前状态总表 + 修订记录见 [`conventions.md`](conventions.md)。本文核心架构（cc hook / wezterm cli / IM adapter / 文件 IPC）仍然有效，IM 适配器从 wechat 换成 lark 是平移替换。整版重写排在后续 follow-up。
+> **历史遗留警告（2026-05-14 更新到 v0.1.0）**：本文部分章节是 v1.4 wechat 时代留下来的，文字里仍可能出现 `im-wechat` / `iLink` / `openclaw` 字样 —— **仅作历史参考**。当前 packages 实际是 `shared / storage-files / im-lark / term-wezterm / term-iterm2 / cli-cc / bridge`：wechat 整包已在 DD #86 M1 删除；飞书 (Lark) adapter 在 DD #86 M2-M7 + interactive setup wizard DD (W1-W8) 全部落地；**v1.13 iTerm2 第二终端适配器**（[DD 2026-05-13](superpowers/specs/2026-05-13-iterm2-adapter-dd.md)）+ 真账号 smoke 暴露的多个关键 bug 修复（IMWork 每终端拆分 issue 378 / lstart locale 修 issue 377 / lark WS 重连改写 / wizard empirical Python API smoke）全部落地于 v0.1.0。当前状态总表 + 完整修订记录见 [`conventions.md`](conventions.md)。本文核心架构（cc hook / 终端 cli / IM adapter / 文件 IPC）仍然有效；新增维度：(a) **PaneId 扩为 `Brand<number | string>`**（wezterm 数字 / iterm2 UUID），(b) **pane-id detector 链 `[wezterm, iterm2]`** 在 hook 子进程入口决定 termId（DD #160 P1），(c) **IMWork 文件拆为 `IM<TermType>`**（`IMWezterm` / `IMIterm2`，issue 378 修），(d) Stop 文件 payload 带 `termId` 字段端到端传递。整版重写排在后续 follow-up。
 
 ## 技术栈
 

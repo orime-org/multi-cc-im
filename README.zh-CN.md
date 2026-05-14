@@ -2,7 +2,13 @@
 
 [English](README.md) | **中文**
 
-把多个跑在 WezTerm tab 里的 Claude Code (cc) session 接到飞书。在 IM 里随便说一句「给前端写个登录页」，daemon 让 cc 自己分诊，自动选最匹配的 tab 把任务发过去；要精确点名才用 `#<tab>`。
+把多个跑在 **WezTerm 或 iTerm2** tab 里的 Claude Code (cc) session 接到飞书。在 IM 里随便说一句「给前端写个登录页」，daemon 让 cc 自己分诊，自动选最匹配的 tab 把任务发过去；要精确点名才用 `#<tab>`。
+
+> **v0.1.0** (2026-05-14) — iTerm2 适配完整 + 真账号 smoke 暴露的关键根因修复。详见 [`docs/conventions.md`](docs/conventions.md) 修订记录或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.0)。
+
+**README 分两块** ——
+- **[Part 1 — 直接使用](#part-1--直接使用)**：安装 / 启动 / IM 命令 / 故障排查。只想用 multi-cc-im 看这里。
+- **[Part 2 — 二次开发](#part-2--二次开发)**：仓库布局 / adapter 接口 (IM / 终端 / CLI) / 重大决策 DD 流程 / 文档索引。想加新 IM（Telegram / Slack / WeChat...）或新终端（tmux / kitty / Ghostty...）adapter、修 bug、读懂内部机制就看这里。
 
 ---
 
@@ -354,7 +360,8 @@ multi-cc-im/
 │   ├── shared/              — 跨包类型 + zod schema
 │   ├── storage-files/       — TOML + JSON 文件存储（config / 凭据 / cursor / queue）
 │   ├── im-lark/             — Lark/Feishu 适配器（npm depend `@larksuiteoapi/node-sdk`）
-│   ├── term-wezterm/        — wezterm CLI 适配器
+│   ├── term-wezterm/        — WezTerm CLI 适配器
+│   ├── term-iterm2/         — iTerm2 Python API 适配器（每次调用 spawn 一次性 Python helper；详见 DD 2026-05-13）
 │   ├── cli-cc/              — Claude Code hook 适配器
 │   └── bridge/              — 路由器 + orchestrator + AI 分诊
 ├── bin/multi-cc-im          — Bash 包装脚本（解析 dist 或 tsx）
@@ -403,16 +410,23 @@ multi-cc-im/
 6. 凭据落 `~/.multi-cc-im/credentials/<im>.json`（mode 0600）。**不许**调 OS keychain — 见 [DD: credentials 持久化策略](docs/superpowers/specs/2026-05-03-keychain-library-dd.md)。
 7. 可选：写 `docs/setup-<im>.md` 步骤指南，registry entry 里把 `guideDocPath` 指过去。wizard 启动时会用 `terminal-link` 渲染含 OSC 8 hyperlink 的指南（W6）。
 
-## 加新终端适配器（tmux / kitty / 等）
+## 加新终端适配器（tmux / kitty / Ghostty / 等）
+
+参考实现：[DD: iTerm2 adapter](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) 跟 `packages/term-iterm2/`（v0.1.0 落地的第二个适配器，可直接照抄结构）。
 
 1. 建 `packages/term-<name>/`。
-2. 实现 `@multi-cc-im/shared` 的 `TermAdapter` + `TermListPanes`：
-   - `start(): Promise<void>`
-   - `listPanes(): Promise<TermPaneInfo[]>` — 必须返 tab title
+2. 在 `TerminalIdSchema`（`packages/shared/src/adapter/storage.ts`）枚举里加 `<name>`：`z.enum(['wezterm', 'iterm2', '<name>'])`。
+3. 实现 `@multi-cc-im/shared` 的 `TermAdapter & TermListPanes`：
+   - `name: '<name>'` 字面量（orchestrator 用它推 `activeTerminalId`）
+   - `start(handler): Promise<void>`（终端不推 lifecycle event 就 no-op）
+   - `listPanes(): Promise<TermPaneInfo[]>` — 返每个 tab/pane 的 `{paneId, title, cwd}`
    - `sendText(paneId, content): Promise<void>` — 仅 paste（不带提交）
-   - `sendKeystroke(paneId, key): Promise<void>` — 提交键（`\r`）
+   - `sendKeystroke(paneId, key): Promise<void>` — 提交键（`\r` 等）
    - `stop(): Promise<void>`
-3. 严格走两步发送：paste（`sendText`）→ ~300ms → 提交（`sendKeystroke('\r')`）。**禁止**单步 send-with-newline — 见 `CLAUDE.md`「send-text 注入两步法」。
+4. **严格走两步发送**：`sendText(content)` → orchestrator sleeps ~300ms → `sendKeystroke('\r')`。**禁止**单步 send-with-newline — 见 `CLAUDE.md`「send-text 注入两步法」。
+5. **Pane-id detector**：终端若导出了识别当前 pane 的 env 变量（如 `KITTY_WINDOW_ID`、`TMUX_PANE`），在 `packages/cli-cc/src/pane-id-detectors.ts` `DEFAULT_DETECTORS` 里加 `TaggedDetector` entry。detector 输入 `process.env`、输出 branded `PaneId`（`number | string`）。issue 378 根因：detector 的 `termId` 沿 Stop 文件 payload + `IM<TermType>` 每终端 IMWork 文件**端到端传递**——**不许**用 `typeof paneId` 反推终端。
+6. **start.ts 接通**：在 wizard 的 `selectTerminal` 加新选项；`start.ts` 根据 `config.terminal.type` 条件构造适配器。
+7. 写测试覆盖 listPanes / sendText / sendKeystroke / detector（参考 `packages/term-iterm2/src/*.test.ts`）。
 
 ## 加新 CLI 适配器（codex / aider / 等）
 
@@ -430,7 +444,7 @@ cc 适配器（`packages/cli-cc/`）耦合到 cc 特有的 hook（`PreToolUse` /
 | [`docs/conventions.md`](docs/conventions.md) | 项目特定技术规范（状态总表、hook timeout / send-text 两步法 / 路由 key / 项目特定禁令）|
 | [`docs/architecture.md`](docs/architecture.md) | 架构图、state schema、文件 IPC |
 | [`docs/dev.md`](docs/dev.md) | 开发命令 + TDD 节奏 + 调试技巧 |
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD 报告（每条锁定决策一份）|
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD 报告（每条锁定决策一份）—— 近期重点：[iTerm2 适配器](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md)、[IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md)、[PermissionRequest IM bridge](docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md)、[凭据持久化](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
 | [`docs/competitors.md`](docs/competitors.md) | 为什么不直接采用项目 X |
 
 ## License
