@@ -1,8 +1,18 @@
 # DD: iTerm2 Term Adapter
 
-> Status: **LOCKED** 2026-05-13. Pre-locked by user with 3 yes/no answers
-> (Python dep OK / PaneId string OK / iTerm2 prefs + macOS permission UX OK)
-> after fact-finding research on iTerm2's public control surfaces.
+> Status: **LOCKED** 2026-05-13 → **P1-P5 IMPLEMENTED** 2026-05-14.
+> Pre-locked by user with 3 yes/no answers (Python dep OK / PaneId
+> string OK / iTerm2 prefs + macOS permission UX OK) after fact-finding
+> research on iTerm2's public control surfaces.
+>
+> Implementation status (see §9 for the milestone plan):
+> - ✅ **P1** PR #162 — PaneId widening + cli-cc entry gate abstraction
+> - ✅ **P2** PR #163 — `packages/term-iterm2/` + Python helper + detector
+> - ✅ **P3** PR #164 — startup-resolver infra (python3 path + tsup copy)
+> - ✅ **P4+P5** PR #166 — setup wizard + orchestrator wiring (merged
+>   because P5 was "expected no-op" and cohesive with the wizard)
+> - 🚧 **P6** (this PR) — README + DD finalization
+> - ⏳ **P7** real-account smoke pending
 
 ## 1. Goal
 
@@ -151,27 +161,42 @@ Sources: [docs.iterm2.com](https://iterm2.com), `gnachman/iTerm2` repo,
   variables. We work with what iTerm2 gives us: parse the UUID out of
   `ITERM_SESSION_ID`.
 
-## 9. Implementation milestone plan (to be detailed after lock)
+## 9. Implementation milestone plan (P1-P5 done; P7 pending)
 
-Following v1.12 cadence (PR #150-#155 chain). Sketch only:
+Mirrored v1.12 cadence (PR #150-#155 chain). Final landing notes:
 
-- **P1**: Widen `PaneId` type + `defaultResolvePaneId` abstraction in
-  cli-cc — env var name and value parser become per-terminal pluggable.
-- **P2**: New `packages/term-iterm2/` with `adapter.ts` implementing
-  the 6 caps via a Python helper script (`bin/iterm2-helper.py`).
-- **P3**: Wire `python3` path resolution (mirror wezterm's
-  `path-resolver.ts`) + write installer/check in setup wizard.
-- **P4**: `start iterm2` adapter-setup-schema (mirror lark adapter
-  setup, inline guide, ANSI hyperlinks for the Python API preference
-  toggle).
-- **P5**: orchestrator wiring (no change expected — adapter is plug-
-  compatible).
-- **P6**: `docs/conventions.md` status-table update, README updates,
-  this DD doc finalized.
-- **P7**: real-account smoke (spawn cc inside an iTerm2 tab, send a
-  prompt via IM, verify TUI receives + cc echoes back).
+- **P1** ✅ PR #162 — Widen `PaneId` brand from `number` to
+  `number | string`; abstract `defaultResolvePaneId` in cli-cc into a
+  per-terminal `PaneIdDetector` list so env detection becomes
+  pluggable.
+- **P2** ✅ PR #163 — New `packages/term-iterm2/` with `adapter.ts`
+  implementing all 6 caps via a Python helper script
+  (`bin/iterm2-helper.py`). Stdin-JSON RPC pattern, ephemeral
+  subprocess per call (candidate C1).
+- **P3** ✅ PR #164 — Wire `python3` path resolution (mirror
+  wezterm's `path-resolver.ts`) + new `defaultResolvePython3` +
+  `resolveIterm2HelperPath` in `start.ts`; tsup `onSuccess` copies
+  the helper script into `dist/` (function-form callback because
+  string-form `cp` mangles `../../` paths — see PR #164 description
+  for the gotcha).
+- **P4 + P5** ✅ PR #166 — Combined because P5 was "expected no-op"
+  and naturally cohesive with the wizard. `multi-cc-im start` now
+  prompts **terminal first**, then IM (D plan). iterm2 branch walks
+  user through enabling the Python API pref + `pip install iterm2`
+  + import smoke test (catches install failures + triggers the
+  macOS Automation permission while user watches). `[terminal] type`
+  persists to `config.toml`. Adapter creation in start.ts is now
+  conditional on the persisted choice. `/start` echo on the IM side
+  appends `✓ terminal: <id>`.
+- **P6** 🚧 (this PR) — `docs/conventions.md` revision log entry,
+  README updates (English + Chinese: prerequisites / first-time
+  start / troubleshooting / where things live), this DD doc
+  finalized.
+- **P7** ⏳ real-account smoke — spawn cc inside an iTerm2 tab, send
+  a prompt via IM, verify TUI receives the message + cc Stop hook
+  echoes back to IM.
 
-Each milestone = 1 PR. Mirror v1.12 cadence.
+Each milestone = 1 PR (except the merged P4+P5).
 
 ## 10. Open follow-ups (not blockers for lock)
 

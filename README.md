@@ -12,7 +12,9 @@ Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feis
 
 - macOS / Linux (Windows via WSL untested)
 - Node.js ≥ 22, pnpm ≥ 9
-- WezTerm ≥ 20240203
+- One of:
+  - **WezTerm ≥ 20240203** (lowest friction — single binary, native CLI)
+  - **iTerm2 ≥ 3.3** (macOS only — uses iTerm2's Python API; requires Python 3 + one-time pref toggle + Automation permission)
 - Claude Code CLI logged in (`claude` resolvable on `PATH`; Pro / Max subscription required for AI routing)
 - A Lark account dedicated as bot
 
@@ -26,7 +28,12 @@ pnpm --filter multi-cc-im build
 ./bin/multi-cc-im start
 ```
 
-That's it. On first run a setup wizard pops up — pick `lark`, follow the inline guide to create a self-built Feishu app, paste in `App ID` + `App Secret`, the daemon validates them against Feishu and continues into normal run mode.
+That's it. On first run a setup wizard pops up:
+
+1. **Pick a terminal**: `wezterm` or `iterm2`. iTerm2 branch walks you through enabling its Python API preference + installing the `iterm2` PyPI package + accepting the macOS Automation permission (one time each). WezTerm has no extra setup.
+2. **Pick an IM adapter**: pick `lark`, follow the inline guide to create a self-built Feishu app, paste in `App ID` + `App Secret`, the daemon validates them against Feishu and continues into normal run mode.
+
+The choices persist in `~/.multi-cc-im/config.toml` (`[terminal].type` + `[external_paths]`); subsequent `start` runs pre-select them and let you press Enter to keep, or arrow-key to switch.
 
 To re-configure later, or for non-interactive / headless setup:
 
@@ -86,11 +93,13 @@ Fuzzy matching is supported (`#front` → `frontend` if unique). Ambiguous prefi
 | `/start` | Enable IM mode, **auto-approve** — cc tool calls proceed without asking you |
 | `/start off` | Enable IM mode, **ask** — every tool call asks in IM first (`/1` / `/2`) |
 | `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts use cc's native menu) |
-| `/list` | Which wezterm tabs are addressable from IM |
+| `/list` | Which terminal tabs are addressable from IM |
 | `/current` | Current sticky default + IM-mode status |
 | `/help` | Routing examples |
 
 > IM mode resets to OFF every time the daemon starts. Send `/start` from IM once per session.
+
+> The `/start` echo includes a `✓ terminal: <id>` line so you can verify from the IM side which terminal adapter the daemon picked at startup (wezterm vs iterm2).
 
 ## Tool permission flow (ask mode only)
 
@@ -206,7 +215,12 @@ Feishu doesn't render markdown, so cc replies are simplified before sending — 
 ## Where things live
 
 - `~/.multi-cc-im/credentials/lark.json` — your Feishu credentials (mode 0600)
+- `~/.multi-cc-im/config.toml` — terminal choice + cached binary paths
+  - `[terminal] type = "wezterm" | "iterm2"` — your wizard pick
+  - `[external_paths] wezterm = "..."` — cached WezTerm CLI path (wezterm users)
+  - `[external_paths] python3 = "..."` — cached Python 3 path (iTerm2 users)
 - `~/.multi-cc-im/state/` — runtime state, daemon self-manages
+- `apps/multi-cc-im/dist/iterm2-helper.py` — bundled Python script the iTerm2 adapter spawns per call (copied from `packages/term-iterm2/bin/iterm2-helper.py` by `pnpm build`)
 
 Override the root with the `MULTI_CC_IM_HOME` env var.
 
@@ -229,9 +243,38 @@ Exit codes: `0` success, `1` runtime failure, `2` usage error.
 ```bash
 which wezterm   # must resolve
 # or write the path manually:
-echo '[wezterm]' >> ~/.multi-cc-im/config.toml
-echo 'path = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
+echo '[external_paths]' >> ~/.multi-cc-im/config.toml
+echo 'wezterm = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
 ```
+
+### `multi-cc-im start` says "python3 not found" (iTerm2)
+
+```bash
+which python3   # must resolve
+# macOS: install via brew or Xcode CLT
+brew install python3
+# OR
+xcode-select --install
+```
+
+### `multi-cc-im start` says "cannot import iterm2" (iTerm2)
+
+The PyPI package didn't install or the macOS Automation permission was denied:
+
+```bash
+# Re-install:
+python3 -m pip install --user iterm2
+
+# Re-trigger the Automation permission dialog by re-running the wizard:
+./bin/multi-cc-im start
+# Pick `iterm2` again → confirm prefs → confirm install. macOS will pop
+# the "iTerm2 wants to control multi-cc-im" dialog; click OK.
+```
+
+### iTerm2: tab title from `/rename` not appearing in `/list`
+
+- Verify the iTerm2 Python API preference is enabled: `iTerm2 → Preferences → General → Magic → ☑ Enable Python API`. The wizard checks this with an `import iterm2` smoke test, but a later macOS update can revoke the Automation permission silently.
+- The iTerm2 adapter reads `session.autoName` (set by cc's `/rename`). If the title still shows the default cc title `Claude Code [...]`, retry `/rename` inside the cc TUI.
 
 ### `multi-cc-im start` says "another daemon already running"
 
