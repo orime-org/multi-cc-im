@@ -12,7 +12,9 @@
 
 - macOS / Linux（Windows 用 WSL，没实测）
 - Node.js ≥ 22, pnpm ≥ 9
-- WezTerm ≥ 20240203
+- 二选一终端:
+  - **WezTerm ≥ 20240203** (最省事 — 单二进制 + 原生 CLI)
+  - **iTerm2 ≥ 3.3** (仅 macOS — 通过 iTerm2 Python API；需要 Python 3 + 一次性开偏好 + 给 Automation 权限)
 - 已登录的 Claude Code CLI（`claude` 在 `PATH` 里；AI 分诊需要 Pro / Max 订阅）
 - 一个专门当 bot 的飞书账号
 
@@ -26,7 +28,12 @@ pnpm --filter multi-cc-im build
 ./bin/multi-cc-im start
 ```
 
-就这样。首次运行会弹出配置向导 — 选 `lark`，跟着内嵌指南去飞书开放平台建一个自建应用，把 `App ID` + `App Secret` 填回来，daemon 在线校验通过后就直接进入运行模式。
+首次运行弹出配置向导（**先选 term 再选 IM**）:
+
+1. **选 terminal**: `wezterm` 或 `iterm2`。iTerm2 分支会引导你打开 Python API 偏好 + 安装 `iterm2` PyPI 包 + 同意 macOS Automation 权限（每个都一次性）。WezTerm 没额外步骤。
+2. **选 IM adapter**: 选 `lark`，跟着内嵌指南去飞书开放平台建一个自建应用，把 `App ID` + `App Secret` 填回来，daemon 在线校验通过后就直接进入运行模式。
+
+选项持久化到 `~/.multi-cc-im/config.toml`（`[terminal].type` + `[external_paths]`）；后续 `start` 预选你之前的选择，按 Enter 保留或方向键切换。
 
 之后想重配 / 自动化场景：
 
@@ -38,9 +45,11 @@ daemon 前台运行，Ctrl+C 停止。每台机器只能跑一个 daemon — 已
 
 ## 给 cc tab 起名字
 
-在任意 cc TUI 里跑 `/rename frontend`，wezterm tab title 就变成 `frontend`，IM 里就能用 `#frontend` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
+在任意 cc TUI 里跑 `/rename frontend`，终端 tab title 就变成 `frontend`，IM 里就能用 `#frontend` 寻址。没 `/rename` 的 tab 在 `/list` 能看到，但**不能从 IM 寻址**。
 
 > 避免起纯数字 tab title（会跟 wezterm pane ID 撞）。`/start` 时会主动 echo 警告。
+
+> IM 端发 `/start` 后，daemon 回包里有一行 `✓ terminal: <id>`，可以从 IM 侧确认 daemon 启动时选了哪个 terminal（wezterm 还是 iterm2）。
 
 ## 在 IM 里发什么
 
@@ -206,7 +215,12 @@ daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `Permi
 ## 文件在哪里
 
 - `~/.multi-cc-im/credentials/lark.json` — 飞书凭据（mode 0600）
+- `~/.multi-cc-im/config.toml` — terminal 选择 + 缓存 binary 路径
+  - `[terminal] type = "wezterm" | "iterm2"` — 你向导的选择
+  - `[external_paths] wezterm = "..."` — 缓存 WezTerm CLI 路径（wezterm 用户）
+  - `[external_paths] python3 = "..."` — 缓存 Python 3 路径（iTerm2 用户）
 - `~/.multi-cc-im/state/` — 运行时状态，daemon 自管理
+- `apps/multi-cc-im/dist/iterm2-helper.py` — bundle 里的 Python 脚本，iTerm2 adapter 每次 invocation spawn 它（`pnpm build` 时从 `packages/term-iterm2/bin/iterm2-helper.py` 复制过来）
 
 要换路径设 `MULTI_CC_IM_HOME` 环境变量。
 
@@ -229,9 +243,37 @@ daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `Permi
 ```bash
 which wezterm   # 必须能解析
 # 或手动写入路径：
-echo '[wezterm]' >> ~/.multi-cc-im/config.toml
-echo 'path = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
+echo '[external_paths]' >> ~/.multi-cc-im/config.toml
+echo 'wezterm = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
 ```
+
+### `multi-cc-im start` 报 "python3 not found"（iTerm2）
+
+```bash
+which python3   # 必须能解析
+# macOS 装 python3:
+brew install python3
+# 或：
+xcode-select --install
+```
+
+### `multi-cc-im start` 报 "cannot import iterm2"（iTerm2）
+
+PyPI 包没装上或 macOS Automation 权限被拒：
+
+```bash
+# 重装：
+python3 -m pip install --user iterm2
+
+# 重新触发 Automation 权限弹窗，再跑一次向导：
+./bin/multi-cc-im start
+# 再选 iterm2 → 确认 prefs → 确认 install。macOS 会弹「iTerm2 wants to control multi-cc-im」对话框；点 OK。
+```
+
+### iTerm2: cc 里 `/rename` 设的 tab title 在 `/list` 看不到
+
+- 确认 iTerm2 Python API 偏好开了: `iTerm2 → Preferences → General → Magic → ☑ Enable Python API`。向导用 `import iterm2` smoke 检查过，但后续 macOS 更新可能 silently 撤销 Automation 权限。
+- iTerm2 adapter 读的是 `session.autoName`（cc `/rename` 设的）。如果 title 仍显示默认 `Claude Code [...]`，在 cc TUI 里再 `/rename` 一次。
 
 ### `multi-cc-im start` 报 "another daemon already running"
 
