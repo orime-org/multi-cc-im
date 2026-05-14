@@ -36,6 +36,25 @@ massaging.
 import asyncio
 import json
 import sys
+import time
+
+
+def _log(msg: str) -> None:
+    """
+    Write a single progress line to stderr. The Node-side python-bridge
+    captures stderr line-by-line and forwards each to daemon.log via the
+    `log` callback, so these messages give users + AI a real-time trace
+    of what the helper is doing (especially around the iTerm2 WebSocket
+    handshake where Automation permission prompts / connection failures
+    can otherwise be invisible).
+
+    Per [DD: iTerm2 adapter P7 follow-up 2026-05-14] — user can't tell
+    from the daemon's stderr alone whether the helper is mid-connect,
+    blocked on macOS Automation permission, or already failed.
+    """
+    ts = time.strftime("%H:%M:%S")
+    sys.stderr.write(f"[helper {ts}] {msg}\n")
+    sys.stderr.flush()
 
 
 def _err(message: str) -> int:
@@ -53,10 +72,13 @@ def _ok(result) -> int:
 async def _list_sessions(connection):
     import iterm2
 
+    _log("fetching app object via async_get_app...")
     app = await iterm2.async_get_app(connection)
     out = []
     if app is None:
+        _log("async_get_app returned None — no windows / app object")
         return out
+    _log(f"app obtained, windows={len(app.windows)}")
     for window in app.windows:
         for tab in window.tabs:
             for session in tab.sessions:
@@ -79,6 +101,7 @@ async def _list_sessions(connection):
                         "cwd": cwd,
                     }
                 )
+    _log(f"enumerated {len(out)} session(s)")
     return out
 
 
@@ -96,13 +119,16 @@ def _find_session_by_uuid(app, target_uuid: str):
 async def _send_text(connection, session_id: str, text: str):
     import iterm2
 
+    _log(f"fetching app, looking for session uuid={session_id[:8]}...")
     app = await iterm2.async_get_app(connection)
     if app is None:
         raise RuntimeError("iTerm2 reports no app object")
     session = _find_session_by_uuid(app, session_id)
     if session is None:
         raise RuntimeError(f"no iTerm2 session matches paneId {session_id!r}")
+    _log(f"session matched, sending {len(text)} bytes...")
     await session.async_send_text(text)
+    _log("send done")
     return {"sent": len(text)}
 
 
@@ -143,8 +169,12 @@ def main() -> int:
     except json.JSONDecodeError as exc:
         return _err(f"stdin is not valid JSON: {exc}")
 
+    action = request.get("action", "<missing>")
+    _log(f"start action={action}")
+
     try:
         import iterm2  # noqa: F401  — surfaces install issues with a clear message
+        _log("iterm2 module imported")
     except ImportError:
         return _err(
             "iterm2 Python package not installed — "
@@ -155,11 +185,14 @@ def main() -> int:
         result_holder: dict = {}
 
         async def _run(connection):
+            _log("WebSocket opened, dispatching action")
             result_holder["value"] = await _dispatch(connection, request)
 
         # iterm2.run_until_complete blocks; opens WebSocket, runs callback,
         # closes WebSocket, returns. One-shot connection per invocation.
+        _log("opening WebSocket via iterm2.run_until_complete...")
         iterm2.run_until_complete(_run)
+        _log("WebSocket closed cleanly, returning result")
         return _ok(result_holder.get("value"))
     except Exception as exc:  # noqa: BLE001 — surface every error to caller
         return _err(f"{type(exc).__name__}: {exc}")

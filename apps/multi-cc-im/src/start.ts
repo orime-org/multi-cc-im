@@ -207,6 +207,23 @@ export async function runStartCommand(
     }
   });
 
+  /**
+   * File-only diagnostic sink. Same `daemon.log` destination as `log`,
+   * but never echoes to stderr — used for high-volume / low-value-to-
+   * user traces (iterm2-helper subprocess progress, etc.) that the AI
+   * may want to grep post-mortem but the user shouldn't have to scroll
+   * through during normal operation.
+   *
+   * Falls through to a no-op when caller injected `opts.log` (tests) or
+   * the log file couldn't be opened (disk / permission).
+   */
+  const fileOnlyLog: (line: string) => void = logStream
+    ? (line: string) => {
+        const ts = new Date().toISOString();
+        logStream!.write(`${ts} ${line}\n`);
+      }
+    : () => {};
+
   log(`multi-cc-im start (root: ${paths.root})`);
 
   // ===== 0. Auto-register cc hooks =====
@@ -509,11 +526,12 @@ export async function runStartCommand(
       : createITerm2Adapter({
           python: { path: python3! },
           helperScript: { path: iterm2HelperPath! },
-          // Thread the daemon's dual-write logger so each iterm2-helper
-          // subprocess invocation lands in `~/.multi-cc-im/daemon.log`
-          // alongside the daemon's own stderr — gives users + AI a single
-          // source for post-mortem when iTerm2 stops responding.
-          log,
+          // File-only sink — keeps iterm2-helper subprocess invocation
+          // traces and the helper's own `[helper HH:MM:SS]` progress
+          // lines OUT of the daemon's stderr (user doesn't want noise)
+          // while still preserving them in `~/.multi-cc-im/daemon.log`
+          // for post-mortem inspection by the AI.
+          log: fileOnlyLog,
         });
   const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,

@@ -119,7 +119,23 @@ export async function runIterM2Helper(
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    // Live-stream stderr line-by-line to `log` so the helper's
+    // `[helper HH:MM:SS] start action=... / iterm2 module imported /
+    // WebSocket opened ...` progress lands in daemon.log in real time.
+    // Without this the user only sees stderr aggregated AFTER the
+    // helper exits (and only on failure), which loses the timeline of
+    // where the connection got stuck. Per P7 follow-up 2026-05-14.
+    let stderrCarry = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      if (!log) return;
+      stderrCarry += chunk.toString('utf8');
+      const lines = stderrCarry.split('\n');
+      stderrCarry = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.length > 0) log(line);
+      }
+    });
 
     child.once('error', (err: Error) => {
       clearTimeout(timer);
