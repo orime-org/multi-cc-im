@@ -70,11 +70,15 @@ export type {
   Config,
   ACLConfig,
   ExternalPaths,
+  TerminalConfig,
+  TerminalId,
 } from './adapter/storage.js';
 export {
   ConfigSchema,
   ACLConfigSchema,
   ExternalPathsSchema,
+  TerminalConfigSchema,
+  TerminalIdSchema,
 } from './adapter/storage.js';
 
 // Adapter setup wizard interface (W2 — DD §9.D5 hybrid pattern)

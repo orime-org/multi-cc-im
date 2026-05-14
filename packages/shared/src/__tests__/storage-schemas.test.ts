@@ -3,6 +3,8 @@ import {
   ConfigSchema,
   ACLConfigSchema,
   ExternalPathsSchema,
+  TerminalConfigSchema,
+  TerminalIdSchema,
 } from '../adapter/storage.js';
 
 describe('ACLConfigSchema', () => {
@@ -68,21 +70,62 @@ describe('ExternalPathsSchema', () => {
   });
 });
 
+describe('TerminalIdSchema', () => {
+  it('accepts wezterm and iterm2', () => {
+    expect(TerminalIdSchema.parse('wezterm')).toBe('wezterm');
+    expect(TerminalIdSchema.parse('iterm2')).toBe('iterm2');
+  });
+
+  it('rejects unknown terminal id', () => {
+    expect(TerminalIdSchema.safeParse('tmux').success).toBe(false);
+    expect(TerminalIdSchema.safeParse('').success).toBe(false);
+  });
+});
+
+describe('TerminalConfigSchema', () => {
+  it('defaults to wezterm when type unset', () => {
+    expect(TerminalConfigSchema.parse({}).type).toBe('wezterm');
+  });
+
+  it('honors explicit iterm2', () => {
+    expect(TerminalConfigSchema.parse({ type: 'iterm2' }).type).toBe('iterm2');
+  });
+
+  it('rejects unknown type', () => {
+    expect(TerminalConfigSchema.safeParse({ type: 'tmux' }).success).toBe(false);
+  });
+});
+
 describe('ConfigSchema', () => {
   it('accepts empty config (all sections default)', () => {
     const parsed = ConfigSchema.parse({});
     expect(parsed.acl.owners).toEqual([]);
     expect(parsed.external_paths).toEqual({});
+    expect(parsed.terminal.type).toBe('wezterm');
   });
 
   it('accepts fully populated config', () => {
     const valid = {
       acl: { owners: ['me'] },
       external_paths: { wezterm: '/opt/homebrew/bin/wezterm' },
+      terminal: { type: 'iterm2' as const },
     };
     const parsed = ConfigSchema.parse(valid);
     expect(parsed.acl.owners).toEqual(['me']);
     expect(parsed.external_paths.wezterm).toBe('/opt/homebrew/bin/wezterm');
+    expect(parsed.terminal.type).toBe('iterm2');
+  });
+
+  it('backward compat: config without [terminal] section defaults to wezterm', () => {
+    // Existing user configs written before P4 had no [terminal] section —
+    // ConfigSchema must interpret them as `type = "wezterm"` so an old
+    // user upgrading multi-cc-im keeps their wezterm setup without
+    // re-running the wizard.
+    const parsed = ConfigSchema.parse({
+      acl: { owners: [] },
+      external_paths: { wezterm: '/opt/homebrew/bin/wezterm' },
+    });
+    expect(parsed.terminal.type).toBe('wezterm');
   });
 
   it('ignores unknown top-level keys (zod default permissive)', () => {

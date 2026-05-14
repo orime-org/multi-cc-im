@@ -19,7 +19,15 @@ import {
   listAllTabs,
   resolveWezTermPath,
 } from '@multi-cc-im/term-wezterm';
-import { resolvePython3Path } from '@multi-cc-im/term-iterm2';
+import {
+  createITerm2Adapter,
+  resolvePython3Path,
+} from '@multi-cc-im/term-iterm2';
+import type { TerminalId } from '@multi-cc-im/shared';
+import {
+  selectTerminal,
+  type SelectTerminalResult,
+} from './terminal-selector.js';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { access, constants } from 'node:fs/promises';
@@ -96,6 +104,29 @@ export interface RunStartCommandOpts {
    * synthetically without prompting.
    */
   selectAdapter?: () => Promise<SelectAdapterResult>;
+  /**
+   * Override the terminal-adapter selection wizard. Default uses
+   * `selectTerminal` (interactive wezterm/iterm2 picker with iterm2
+   * setup pipeline). Tests inject a stub that returns a fixed terminal
+   * choice without prompting.
+   *
+   * Per [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md#9-implementation-milestone-plan-to-be-detailed-after-lock).
+   */
+  selectTerminal?: (opts: {
+    currentTerminal?: TerminalId;
+  }) => Promise<SelectTerminalResult>;
+  /**
+   * Override python3 resolver (iterm2 path). Default delegates to
+   * `defaultResolvePython3` (cache-then-PATH-scan). Tests stub to skip
+   * filesystem.
+   */
+  resolvePython3?: (cachedPath?: string) => Promise<string>;
+  /**
+   * Override iterm2-helper.py resolver. Default delegates to
+   * `resolveIterm2HelperPath`. Tests stub to return a fixed path
+   * (typically a stub script).
+   */
+  resolveIterm2Helper?: () => Promise<string>;
 }
 
 export interface StartCommandResult {
@@ -159,6 +190,52 @@ export async function runStartCommand(
     }
   }
 
+  // ===== 0a. Terminal-adapter selection =====
+  // Per [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
+  // `start` wizard order is term-first then IM. Persisted terminal type
+  // pre-selects the current choice; a brand-new config defaults to
+  // wezterm. iterm2 branch runs setup (prefs check + pip install + cache
+  // python3 path).
+  const configStore = createConfigStore({ filePath: paths.configToml });
+  let config = await configStore.load();
+  const termFn =
+    opts.selectTerminal ??
+    ((termOpts) => selectTerminal(termOpts));
+  const termResult = await termFn({ currentTerminal: config.terminal.type });
+  if (termResult.status === 'cancelled') {
+    return { exitCode: 0, stderr: '' };
+  }
+  if (termResult.status === 'error') {
+    return { exitCode: termResult.exitCode, stderr: termResult.message };
+  }
+  const termId = termResult.id;
+  log(`  ✓ terminal: ${termId}`);
+  // Persist new terminal id + (iterm2) python3 path. Tests confirm an
+  // already-aligned config skips the rewrite (no spurious file mtime
+  // churn).
+  let persistedConfigChanged = false;
+  if (config.terminal.type !== termId) {
+    config = { ...config, terminal: { type: termId } };
+    persistedConfigChanged = true;
+  }
+  if (
+    termId === 'iterm2' &&
+    termResult.python3 &&
+    config.external_paths.python3 !== termResult.python3
+  ) {
+    config = {
+      ...config,
+      external_paths: {
+        ...config.external_paths,
+        python3: termResult.python3,
+      },
+    };
+    persistedConfigChanged = true;
+  }
+  if (persistedConfigChanged) {
+    await configStore.save(config);
+  }
+
   // ===== 1. Pre-flight: adapter selection + credentials =====
   // Per [DD §4 D1](../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command):
   // single `start [<adapter>]` command — no-arg renders an interactive
@@ -195,29 +272,66 @@ export async function runStartCommand(
     `  ✓ ${selectedEntry.id} credentials at ${paths.credentialFor(selectedEntry.id)}`,
   );
 
-  // ===== 1b. Pre-flight: wezterm path resolution =====
-  const configStore = createConfigStore({ filePath: paths.configToml });
-  let config = await configStore.load();
-  let wezterm: string;
-  try {
-    const resolveFn = opts.resolveWezTerm ?? defaultResolveWezTerm;
-    wezterm = await resolveFn(config.external_paths.wezterm);
-  } catch (err) {
-    return {
-      exitCode: 1,
-      stderr: `multi-cc-im start: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  // Cache the resolved path back to config.toml if it changed
-  if (config.external_paths.wezterm !== wezterm) {
-    config = {
-      ...config,
-      external_paths: { ...config.external_paths, wezterm },
-    };
-    await configStore.save(config);
-    log(`  ✓ wezterm at ${wezterm} (cached to config.toml)`);
+  // ===== 1b. Pre-flight: terminal-adapter path resolution =====
+  // Branch on the user's terminal choice from §0a. wezterm path stays
+  // backward-compatible (cache-in-config-then-resolve); iterm2 path
+  // resolves python3 + the bundled helper script via P3 infra.
+  let wezterm: string | null = null;
+  let python3: string | null = null;
+  let iterm2HelperPath: string | null = null;
+  if (termId === 'wezterm') {
+    try {
+      const resolveFn = opts.resolveWezTerm ?? defaultResolveWezTerm;
+      wezterm = await resolveFn(config.external_paths.wezterm);
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stderr: `multi-cc-im start: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (config.external_paths.wezterm !== wezterm) {
+      config = {
+        ...config,
+        external_paths: { ...config.external_paths, wezterm },
+      };
+      await configStore.save(config);
+      log(`  ✓ wezterm at ${wezterm} (cached to config.toml)`);
+    } else {
+      log(`  ✓ wezterm at ${wezterm}`);
+    }
   } else {
-    log(`  ✓ wezterm at ${wezterm}`);
+    // iterm2 — python3 typically already cached from P4 wizard step,
+    // but the resolver gracefully re-discovers on a stale path so
+    // upgrades / brew reinstalls don't break startup.
+    try {
+      const resolveFn = opts.resolvePython3 ?? defaultResolvePython3;
+      python3 = await resolveFn(config.external_paths.python3);
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stderr: `multi-cc-im start: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (config.external_paths.python3 !== python3) {
+      config = {
+        ...config,
+        external_paths: { ...config.external_paths, python3 },
+      };
+      await configStore.save(config);
+      log(`  ✓ python3 at ${python3} (cached to config.toml)`);
+    } else {
+      log(`  ✓ python3 at ${python3}`);
+    }
+    try {
+      const helperFn = opts.resolveIterm2Helper ?? resolveIterm2HelperPath;
+      iterm2HelperPath = await helperFn();
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stderr: `multi-cc-im start: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    log(`  ✓ iterm2-helper.py at ${iterm2HelperPath}`);
   }
 
   // ===== 1b'. Double-start check =====
@@ -246,11 +360,18 @@ export async function runStartCommand(
   // wezterm cli list paneId set is the ground truth — files for paneIds not
   // in the live set are orphan (cc + tab gone). Pre-DD-#61 sid-keyed legacy
   // files are also swept here.
+  // For wezterm we can ask `wezterm cli list` directly. For iterm2 we
+  // skip the ground-truth probe at startup — the iterm2 adapter's
+  // `listPanes()` is the same source of truth at runtime, and the sweep
+  // doesn't need to fire until the adapter is actually live.
   const sweepResult = await sweepStaleStateFiles(paths.stateDir, {
-    livePaneIds: async () => {
-      const tabs = await listAllTabs({ wezterm });
-      return [...tabs.keys()];
-    },
+    livePaneIds:
+      termId === 'wezterm' && wezterm
+        ? async () => {
+            const tabs = await listAllTabs({ wezterm: wezterm! });
+            return [...tabs.keys()];
+          }
+        : undefined,
   });
   if (
     sweepResult.orphanPaneFilesCleaned +
@@ -330,19 +451,28 @@ export async function runStartCommand(
   };
 
   // No session registry anymore (DD #61). Bridge router queries
-  // `termAdapter.listPanes()` on each IM event for live tab data.
-  const livePanes = await listAllTabs({ wezterm }).catch(() => null);
-  if (livePanes !== null) {
-    const renamed = [...livePanes.values()].filter((t) => t.title.length > 0);
-    log(
-      `  ✓ wezterm panes: ${livePanes.size} total, ${renamed.length} /rename'd${livePanes.size === 0 ? ' (open a wezterm tab + run cc to see panes appear)' : ''}`,
-    );
+  // `termAdapter.listPanes()` on each IM event for live tab data. Pre-flight
+  // pane count is wezterm-only; iterm2 startup banner already shows the
+  // helper script + python3 paths so the user has confidence the adapter
+  // is wired.
+  if (termId === 'wezterm' && wezterm) {
+    const livePanes = await listAllTabs({ wezterm }).catch(() => null);
+    if (livePanes !== null) {
+      const renamed = [...livePanes.values()].filter((t) => t.title.length > 0);
+      log(
+        `  ✓ wezterm panes: ${livePanes.size} total, ${renamed.length} /rename'd${livePanes.size === 0 ? ' (open a wezterm tab + run cc to see panes appear)' : ''}`,
+      );
+    }
   }
 
   const imAdapter = selectedEntry.buildAdapterRuntime({ paths, log });
-  const termAdapter = createWezTermAdapter({
-    wezterm: { path: wezterm },
-  });
+  const termAdapter =
+    termId === 'wezterm'
+      ? createWezTermAdapter({ wezterm: { path: wezterm! } })
+      : createITerm2Adapter({
+          python: { path: python3! },
+          helperScript: { path: iterm2HelperPath! },
+        });
   const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,
   });
