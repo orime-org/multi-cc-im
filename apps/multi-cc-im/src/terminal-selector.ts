@@ -176,14 +176,19 @@ function ansiLink(url: string, text: string): string {
  *   2. wezterm picked → return `{configured, id: 'wezterm'}` (no setup)
  *   3. iterm2 picked → setup pipeline:
  *        a. Render ANSI-hyperlink instructions for enabling iTerm2's
- *           Python API preference. Wait for user confirmation that they
- *           toggled it.
+ *           Python API preference (one-time user action — toggle in
+ *           iTerm2 Settings).
  *        b. Resolve `python3` binary; error out if not found.
  *        c. Prompt: `pip install --user iterm2` ? Run it on confirm.
- *        d. Smoke test: `python3 -c "import iterm2"` to verify the
- *           install + Automation permission. (First-time install
- *           triggers the macOS Automation dialog here, which we want
- *           because the wizard can hand-hold the user through it.)
+ *        d. **Empirical** verification: spawn `python3` running
+ *           `iterm2.run_until_complete(async_get_app)`. If it connects
+ *           the Python API server is provably running; if it fails we
+ *           know definitively the preference is off (or iTerm2 isn't
+ *           launched), and surface a concrete "Settings → General →
+ *           Magic" hint. This replaces the prior `confirm + import
+ *           smoke` combo which was a `hope`, not a `gate` — the user
+ *           could press Enter without actually toggling the pref and
+ *           the wizard would walk on (P7 smoke 2026-05-14 root cause).
  *   4. Return `{configured, id: 'iterm2', python3}`
  *
  * Per CLAUDE.md "no hardcoded external CLI paths" — `python3` is
@@ -266,34 +271,21 @@ export async function selectTerminal(
     [
       '🔧 iTerm2 setup — three steps:',
       '',
-      '1. Enable the Python API preference:',
+      '1. Enable the Python API preference (one-time, in iTerm2 itself):',
       `   ${ansiLink(
         'https://iterm2.com/python-api/connection.html#authentication',
         'iTerm2 docs: enabling the Python API',
       )}`,
-      '   Path: iTerm2 → Preferences → General → Magic → ☑ Enable Python API',
+      '   Path: iTerm2 → Settings → General → Magic → ☑ Enable Python API',
       '',
       '2. We will resolve your `python3` binary + install the `iterm2`',
       '   PyPI package (one time).',
       '',
-      '3. First call may prompt for macOS Automation permission — click',
+      '3. We will then connect to iTerm2 to verify the preference is on.',
+      '   First call may prompt for macOS Automation permission — click',
       '   "OK" so this script can talk to iTerm2.',
     ].join('\n'),
   );
-
-  const prefsDone = await io.confirm({
-    message: 'Did you enable Python API in iTerm2 Preferences?',
-    initialValue: true,
-  });
-  if (io.isCancel(prefsDone)) return { status: 'cancelled' };
-  if (!prefsDone) {
-    return {
-      status: 'error',
-      exitCode: 1,
-      message:
-        'multi-cc-im start: iTerm2 setup aborted — enable Python API in iTerm2 Preferences and rerun.',
-    };
-  }
 
   let python3: string;
   try {
@@ -345,21 +337,40 @@ export async function selectTerminal(
     }
   }
 
-  // Smoke import. Catches: pip install silently failed / wrong python3 /
-  // user skipped install but the package wasn't there. Also surfaces the
-  // first-call Automation permission dialog at a known moment (the user
-  // is still in the wizard, watching the screen).
+  // Empirical verification — connect to iTerm2's Python API. This is the
+  // ONLY way to know definitively whether the user enabled the
+  // preference (a confirm prompt is `hope`, not `gate` — the user can
+  // press Enter without actually toggling). Failures cluster around two
+  // root causes the user can fix:
+  //   - preference is off (iTerm2 server isn't running → connect refused)
+  //   - iTerm2 isn't launched
+  // Catches one more failure the user can't fix from here but should know:
+  //   - pip install silently failed → `import iterm2` raises ImportError
+  //     before run_until_complete runs (caught by the same try/except).
+  // Also surfaces the first-call Automation permission dialog at a known
+  // moment (user is still in the wizard, watching the screen).
+  const connectSmoke = [
+    'import iterm2',
+    'async def main(c):',
+    '    await iterm2.async_get_app(c)',
+    'iterm2.run_until_complete(main)',
+  ].join('\n');
   try {
-    await deps.exec(python3, ['-c', 'import iterm2']);
-    io.info('Smoke check: `python3 -c "import iterm2"` OK.');
+    await deps.exec(python3, ['-c', connectSmoke]);
+    io.info('Smoke check: iTerm2 Python API is reachable.');
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     return {
       status: 'error',
       exitCode: 1,
       message:
-        'multi-cc-im start: cannot import `iterm2` Python package — ' +
-        (err instanceof Error ? err.message : String(err)) +
-        '\n  Retry: re-run wizard and confirm the install step.',
+        'multi-cc-im start: cannot connect to iTerm2 Python API.\n' +
+        '  This usually means the preference is off, or iTerm2 is not running.\n' +
+        '  Fix:\n' +
+        '    1. Launch iTerm2 (any installed copy — they share preferences)\n' +
+        '    2. Settings → General → Magic → ☑ Enable Python API\n' +
+        '    3. Re-run `multi-cc-im start`\n' +
+        `  Detail (from python3): ${detail}`,
     };
   }
 
