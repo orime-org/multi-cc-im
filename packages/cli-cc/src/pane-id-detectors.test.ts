@@ -81,17 +81,34 @@ describe('detectIterm2PaneId', () => {
 });
 
 describe('runDetectors', () => {
-  it('returns first non-undefined detector result', () => {
+  it('returns first non-undefined detector result tagged with its termId', () => {
     const a: PaneIdDetector = () => undefined;
     const b: PaneIdDetector = () => 7 as never;
     const c: PaneIdDetector = () => 13 as never;
-    expect(runDetectors([a, b, c], {})).toBe(7);
+    expect(
+      runDetectors(
+        [
+          { termId: 'wezterm', detect: a },
+          { termId: 'iterm2', detect: b },
+          { termId: 'wezterm', detect: c },
+        ],
+        {},
+      ),
+    ).toEqual({ termId: 'iterm2', paneId: 7 });
   });
 
   it('returns undefined when every detector returns undefined', () => {
     const a: PaneIdDetector = () => undefined;
     const b: PaneIdDetector = () => undefined;
-    expect(runDetectors([a, b], {})).toBeUndefined();
+    expect(
+      runDetectors(
+        [
+          { termId: 'wezterm', detect: a },
+          { termId: 'iterm2', detect: b },
+        ],
+        {},
+      ),
+    ).toBeUndefined();
   });
 
   it('does not call detectors past the first non-undefined hit', () => {
@@ -102,7 +119,14 @@ describe('runDetectors', () => {
       calledC = true;
       return undefined;
     };
-    runDetectors([a, b, c], {});
+    runDetectors(
+      [
+        { termId: 'wezterm', detect: a },
+        { termId: 'iterm2', detect: b },
+        { termId: 'wezterm', detect: c },
+      ],
+      {},
+    );
     expect(calledC).toBe(false);
   });
 
@@ -114,31 +138,38 @@ describe('runDetectors', () => {
 describe('DEFAULT_DETECTORS', () => {
   const UUID = 'C3D91F33-3805-47E2-A3F6-B8AED6EC2209';
 
-  it('includes both terminal detectors in order (wezterm then iterm2)', () => {
-    expect(DEFAULT_DETECTORS).toEqual([detectWezTermPaneId, detectIterm2PaneId]);
+  it('includes both terminal detectors tagged with their termIds (wezterm first)', () => {
+    expect(DEFAULT_DETECTORS).toEqual([
+      { termId: 'wezterm', detect: detectWezTermPaneId },
+      { termId: 'iterm2', detect: detectIterm2PaneId },
+    ]);
   });
 
-  it('resolves WEZTERM_PANE via the default chain', () => {
-    expect(runDetectors(DEFAULT_DETECTORS, { WEZTERM_PANE: '99' })).toBe(99);
+  it('resolves WEZTERM_PANE via the default chain with termId tag', () => {
+    expect(runDetectors(DEFAULT_DETECTORS, { WEZTERM_PANE: '99' })).toEqual({
+      termId: 'wezterm',
+      paneId: 99,
+    });
   });
 
-  it('resolves ITERM_SESSION_ID via the default chain', () => {
+  it('resolves ITERM_SESSION_ID via the default chain with termId tag', () => {
     expect(
       runDetectors(DEFAULT_DETECTORS, {
         ITERM_SESSION_ID: `w0t1p0:${UUID}`,
       }),
-    ).toBe(UUID);
+    ).toEqual({ termId: 'iterm2', paneId: UUID });
   });
 
-  it('wezterm wins when both env vars are co-present', () => {
+  it('wezterm wins when both env vars are co-present (termId reflects winner)', () => {
     // Detector order makes this deterministic — see DEFAULT_DETECTORS
-    // TSDoc rationale.
+    // TSDoc rationale. The termId surfaced reflects which detector
+    // matched, not just which paneId came out.
     expect(
       runDetectors(DEFAULT_DETECTORS, {
         WEZTERM_PANE: '7',
         ITERM_SESSION_ID: `w0t1p0:${UUID}`,
       }),
-    ).toBe(7);
+    ).toEqual({ termId: 'wezterm', paneId: 7 });
   });
 
   it('returns undefined when no supported env var is present', () => {

@@ -27,7 +27,7 @@ export {
   STOP_PREFIX,
   PERMISSION_REQUEST_PREFIX,
   PERMISSION_RESPONSE_PREFIX,
-  IM_WORK_FILE_NAME,
+  imWorkFileName,
   IM_ORIGIN_FILE_NAME,
   DAEMON_PID_FILE_NAME,
   formatStopTimestamp,
@@ -124,3 +124,18 @@ export type {
 // File-watching CLIAdapter for bridge core.
 export { createCcCliAdapter } from './adapter.js';
 export type { CreateCcCliAdapterOpts } from './adapter.js';
+
+// Pane-origin detector chain — exposes `PaneOrigin` so hook-side CLI
+// wrappers (apps/multi-cc-im/src/hook.ts) can forward the override
+// type cleanly without re-deriving it.
+export {
+  DEFAULT_DETECTORS,
+  detectIterm2PaneId,
+  detectWezTermPaneId,
+  runDetectors,
+} from './pane-id-detectors.js';
+export type {
+  PaneIdDetector,
+  PaneOrigin,
+  TaggedDetector,
+} from './pane-id-detectors.js';

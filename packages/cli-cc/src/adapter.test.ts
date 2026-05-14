@@ -126,6 +126,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: '2026-05-08T01-43-40-131Z',
         last_assistant_message: 'hello',
+        termId: 'wezterm',
       });
 
       await waitFor(() =>
@@ -162,6 +163,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: ts,
         last_assistant_message: 'x',
+        termId: 'wezterm',
       });
 
       await waitFor(() => events.length === 1);
@@ -195,6 +197,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: ts,
         last_assistant_message: 'x',
+        termId: 'wezterm',
       });
 
       // File is deleted even on handler throw — try/finally semantics.
@@ -285,6 +288,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: 'T1',
         last_assistant_message: 'a',
+        termId: 'wezterm',
       });
       await writeStopFile({
         stateDir,
@@ -292,6 +296,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: 'T2',
         last_assistant_message: 'b',
+        termId: 'wezterm',
       });
 
       await waitFor(() => events.length === 4);
@@ -335,6 +340,7 @@ describe('createCcCliAdapter', () => {
           sessionId: SID,
           timestamp: 'T1',
           last_assistant_message: 'a',
+        termId: 'wezterm',
         }),
         writeStopFile({
           stateDir,
@@ -342,6 +348,7 @@ describe('createCcCliAdapter', () => {
           sessionId: SID2,
           timestamp: 'T1',
           last_assistant_message: 'b',
+        termId: 'wezterm',
         }),
       ]);
 
@@ -366,6 +373,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: 'T2',
         last_assistant_message: 'b',
+        termId: 'wezterm',
       });
       await writeStopFile({
         stateDir,
@@ -373,6 +381,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: 'T1',
         last_assistant_message: 'a',
+        termId: 'wezterm',
       });
 
       const adapter = createCcCliAdapter({ stateDir });
@@ -449,6 +458,7 @@ describe('createCcCliAdapter', () => {
         sessionId: SID,
         timestamp: 'T1',
         last_assistant_message: 'x',
+        termId: 'wezterm',
       });
 
       await waitFor(() => errors.length === 1);

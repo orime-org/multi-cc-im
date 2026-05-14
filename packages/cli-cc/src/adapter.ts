@@ -9,6 +9,7 @@ import type {
   PreToolUsePayload,
   SessionId,
   StopPayload,
+  TerminalId,
   TranscriptPath,
 } from '@multi-cc-im/shared';
 import { enqueueInjection } from './injection-queue.js';
@@ -319,7 +320,7 @@ async function dispatchOne(
     case 'Stop': {
       const file = await readStopFile(classified.filePath);
       if (!file) return; // ENOENT — already processed by another tick
-      const payload: StopPayload & { paneId: PaneId } = {
+      const payload: StopPayload & { paneId: PaneId; termId?: TerminalId } = {
         session_id: classified.sessionId as unknown as SessionId,
         transcript_path: '' as unknown as TranscriptPath,
         cwd: '' as unknown as CwdAbs,
@@ -328,6 +329,7 @@ async function dispatchOne(
         stop_hook_active: false,
         last_assistant_message: file.last_assistant_message,
         paneId: classified.paneId,
+        termId: file.termId,
       };
       // Delete-always semantics (user policy 2026-05-11): once we've
       // dispatched the Stop file to the orchestrator, drop it from disk

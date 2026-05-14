@@ -5,8 +5,10 @@ import { z } from 'zod';
 import { atomicWrite } from '@multi-cc-im/storage-files';
 import {
   IMReplyContextSchema,
+  TerminalIdSchema,
   type IMReplyContext,
   type PaneId,
+  type TerminalId,
 } from '@multi-cc-im/shared';
 
 /**
@@ -92,8 +94,20 @@ export const PERMISSION_RESPONSE_PREFIX = '.PermissionResponse.';
  */
 export const PERMISSION_DIALOG_REQUEST_PREFIX = '.PermissionDialogRequest.';
 export const PERMISSION_DIALOG_RESPONSE_PREFIX = '.PermissionDialogResponse.';
-/** Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md) — global IM-mode tombstone. */
-export const IM_WORK_FILE_NAME = 'IMWork';
+/**
+ * Per-terminal IM-mode tombstone filename. Issue 378 (PR pending) split
+ * the legacy single `IMWork` file into `IM<TermId capitalized>` per
+ * terminal — `IMWezterm`, `IMIterm2` — so a daemon configured for one
+ * terminal does NOT accept cc hooks fired from the other. cc hook
+ * scripts are installed user-global in `~/.claude/settings.json` so
+ * they fire from EVERY cc instance on the machine; this filename
+ * scheme is the per-terminal gate.
+ *
+ * Per [DD: IMWork+IMOrigin](../../../docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md).
+ */
+export function imWorkFileName(termId: TerminalId): string {
+  return `IM${termId[0]!.toUpperCase()}${termId.slice(1)}`;
+}
 /** Per [DD: daemon liveness](../../../docs/superpowers/specs/2026-05-09-daemon-liveness-dd.md) — daemon PID lock file. */
 export const DAEMON_PID_FILE_NAME = 'daemon.pid';
 
@@ -269,6 +283,17 @@ export function extractPaneIdFromFilename(name: string): number | null {
 export interface StopFile {
   /** cc's last assistant message text — bridge forwards verbatim to IM. */
   last_assistant_message: string;
+  /**
+   * Which terminal the hook subprocess detected itself in when writing
+   * this file. Daemon-side `handleStop` reads this to decide which
+   * `IM<TermType>` gate to apply, rather than re-inferring from
+   * `typeof paneId`. Per issue 378 root-cause framing: carrying the
+   * fact end-to-end is more robust than deriving it.
+   *
+   * Optional only for back-compat with pre-378 Stop files left on disk
+   * when the daemon upgrades; new writes always include it.
+   */
+  termId?: TerminalId;
 }
 
 export function stopFilePath(opts: PerPaneIO & { timestamp: string }): string {
@@ -279,9 +304,16 @@ export function stopFilePath(opts: PerPaneIO & { timestamp: string }): string {
 }
 
 export async function writeStopFile(
-  opts: PerPaneIO & { timestamp: string; last_assistant_message: string },
+  opts: PerPaneIO & {
+    timestamp: string;
+    last_assistant_message: string;
+    termId: TerminalId;
+  },
 ): Promise<void> {
-  const body: StopFile = { last_assistant_message: opts.last_assistant_message };
+  const body: StopFile = {
+    last_assistant_message: opts.last_assistant_message,
+    termId: opts.termId,
+  };
   await atomicWrite(stopFilePath(opts), JSON.stringify(body, null, 2));
 }
 
@@ -851,25 +883,34 @@ export const IMWorkFileSchema = z.object({
 
 export type IMWorkFile = z.infer<typeof IMWorkFileSchema>;
 
-export function imWorkPath(stateDir: string): string {
-  return join(stateDir, IM_WORK_FILE_NAME);
+export function imWorkPath(stateDir: string, termId: TerminalId): string {
+  return join(stateDir, imWorkFileName(termId));
 }
 
 /**
- * Write `IMWork` JSON. Default body `{auto:false}` keeps zero-arg callers
- * working unchanged (matches legacy "just enable IM mode" semantic).
+ * Write `IM<TermType>` JSON. Default body `{auto:false}` keeps zero-arg
+ * callers working unchanged (matches legacy "just enable IM mode"
+ * semantic). `termId` selects which terminal's file is written — only
+ * the daemon's active terminal should write its own file. Other
+ * terminals' files staying absent is what blocks cross-terminal cc-hook
+ * leakage (issue 378).
  */
 export async function writeIMWorkFile(
   stateDir: string,
+  termId: TerminalId,
   content: IMWorkFile = { auto: false },
 ): Promise<void> {
   IMWorkFileSchema.parse(content);
-  await atomicWrite(imWorkPath(stateDir), JSON.stringify(content));
+  TerminalIdSchema.parse(termId);
+  await atomicWrite(imWorkPath(stateDir, termId), JSON.stringify(content));
 }
 
-export async function existsIMWorkFile(stateDir: string): Promise<boolean> {
+export async function existsIMWorkFile(
+  stateDir: string,
+  termId: TerminalId,
+): Promise<boolean> {
   try {
-    await readFile(imWorkPath(stateDir));
+    await readFile(imWorkPath(stateDir, termId));
     return true;
   } catch (err) {
     if (isENOENT(err)) return false;
@@ -878,16 +919,17 @@ export async function existsIMWorkFile(stateDir: string): Promise<boolean> {
 }
 
 /**
- * Read + zod-validate `IMWork`. Returns null on ENOENT. Empty file (legacy
- * 0-byte tombstone) is treated as `{auto:false}` for back-compat. Throws on
- * malformed JSON or schema mismatch (corruption / future-version).
+ * Read + zod-validate `IM<TermType>`. Returns null on ENOENT. Empty file
+ * (legacy 0-byte tombstone) is treated as `{auto:false}` for back-compat.
+ * Throws on malformed JSON or schema mismatch (corruption / future-version).
  */
 export async function readIMWorkFile(
   stateDir: string,
+  termId: TerminalId,
 ): Promise<IMWorkFile | null> {
   let raw: string;
   try {
-    raw = await readFile(imWorkPath(stateDir), 'utf-8');
+    raw = await readFile(imWorkPath(stateDir, termId), 'utf-8');
   } catch (err) {
     if (isENOENT(err)) return null;
     throw err;
@@ -896,8 +938,11 @@ export async function readIMWorkFile(
   return IMWorkFileSchema.parse(JSON.parse(raw));
 }
 
-export async function deleteIMWorkFile(stateDir: string): Promise<void> {
-  await unlinkOrIgnoreENOENT(imWorkPath(stateDir));
+export async function deleteIMWorkFile(
+  stateDir: string,
+  termId: TerminalId,
+): Promise<void> {
+  await unlinkOrIgnoreENOENT(imWorkPath(stateDir, termId));
 }
 
 // ============================================================================

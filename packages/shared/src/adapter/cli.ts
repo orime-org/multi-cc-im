@@ -1,4 +1,5 @@
 import type { CwdAbs, PaneId, SessionId, TranscriptPath } from '../types.js';
+import type { TerminalId } from './storage.js';
 
 /**
  * Common fields present on every cc hook stdin payload.
@@ -130,7 +131,9 @@ export interface Handler {
    * Implementations MUST guard `p.stop_hook_active === true` and return
    * `void` in that case to avoid infinite block loops.
    */
-  onStop(p: StopPayload & { paneId: PaneId }): Promise<HookDecision | void>;
+  onStop(
+    p: StopPayload & { paneId: PaneId; termId?: TerminalId },
+  ): Promise<HookDecision | void>;
 }
 
 /**

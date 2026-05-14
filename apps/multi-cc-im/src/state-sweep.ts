@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   DAEMON_PID_FILE_NAME,
   IM_ORIGIN_FILE_NAME,
-  IM_WORK_FILE_NAME,
+  imWorkFileName,
   daemonPidPath,
   extractPaneIdFromFilename,
   isDaemonAlive,
@@ -152,7 +152,12 @@ export async function sweepStaleStateFiles(
 
   for (const name of entries) {
     // Top-level files we never touch:
-    if (name === IM_WORK_FILE_NAME) continue;
+    // Per-terminal IM<TermType> tombstones (issue 378 split). Both
+    // names are protected so a daemon switching termAdapter (e.g.
+    // wezterm → iterm2) doesn't sweep the previous terminal's file
+    // if it lingered across the change.
+    if (name === imWorkFileName('wezterm')) continue;
+    if (name === imWorkFileName('iterm2')) continue;
     if (name === IM_ORIGIN_FILE_NAME) continue;
     // IM-adapter-owned long-poll cursor files (e.g. future `lark-cursor`).
     // Pattern: any top-level file ending in `-cursor`. Includes legacy

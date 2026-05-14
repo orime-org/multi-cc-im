@@ -34,6 +34,7 @@ import type {
   SessionId,
   StopPayload,
   TermAdapter,
+  TerminalId,
   TermListPanes,
   TermPaneInfo,
   TranscriptPath,
@@ -183,7 +184,7 @@ function makeStop(opts: {
   sessionId?: SessionId;
   message: string;
   active?: boolean;
-}): StopPayload & { paneId: PaneId } {
+}): StopPayload & { paneId: PaneId; termId?: TerminalId } {
   return {
     session_id: opts.sessionId ?? SID_A,
     transcript_path: '/tmp/x.jsonl' as TranscriptPath,
@@ -192,6 +193,7 @@ function makeStop(opts: {
     permission_mode: 'default',
     stop_hook_active: opts.active ?? false,
     last_assistant_message: opts.message,
+    termId: 'wezterm',
     paneId: opts.paneId,
   };
 }
@@ -246,7 +248,7 @@ function makePermissionDialog(opts: {
 
 beforeEach(async () => {
   testStateDir = mkdtempSync(join(tmpdir(), 'orch-test-'));
-  await writeIMWorkFile(testStateDir);
+  await writeIMWorkFile(testStateDir, 'wezterm');
 });
 
 // ============================================================================
@@ -300,10 +302,10 @@ describe('createOrchestrator — start/stop lifecycle', () => {
       sendKeystrokeDelayMs: 0,
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
-    expect(await existsIMWorkFile(testStateDir)).toBe(true);
+    expect(await existsIMWorkFile(testStateDir, 'wezterm')).toBe(true);
     await orch.start();
     await orch.stop();
-    expect(await existsIMWorkFile(testStateDir)).toBe(false);
+    expect(await existsIMWorkFile(testStateDir, 'wezterm')).toBe(false);
   });
 
   it('stop() deletes daemon.pid file', async () => {
@@ -1126,7 +1128,7 @@ describe('createOrchestrator — IM permission gate', () => {
   let permStateDir: string;
   beforeEach(async () => {
     permStateDir = mkdtempSync(join(tmpdir(), 'orch-perm-'));
-    await writeIMWorkFile(permStateDir);
+    await writeIMWorkFile(permStateDir, 'wezterm');
   });
 
   it('onPreToolUse with IMOrigin set → IM prompt with tabname + tool + /1 /2 + 10s window', async () => {
@@ -1475,11 +1477,11 @@ describe('createOrchestrator — IMWork toggle', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
+    expect(await existsIMWorkFile(toggleStateDir, 'wezterm')).toBe(false);
 
     await im.handler!.onMessage(incoming('/start'));
 
-    expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
+    expect(await existsIMWorkFile(toggleStateDir, 'wezterm')).toBe(true);
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork ON');
     expect(echo).toContain('frontend');
@@ -1490,7 +1492,7 @@ describe('createOrchestrator — IMWork toggle', () => {
   });
 
   it('/stop when on → deletes IMWork + echo includes "OFF"', async () => {
-    await writeIMWorkFile(toggleStateDir);
+    await writeIMWorkFile(toggleStateDir, 'wezterm');
     const im = makeMockIM();
     const orch = createOrchestrator({
       stateDir: toggleStateDir,
@@ -1502,11 +1504,11 @@ describe('createOrchestrator — IMWork toggle', () => {
       aiRouter: null,  // disable AI routing for these tests (default would spawn real cc)
     });
     await orch.start();
-    expect(await existsIMWorkFile(toggleStateDir)).toBe(true);
+    expect(await existsIMWorkFile(toggleStateDir, 'wezterm')).toBe(true);
 
     await im.handler!.onMessage(incoming('/stop'));
 
-    expect(await existsIMWorkFile(toggleStateDir)).toBe(false);
+    expect(await existsIMWorkFile(toggleStateDir, 'wezterm')).toBe(false);
     const echo = im.sent.map((s) => s.content).join('\n');
     expect(echo).toContain('IMWork OFF');
     await orch.stop();
@@ -1576,7 +1578,7 @@ describe('createOrchestrator — daemon reaper (orphan PermissionRequest cleanup
   let reaperStateDir: string;
   beforeEach(async () => {
     reaperStateDir = mkdtempSync(join(tmpdir(), 'orch-reaper-'));
-    await writeIMWorkFile(reaperStateDir);
+    await writeIMWorkFile(reaperStateDir, 'wezterm');
     await writeIMOriginFile(reaperStateDir, {
       imType: 'lark',
       openId: 'ou_owner',
@@ -1843,7 +1845,7 @@ describe('createOrchestrator — AI-routed plain dispatch (DD #73)', () => {
   let aiTestStateDir: string;
   beforeEach(async () => {
     aiTestStateDir = mkdtempSync(join(tmpdir(), 'orch-ai-test-'));
-    await writeIMWorkFile(aiTestStateDir, { auto: true });
+    await writeIMWorkFile(aiTestStateDir, 'wezterm', { auto: true });
   });
 
   it('plain msg with stub aiRouter → dispatches to picked tab + intent as content', async () => {
@@ -1962,7 +1964,7 @@ describe('createOrchestrator — AI permission reply dispatch (DD §9.1 P4)', ()
   let aiPermStateDir: string;
   beforeEach(async () => {
     aiPermStateDir = mkdtempSync(join(tmpdir(), 'orch-ai-perm-'));
-    await writeIMWorkFile(aiPermStateDir, { auto: false });
+    await writeIMWorkFile(aiPermStateDir, 'wezterm', { auto: false });
   });
 
   // Helper: write a pending PermissionRequest file under the test state
@@ -2215,7 +2217,7 @@ describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
   let preAckStateDir: string;
   beforeEach(async () => {
     preAckStateDir = mkdtempSync(join(tmpdir(), 'orch-preack-'));
-    await writeIMWorkFile(preAckStateDir, { auto: true });
+    await writeIMWorkFile(preAckStateDir, 'wezterm', { auto: true });
   });
 
   it('plain msg → IM gets "🔍 AI 分诊中" pre-ack BEFORE the route result', async () => {
@@ -2290,9 +2292,10 @@ describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
   });
 
   it('IMWork off → no pre-ack (no IM dispatch at all)', async () => {
-    // beforeEach put IMWork on (auto). Switch to OFF by deleting the file
-    // (file existence ⇔ IM mode ON per IMWork+IMOrigin DD).
-    await unlink(join(preAckStateDir, 'IMWork')).catch(() => {});
+    // beforeEach put IMWork on (auto). Switch to OFF by deleting the
+    // per-terminal file (file existence ⇔ IM mode ON per IMWork+IMOrigin
+    // DD; issue-378 split moved the filename to `IM<TermType>`).
+    await unlink(join(preAckStateDir, 'IMWezterm')).catch(() => {});
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
@@ -2364,7 +2367,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
   beforeEach(async () => {
     dialogStateDir = mkdtempSync(join(tmpdir(), 'orch-dialog-'));
-    await writeIMWorkFile(dialogStateDir, { auto: true });
+    await writeIMWorkFile(dialogStateDir, 'wezterm', { auto: true });
     await writeIMOriginFile(dialogStateDir, {
       imType: 'lark',
       openId: 'ou_owner',
@@ -2426,7 +2429,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
 
   it('/start off → does NOT write Response, does NOT send IM audit (P6+P7 will wire forward)', async () => {
     // Switch IMWork to off mode
-    await writeIMWorkFile(dialogStateDir, { auto: false });
+    await writeIMWorkFile(dialogStateDir, 'wezterm', { auto: false });
 
     const im = makeMockIM();
     const cli = makeMockCLI();
@@ -2465,9 +2468,10 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
   });
 
   it('IMWork file absent (race) → silent skip, no Response, no IM send', async () => {
-    // Remove IMWork to simulate race (hook should have silent-exited but
-    // somehow a Request reached daemon).
-    await unlink(join(dialogStateDir, 'IMWork')).catch(() => {});
+    // Remove IMWezterm (per-terminal IMWork — issue 378 split) to
+    // simulate race (hook should have silent-exited but somehow a
+    // Request reached daemon).
+    await unlink(join(dialogStateDir, 'IMWezterm')).catch(() => {});
 
     const im = makeMockIM();
     const cli = makeMockCLI();
@@ -2626,7 +2630,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
   // -------------------------------------------------------------------
 
   it('/start off → forwards IM with numbered options (single-yes + N suggestions + deny)', async () => {
-    await writeIMWorkFile(dialogStateDir, { auto: false });
+    await writeIMWorkFile(dialogStateDir, 'wezterm', { auto: false });
     const im = makeMockIM();
     const cli = makeMockCLI();
     const orch = createOrchestrator({
@@ -2684,7 +2688,7 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
   });
 
   it('/start off → user IM reply triggers ai-router → Response written with appliedSuggestionIndex resolved into PermissionUpdate', async () => {
-    await writeIMWorkFile(dialogStateDir, { auto: false });
+    await writeIMWorkFile(dialogStateDir, 'wezterm', { auto: false });
     const im = makeMockIM();
     const cli = makeMockCLI();
     const sampleSuggestion = {
