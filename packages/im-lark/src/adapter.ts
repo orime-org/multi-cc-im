@@ -71,6 +71,24 @@ export interface CreateLarkAdapterOpts {
   buildDispatcher?: () => lark.EventDispatcher;
   /** INFO-level event sink (start / ready / reconnect lines). */
   log?: (line: string) => void;
+  /**
+   * Override the WS retry interval (ms) between two connection attempts.
+   * Default 1000ms — see start() for the cool-down policy. Tests inject
+   * a small value to exercise the cool-down branch within a test
+   * timeout budget.
+   */
+  retryIntervalMs?: number;
+  /**
+   * Override the WS cool-down (ms) after N consecutive failures.
+   * Default 5000ms.
+   */
+  cooldownMs?: number;
+  /**
+   * Override how many consecutive failures trigger a cool-down. Default
+   * 10. Tests inject a smaller number to verify the cool-down log line
+   * fires without waiting for 10 real retries.
+   */
+  cooldownAfter?: number;
 }
 
 /**
@@ -114,6 +132,11 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
   let wsClient: LarkWSClientShape | undefined;
   let client: LarkClientShape | undefined;
   let started = false;
+  // Shared state for the WS retry loop in start() — `stop()` flips
+  // `stopRequested` so any in-flight retry timer self-cancels instead of
+  // racing the closed wsClient.
+  let stopRequested = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * LRU of recently-seen inbound `message_id`s. JS `Set` preserves
@@ -164,7 +187,12 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       appId: creds.appId,
       appSecret: creds.appSecret,
       domain: lark.Domain.Feishu,
-      autoReconnect: true,
+      // We own the reconnect loop (1s/10-then-5s cool, see `runConnectLoop`
+      // in start()) — SDK's exponential backoff was too slow to recover
+      // from China-Feishu network flakes (4+ minutes observed). Turning
+      // SDK's autoReconnect off makes its `connect failed` errors land on
+      // our `onError`, which kicks the loop.
+      autoReconnect: false,
       // Drops the multi-line `[info]: [ '[ws]', 'receive events or callbacks
       // through persistent connection only available in self-build &
       // Feishu app, Configured in: Developer Console(开发者后台) -> ...' ]`
@@ -313,46 +341,110 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
         },
       });
 
-      // Wrap onReady in a promise so `start()` doesn't resolve until the
-      // WebSocket handshake actually succeeds. The SDK's `WSClient.start()`
-      // returns after kicking off the connect, NOT after the handshake —
-      // confirmed via live log timing (orchestrator's "ready" line fired
-      // ~1 s before `[lark] WS connected`). Without this gate, the daemon
-      // logs "orchestrator started" while it still can't receive inbound
-      // messages; users see their first IM message disappear and have to
-      // retry. Per user smoke 2026-05-11.
-      //
-      // No timeout: SDK auto-reconnects indefinitely on transient network
-      // failures. If the network is truly down, the `[lark] WS
-      // reconnecting...` log keeps the user informed; they can Ctrl+C to
-      // back out. Failing fast with a timeout was rejected in favor of
-      // honest status reporting.
+      // Connection loop with fixed-1s retry + cool-down every 10 failures.
+      // Per user feedback 2026-05-14: SDK's exponential backoff (1→2→4→8s)
+      // took 4+ minutes to recover from a transient Feishu connect-fail
+      // and the daemon's stderr went silent during that wait — looked
+      // hung. The new loop logs every attempt, retries fast, and only
+      // pauses 5s after a streak of 10 failures (then resets and loops
+      // forever — never gives up).
+      const RETRY_MS = opts.retryIntervalMs ?? 1000;
+      const COOLDOWN_AFTER = opts.cooldownAfter ?? 10;
+      const COOLDOWN_MS = opts.cooldownMs ?? 5000;
+      let attempt = 0;
+      let connected = false;
       let resolveReady!: () => void;
       const ready = new Promise<void>((resolve) => {
         resolveReady = resolve;
       });
 
+      // Each `wsClient.start()` invocation either ends in onReady (success)
+      // or onError (failure). On failure we re-build a fresh WSClient and
+      // call start() again — same pattern WSClient internally uses for its
+      // own autoReconnect, just driven by us so we control the timing.
       const callbacks = {
         onReady: () => {
-          log('[lark] WS connected');
-          resolveReady();
+          if (!connected) {
+            connected = true;
+            log(`[lark] WS connected (after ${attempt + 1} attempt(s))`);
+            resolveReady();
+          } else {
+            log('[lark] WS reconnected — bridge ready');
+          }
+          attempt = 0;
         },
         onError: (err: Error) => {
-          log(`[lark] WS error: ${formatErrorWithCause(err)}`);
-          if (handler.onError) void handler.onError(err);
-        },
-        onReconnecting: () =>
+          // Surface to handler before we decide to retry — orchestrator
+          // log goes to daemon.log either way.
           log(
-            '[lark] WS reconnecting (Feishu network glitch, SDK retrying)...',
-          ),
-        onReconnected: () => log('[lark] WS reconnected — bridge ready'),
+            `[lark] WS error (attempt ${attempt + 1}): ${formatErrorWithCause(err)}`,
+          );
+          if (handler.onError) void handler.onError(err);
+          scheduleRetry();
+        },
+        // SDK's autoReconnect is off, so these never fire — kept as no-ops
+        // for interface compatibility with the WSClient ctor.
+        onReconnecting: () => {},
+        onReconnected: () => {},
+      };
+
+      const scheduleRetry = (): void => {
+        if (stopRequested) return;
+        attempt += 1;
+        const inCooldown = attempt % COOLDOWN_AFTER === 0;
+        if (inCooldown) {
+          log(
+            `[lark] 连接失败 ${attempt} 次，冷却 ${
+              COOLDOWN_MS >= 1000 ? `${COOLDOWN_MS / 1000}s` : `${COOLDOWN_MS}ms`
+            } 后继续重试`,
+          );
+          retryTimer = setTimeout(tryConnect, COOLDOWN_MS);
+        } else {
+          retryTimer = setTimeout(tryConnect, RETRY_MS);
+        }
+      };
+
+      const tryConnect = (): void => {
+        if (stopRequested) return;
+        retryTimer = null;
+        log(`[lark] 连接中... (尝试 ${attempt + 1})`);
+        try {
+          // Each retry needs a fresh WSClient — re-using a closed one
+          // produces "WebSocket already closed" errors on the SDK side.
+          wsClient = (opts.buildWSClient ?? buildDefaultWSClient)(
+            creds,
+            callbacks,
+          );
+          // start() is async but we don't await it — onReady / onError
+          // drive the loop. Awaiting would block the daemon forever on
+          // the first failure (start() doesn't return until handshake
+          // succeeds OR the SDK gives up — and with autoReconnect:false
+          // it gives up after the first failure).
+          void wsClient.start({ eventDispatcher: dispatcher }).catch((err) => {
+            // start() can also throw synchronously-async (e.g. bad creds)
+            // before any callback fires. Treat as an error attempt and
+            // continue the loop.
+            log(
+              `[lark] WS start threw (attempt ${attempt + 1}): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+            scheduleRetry();
+          });
+        } catch (err) {
+          log(
+            `[lark] WS start sync error (attempt ${attempt + 1}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          scheduleRetry();
+        }
       };
 
       log('[lark] connecting to Feishu WS...');
-      wsClient = (opts.buildWSClient ?? buildDefaultWSClient)(creds, callbacks);
-      await wsClient.start({ eventDispatcher: dispatcher });
-      // SDK's start() may have returned before the actual handshake. Block
-      // until onReady fires so callers can trust "started = bridge ready".
+      tryConnect();
+      // Block start() until the first onReady fires. After that the loop
+      // keeps running in the background for any subsequent disconnects.
       await ready;
     },
 
@@ -391,6 +483,14 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
     async stop(): Promise<void> {
       if (!started) return;
       started = false;
+      // Signal the retry loop to stop scheduling new attempts before
+      // closing the current client — without this a pending retryTimer
+      // can fire after wsClient.close() and reconnect a "stopped" daemon.
+      stopRequested = true;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       if (wsClient) {
         try {
           wsClient.close();
