@@ -22,6 +22,14 @@ export interface CreateITerm2AdapterOpts {
    * (mirror W3 wezterm path resolution) and passes the result here.
    */
   helperScript: { path: string };
+  /**
+   * Optional diagnostic log sink. When provided, every iterm2-helper
+   * subprocess invocation prints a one-line action summary before spawn
+   * and a result/error line after. Production wires this to the daemon's
+   * stderr + `~/.multi-cc-im/daemon.log` dual logger so users / AI can
+   * reconstruct exactly what the daemon asked iTerm2 to do.
+   */
+  log?: (line: string) => void;
 }
 
 /**
@@ -53,7 +61,7 @@ export interface CreateITerm2AdapterOpts {
 export function createITerm2Adapter(
   opts: CreateITerm2AdapterOpts,
 ): TermAdapter & TermListPanes {
-  const { python, helperScript } = opts;
+  const { python, helperScript, log } = opts;
 
   return {
     name: 'iterm2',
@@ -69,6 +77,7 @@ export function createITerm2Adapter(
       await runIterM2Helper({
         python,
         helperScript,
+        log,
         request: {
           action: 'sendText',
           sessionId: paneId as unknown as string,
@@ -86,6 +95,7 @@ export function createITerm2Adapter(
       await runIterM2Helper({
         python,
         helperScript,
+        log,
         request: {
           action: 'sendKeystroke',
           sessionId: paneId as unknown as string,
@@ -98,6 +108,7 @@ export function createITerm2Adapter(
       const result = await runIterM2Helper({
         python,
         helperScript,
+        log,
         request: { action: 'listSessions' },
       });
       // runIterM2Helper's return type is a union; narrow to the array
