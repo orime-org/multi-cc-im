@@ -79,6 +79,7 @@ describe('runHookCommand', () => {
   it('PreToolUse with WEZTERM_PANE undefined → silent exit (no stdout)', async () => {
     await setupBoundState();
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: PRE_TOOL_USE_BASH,
       stateDir,
       resolvePaneId: () => undefined,
@@ -100,6 +101,7 @@ describe('runHookCommand', () => {
       tool_use_id: 'toolu_x',
     });
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: READ,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -117,6 +119,7 @@ describe('runHookCommand', () => {
       content: 'follow-up prompt',
     });
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: STOP,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -132,6 +135,7 @@ describe('runHookCommand', () => {
   it('Stop with empty queue → exit 0 empty stdout', async () => {
     await setupBoundState();
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: STOP,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -148,6 +152,7 @@ describe('runHookCommand', () => {
       content: 'should-not-fire',
     });
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: STOP_ACTIVE,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -163,6 +168,7 @@ describe('runHookCommand', () => {
       content: 'never-popped',
     });
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: STOP,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -181,6 +187,7 @@ describe('runHookCommand', () => {
       model: 'claude-opus-4-7',
     });
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: SESSION_START,
       stateDir,
       resolvePaneId: () => PANE_ID,
@@ -192,6 +199,7 @@ describe('runHookCommand', () => {
 
   it('malformed JSON stdin → exit 1 + stderr explaining', async () => {
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: 'not-json{{{',
       stateDir,
     });
@@ -201,13 +209,69 @@ describe('runHookCommand', () => {
   });
 
   it('empty stdin → exit 1 + stderr', async () => {
-    const result = await runHookCommand({ stdin: '', stateDir });
+    const result = await runHookCommand({ stdin: '', stateDir, traceLogPath: null });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(/empty|stdin/i);
   });
 
+  it('entry trace: writes one line to traceLogPath before parse, includes event + env keys + stdin-bytes', async () => {
+    const tracePath = join(stateDir, 'hook-trace.log');
+    const prevIterm = process.env.ITERM_SESSION_ID;
+    const prevWez = process.env.WEZTERM_PANE;
+    process.env.ITERM_SESSION_ID = 'w0t0p0:11111111-2222-3333-4444-555555555555';
+    delete process.env.WEZTERM_PANE;
+    try {
+      await runHookCommand({
+        event: 'Stop',
+        stdin: STOP,
+        stateDir,
+        traceLogPath: tracePath,
+        resolvePaneId: () => PANE_ID,
+      });
+      const { readFile } = await import('node:fs/promises');
+      const trace = await readFile(tracePath, 'utf-8');
+      expect(trace).toMatch(/hook event=Stop/);
+      expect(trace).toMatch(/ITERM_SESSION_ID=w0t0p0:11111111/);
+      expect(trace).toMatch(/WEZTERM_PANE= /);
+      expect(trace).toMatch(/stdin-bytes=\d+/);
+      expect(trace.split('\n').filter((l) => l.length > 0)).toHaveLength(1);
+    } finally {
+      if (prevIterm !== undefined) process.env.ITERM_SESSION_ID = prevIterm;
+      else delete process.env.ITERM_SESSION_ID;
+      if (prevWez !== undefined) process.env.WEZTERM_PANE = prevWez;
+    }
+  });
+
+  it('entry trace: even logs empty-stdin invocations (so we see "cc fired but with bad payload")', async () => {
+    const tracePath = join(stateDir, 'hook-trace.log');
+    await runHookCommand({
+      event: 'Stop',
+      stdin: '',
+      stateDir,
+      traceLogPath: tracePath,
+    });
+    const { readFile } = await import('node:fs/promises');
+    const trace = await readFile(tracePath, 'utf-8');
+    expect(trace).toMatch(/hook event=Stop/);
+    expect(trace).toMatch(/stdin-bytes=0/);
+  });
+
+  it('entry trace: traceLogPath=null disables file write (tests + opt-out)', async () => {
+    const tracePath = join(stateDir, 'hook-trace.log');
+    await runHookCommand({
+      event: 'Stop',
+      stdin: STOP,
+      stateDir,
+      traceLogPath: null,
+      resolvePaneId: () => PANE_ID,
+    });
+    const { stat } = await import('node:fs/promises');
+    await expect(stat(tracePath)).rejects.toThrow(/ENOENT/);
+  });
+
   it('unknown hook_event_name → exit 1 + stderr (zod validation)', async () => {
     const result = await runHookCommand({
+      traceLogPath: null,
       stdin: JSON.stringify({
         session_id: SID,
         transcript_path: TX,

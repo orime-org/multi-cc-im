@@ -178,13 +178,18 @@ async function dispatchCleanup(args: string[]): Promise<number> {
 
 async function dispatchHook(args: string[]): Promise<number> {
   // hook <event> — `<event>` arg is informational; the actual event name lives
-  // in the JSON stdin payload (per cc hook protocol). We accept + ignore arg
-  // so cc settings.json can use `multi-cc-im hook SessionStart` etc. for clarity.
-  void args; // no-op; reserved for future per-event sanity check vs payload
+  // in the JSON stdin payload (per cc hook protocol). We forward it verbatim
+  // to `runHookCommand` so the entry-trace records what cc invoked us with,
+  // independent of stdin contents (helps disambiguate "cc didn't pipe a
+  // payload" vs "cc piped wrong payload" — issue 377 diagnostic).
 
   const stdin = await readAllStdin();
   const stateDir = resolveStateDir();
-  const result = await runHookCommand({ stdin, stateDir });
+  const result = await runHookCommand({
+    stdin,
+    stateDir,
+    event: args[0],
+  });
 
   if (result.stdout.length > 0) process.stdout.write(result.stdout);
   if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
