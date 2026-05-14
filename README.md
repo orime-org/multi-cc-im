@@ -2,7 +2,13 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Bridge multiple Claude Code (cc) sessions running in WezTerm tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `#<tab>` only when you want to be explicit.
+Bridge multiple Claude Code (cc) sessions running in **WezTerm or iTerm2** tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `#<tab>` only when you want to be explicit.
+
+> **v0.1.0** (2026-05-14) — iTerm2 adapter complete + root-cause fixes from real-account smoke. See [`docs/conventions.md`](docs/conventions.md) revision log or [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.0).
+
+**Two audiences below**:
+- **[Part 1 — Direct use](#part-1--direct-use)** — install, start, IM commands, troubleshooting. Read this if you just want to use multi-cc-im.
+- **[Part 2 — Secondary development](#part-2--secondary-development)** — repo layout, adapter contracts (IM / Terminal / CLI), DD flow, doc pointers. Read this if you want to add a new IM (Telegram / Slack / WeChat...) or terminal (tmux / kitty / Ghostty...) adapter, fix bugs, or just understand internals.
 
 ---
 
@@ -354,7 +360,8 @@ multi-cc-im/
 │   ├── shared/              — Cross-package types + zod schemas
 │   ├── storage-files/       — TOML + JSON file stores (config, credentials, cursor, queues)
 │   ├── im-lark/             — Lark/Feishu adapter (npm depend `@larksuiteoapi/node-sdk`)
-│   ├── term-wezterm/        — wezterm CLI adapter
+│   ├── term-wezterm/        — WezTerm CLI adapter
+│   ├── term-iterm2/         — iTerm2 Python API adapter (ephemeral helper subprocess; see DD 2026-05-13)
 │   ├── cli-cc/              — Claude Code hook adapter
 │   └── bridge/              — Router + orchestrator + AI-routed dispatch
 ├── bin/multi-cc-im          — Bash wrapper (resolves dist or tsx)
@@ -403,16 +410,23 @@ Per `CLAUDE.md` and [`docs/dev.md`](docs/dev.md): write a failing test that codi
 6. Add credential storage under `~/.multi-cc-im/credentials/<im>.json` (mode 0600). **Do not** call OS keychain — see [DD: credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md).
 7. Optional: ship a `docs/setup-<im>.md` walkthrough and point `guideDocPath` at it in the registry entry. The wizard renders it with clickable OSC 8 hyperlinks on supporting terminals (W6).
 
-## Adding a new terminal adapter (tmux / kitty / etc.)
+## Adding a new terminal adapter (tmux / kitty / Ghostty / etc.)
+
+Refs: [DD: iTerm2 adapter](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) (reference second-adapter implementation) and the resulting code in `packages/term-iterm2/`.
 
 1. Create `packages/term-<name>/`.
-2. Implement `TermAdapter` + `TermListPanes` from `@multi-cc-im/shared`:
-   - `start(): Promise<void>`
-   - `listPanes(): Promise<TermPaneInfo[]>` — must return tab titles
+2. Add `<name>` to `TerminalIdSchema` (`packages/shared/src/adapter/storage.ts`) — `z.enum(['wezterm', 'iterm2', '<name>'])`.
+3. Implement `TermAdapter & TermListPanes` from `@multi-cc-im/shared`:
+   - `name: '<name>'` literal (used by orchestrator to compute `activeTerminalId`)
+   - `start(handler): Promise<void>` (no-op unless terminal pushes lifecycle events)
+   - `listPanes(): Promise<TermPaneInfo[]>` — return `{paneId, title, cwd}` for every tab/pane
    - `sendText(paneId, content): Promise<void>` — paste-only (no submit)
-   - `sendKeystroke(paneId, key): Promise<void>` — submit key (`\r`)
+   - `sendKeystroke(paneId, key): Promise<void>` — submit key (e.g. `\r`)
    - `stop(): Promise<void>`
-3. Use a two-step send: paste content (`sendText`), wait ~300ms, submit (`sendKeystroke('\r')`). Single-step send-with-newline is forbidden — see `CLAUDE.md`「send-text 注入两步法」.
+4. **Two-step send** mandatory: `sendText(content)` → orchestrator sleeps ~300ms → `sendKeystroke('\r')`. Single-step send-with-newline is forbidden — see `CLAUDE.md`「send-text 注入两步法」.
+5. **Pane-id detector**: if the terminal exports an env var that identifies the current pane (e.g. `KITTY_WINDOW_ID`, `TMUX_PANE`), add a `TaggedDetector` to `packages/cli-cc/src/pane-id-detectors.ts` `DEFAULT_DETECTORS`. The detector returns `PaneId` (branded `number | string`) given `process.env`. Issue 378 root-cause framing: the detector's `termId` flows end-to-end through `Stop` state-file payloads and `IM<TermType>` per-terminal IMWork files — DO NOT infer terminal from `typeof paneId`.
+6. **start.ts wiring**: branch the wizard's `selectTerminal` to surface the new option; conditional-create the adapter in `start.ts` based on `config.terminal.type`.
+7. Add tests covering listPanes / sendText / sendKeystroke / detector (mirror `packages/term-iterm2/src/*.test.ts`).
 
 ## Adding a new CLI adapter (codex / aider / etc.)
 
@@ -430,7 +444,7 @@ Any change that affects the security model, long-term maintenance, cross-package
 | [`docs/conventions.md`](docs/conventions.md) | Project-specific tech conventions (status table, hook timeout / send-text two-step / routing keys / project-specific prohibitions) |
 | [`docs/architecture.md`](docs/architecture.md) | Architecture diagram, state schema, file IPC |
 | [`docs/dev.md`](docs/dev.md) | Dev commands + TDD rhythm + debugging tips |
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD reports (one per locked decision) |
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD reports (one per locked decision) — recent: [iTerm2 adapter](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md), [IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md), [PermissionRequest IM bridge](docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md), [credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
 | [`docs/competitors.md`](docs/competitors.md) | Why not adopt project X |
 
 ## License
