@@ -1070,13 +1070,32 @@ export async function deleteDaemonPidFile(stateDir: string): Promise<void> {
  * Capture the OS process start-time string for a given PID via
  * `ps -o lstart= -p <pid>`. Returns null on ENOENT (PID does not exist) or
  * any non-zero exit code.
+ *
+ * **Locale fix (issue 377)**: ps's `lstart` format depends on `LC_TIME`
+ * — `en_US` → `"Thu May 14 19:16:33 2026"`, `zh_CN` → `"四  5月/14
+ * 19:16:33 2026"`. Daemon writes `daemon.pid` with its shell's locale;
+ * cc-spawned hook subprocesses may have a different (or absent)
+ * `LC_TIME` and produce a different string for the SAME process →
+ * `isDaemonAlive` string comparison fails → Stop hook silent-exits →
+ * iTerm cc reply never reaches IM.
+ *
+ * Forcing `LC_TIME=C` (POSIX) pins the format to ASCII English on every
+ * caller, so the comparison is deterministic regardless of who invokes
+ * us (daemon writer side / hook reader side / future test harnesses).
+ * `process.env` is shallow-merged so PATH etc. are preserved (ps lives
+ * on PATH — without the merge it might not be found in stripped envs).
+ *
+ * Per 2026-05-14 real-account smoke + hook gate trace (PR #178 follow-up).
  */
 export async function captureProcessLstart(pid: number): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       'ps',
       ['-o', 'lstart=', '-p', String(pid)],
-      { timeout: 5_000 },
+      {
+        timeout: 5_000,
+        env: { ...process.env, LC_TIME: 'C', LC_ALL: 'C' },
+      },
       (err, stdout) => {
         if (err) {
           resolve(null);

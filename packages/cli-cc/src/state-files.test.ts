@@ -1022,6 +1022,37 @@ describe('state-files', () => {
       expect((got ?? '').length).toBeGreaterThanOrEqual(10);
     });
 
+    it('captureProcessLstart returns a locale-stable string regardless of caller LC_TIME (issue 377)', async () => {
+      // Simulate a non-en LC_TIME in the caller (cc-spawned hook subprocesses
+      // can have arbitrary locale env). The helper must internally pin
+      // LC_TIME=C so the ps output is identical across callers — otherwise
+      // `isDaemonAlive` string comparison fails when daemon writes with
+      // locale A and hook reads with locale B (real-account smoke 2026-05-14).
+      const prevLcTime = process.env.LC_TIME;
+      const prevLcAll = process.env.LC_ALL;
+      const prevLang = process.env.LANG;
+      const baseline = await captureProcessLstart(process.pid);
+      process.env.LC_TIME = 'zh_CN.UTF-8';
+      process.env.LC_ALL = 'zh_CN.UTF-8';
+      process.env.LANG = 'zh_CN.UTF-8';
+      try {
+        const underZh = await captureProcessLstart(process.pid);
+        expect(underZh).toBe(baseline);
+        // Stable format probe — ASCII English month name regardless of
+        // caller locale.
+        expect(underZh).toMatch(
+          /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/,
+        );
+      } finally {
+        if (prevLcTime === undefined) delete process.env.LC_TIME;
+        else process.env.LC_TIME = prevLcTime;
+        if (prevLcAll === undefined) delete process.env.LC_ALL;
+        else process.env.LC_ALL = prevLcAll;
+        if (prevLang === undefined) delete process.env.LANG;
+        else process.env.LANG = prevLang;
+      }
+    });
+
     it('captureProcessLstart returns null for very high (likely-dead) pid', async () => {
       const got = await captureProcessLstart(2_000_000_000);
       expect(got).toBeNull();
