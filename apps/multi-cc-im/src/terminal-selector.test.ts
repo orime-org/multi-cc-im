@@ -39,9 +39,13 @@ function makeScripted(opts: {
       if (confirmsQ.length === 0) throw new Error('confirm queue exhausted');
       return confirmsQ.shift()!;
     },
-    select: async <V extends string>() => {
+    // Signature must match WizardPromptIO.select exactly — Promise<V | symbol>.
+    // Returning `as V` alone is rejected by stricter TS resolutions (CI vs
+    // local) because the queue holds `string | symbol`, not a narrowed V.
+    select: async <V extends string>(): Promise<V | symbol> => {
       if (selectsQ.length === 0) throw new Error('select queue exhausted');
-      return selectsQ.shift() as V;
+      const v = selectsQ.shift();
+      return v as V | symbol;
     },
     isCancel: (v: unknown): v is symbol => v === cancelSym,
     messages,
