@@ -87,11 +87,11 @@ describe('selectTerminal', () => {
     expect(result).toEqual({ status: 'configured', id: 'wezterm' });
   });
 
-  it('iterm2 happy path: pref confirmed + install + smoke import OK', async () => {
+  it('iterm2 happy path: install + empirical connect smoke OK', async () => {
     const execCalls: Array<{ cmd: string; args: string[] }> = [];
     const io = makeScripted({
       selects: ['iterm2'],
-      confirms: [true, true], // prefs confirmed + install confirmed
+      confirms: [true], // install confirmed (no more prefs-done confirm)
     });
     const result = await selectTerminal({
       io,
@@ -108,41 +108,29 @@ describe('selectTerminal', () => {
       id: 'iterm2',
       python3: '/opt/homebrew/bin/python3',
     });
-    // First exec: pip install. Second exec: import smoke.
+    // First exec: pip install. Second exec: connect smoke (run_until_complete).
     expect(execCalls).toHaveLength(2);
     expect(execCalls[0]!.args).toEqual([
       '-m', 'pip', 'install', '--user', '--break-system-packages', 'iterm2',
     ]);
-    expect(execCalls[1]!.args).toEqual(['-c', 'import iterm2']);
+    expect(execCalls[1]!.args[0]).toBe('-c');
+    expect(execCalls[1]!.args[1]).toContain('iterm2.run_until_complete');
+    expect(execCalls[1]!.args[1]).toContain('async_get_app');
   });
 
-  it('iterm2 user declines pref enable → error with retry hint', async () => {
-    const io = makeScripted({ selects: ['iterm2'], confirms: [false] });
-    const result = await selectTerminal({
-      io,
-      deps: baseDeps({
-        resolvePython3: async () => '/opt/homebrew/bin/python3',
-      }),
-    });
-    expect(result.status).toBe('error');
-    if (result.status === 'error') {
-      expect(result.exitCode).toBe(1);
-      expect(result.message).toMatch(/enable Python API/);
-    }
-  });
-
-  it('iterm2 user declines install + import succeeds (pre-installed) → configured', async () => {
+  it('iterm2 user declines install + connect smoke succeeds (pre-installed) → configured', async () => {
     const io = makeScripted({
       selects: ['iterm2'],
-      confirms: [true, false], // prefs ok, but skip install
+      confirms: [false], // skip install
     });
     const result = await selectTerminal({
       io,
       deps: baseDeps({
         resolvePython3: async () => '/opt/homebrew/bin/python3',
         exec: async (_cmd, args) => {
-          // Skip-install path only runs the smoke import.
-          expect(args).toEqual(['-c', 'import iterm2']);
+          // Skip-install path only runs the empirical connect smoke.
+          expect(args[0]).toBe('-c');
+          expect(args[1]).toContain('iterm2.run_until_complete');
           return { stdout: '', stderr: '' };
         },
       }),
@@ -155,7 +143,8 @@ describe('selectTerminal', () => {
   });
 
   it('iterm2 python3 missing → error with install hint', async () => {
-    const io = makeScripted({ selects: ['iterm2'], confirms: [true] });
+    // python3 resolution happens before any confirm, so confirms queue is empty.
+    const io = makeScripted({ selects: ['iterm2'] });
     const result = await selectTerminal({
       io,
       deps: baseDeps({
@@ -170,10 +159,10 @@ describe('selectTerminal', () => {
     }
   });
 
-  it('iterm2 import smoke fails (pip install silently broken) → error', async () => {
+  it('iterm2 connect smoke fails (API off) → error with Settings hint', async () => {
     const io = makeScripted({
       selects: ['iterm2'],
-      confirms: [true, true],
+      confirms: [true],
     });
     let calls = 0;
     const result = await selectTerminal({
@@ -183,7 +172,8 @@ describe('selectTerminal', () => {
         exec: async () => {
           calls += 1;
           if (calls === 2) {
-            throw new Error('ModuleNotFoundError: No module named iterm2');
+            // Mimic iterm2 lib's actual stderr when the API server is off.
+            throw new Error('There was a problem connecting to iTerm2.');
           }
           return { stdout: '', stderr: '' };
         },
@@ -191,7 +181,14 @@ describe('selectTerminal', () => {
     });
     expect(result.status).toBe('error');
     if (result.status === 'error') {
-      expect(result.message).toMatch(/cannot import.*iterm2/);
+      expect(result.exitCode).toBe(1);
+      // Surface the actionable hint, not a generic "smoke failed".
+      expect(result.message).toMatch(/cannot connect to iTerm2 Python API/);
+      expect(result.message).toContain('Settings → General → Magic');
+      expect(result.message).toContain('Enable Python API');
+      // Underlying detail surfaced verbatim so users see the iterm2-lib
+      // error too (helps debugging unrelated causes — e.g. cookie path).
+      expect(result.message).toContain('There was a problem connecting to iTerm2');
     }
   });
 
@@ -280,7 +277,7 @@ describe('selectTerminal', () => {
   it('pip install uses --break-system-packages flag (PEP 668 bypass)', async () => {
     const io = makeScripted({
       selects: ['iterm2'],
-      confirms: [true, true],
+      confirms: [true], // install confirmed
     });
     const execCalls: Array<{ cmd: string; args: string[] }> = [];
     await selectTerminal({

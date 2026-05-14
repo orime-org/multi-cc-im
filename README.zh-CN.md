@@ -257,22 +257,29 @@ brew install python3
 xcode-select --install
 ```
 
-### `multi-cc-im start` 报 "cannot import iterm2"（iTerm2）
+### `multi-cc-im start` 报 "cannot connect to iTerm2 Python API"（iTerm2）
 
-PyPI 包没装上或 macOS Automation 权限被拒：
+向导尝试真连接（`iterm2.run_until_complete`）失败，拿到 `There was a problem connecting to iTerm2`。两个常见根因：
+
+1. **偏好没开** — 绝大多数情况。修法：
+
+   ```text
+   iTerm2 → Settings → General → Magic → ☑ Enable Python API
+   ```
+
+   再 `./bin/multi-cc-im start`。向导再跑一次 connect smoke，成功会输出 `Smoke check: iTerm2 Python API is reachable.`。
+
+2. **iTerm2 没运行** — 启动任意一个安装的副本（它们共享 `com.googlecode.iterm2` prefs）后重试。
+
+如果连接 smoke 过了但包本身缺（`ModuleNotFoundError: No module named iterm2`），说明向导的 pip install 步骤 silently 失败了。手动重装：
 
 ```bash
-# 重装：
-python3 -m pip install --user iterm2
-
-# 重新触发 Automation 权限弹窗，再跑一次向导：
-./bin/multi-cc-im start
-# 再选 iterm2 → 确认 prefs → 确认 install。macOS 会弹「iTerm2 wants to control multi-cc-im」对话框；点 OK。
+python3 -m pip install --user --break-system-packages iterm2
 ```
 
 ### iTerm2: cc 里 `/rename` 设的 tab title 在 `/list` 看不到
 
-- 确认 iTerm2 Python API 偏好开了: `iTerm2 → Preferences → General → Magic → ☑ Enable Python API`。向导用 `import iterm2` smoke 检查过，但后续 macOS 更新可能 silently 撤销 Automation 权限。
+- 向导的 connect smoke（上面那条）已经验证过 Python API 偏好开了。如果 `/list` 仍漏 tab title，可能是后续 macOS 更新 silently 撤销了 Automation 权限——再跑一次 `./bin/multi-cc-im start` 让 connect smoke 重新触发系统权限弹窗。
 - iTerm2 adapter 读的是 `session.autoName`（cc `/rename` 设的）。如果 title 仍显示默认 `Claude Code [...]`，在 cc TUI 里再 `/rename` 一次。
 
 ### `multi-cc-im start` 报 "another daemon already running"

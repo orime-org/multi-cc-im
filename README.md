@@ -257,23 +257,29 @@ brew install python3
 xcode-select --install
 ```
 
-### `multi-cc-im start` says "cannot import iterm2" (iTerm2)
+### `multi-cc-im start` says "cannot connect to iTerm2 Python API" (iTerm2)
 
-The PyPI package didn't install or the macOS Automation permission was denied:
+The wizard tried to open a real connection (`iterm2.run_until_complete`) and got `There was a problem connecting to iTerm2`. Two common causes:
+
+1. **Preference is off** — by far the most common. Fix:
+
+   ```text
+   iTerm2 → Settings → General → Magic → ☑ Enable Python API
+   ```
+
+   Then re-run `./bin/multi-cc-im start`. The wizard re-runs the connect smoke and shows `Smoke check: iTerm2 Python API is reachable.` if it worked.
+
+2. **iTerm2 not running** — launch any installed copy (they share preferences via `com.googlecode.iterm2`) and retry.
+
+If the connect smoke passes but the package itself is missing (`ModuleNotFoundError: No module named iterm2`), the wizard's pip install step probably failed silently. Re-install manually:
 
 ```bash
-# Re-install:
-python3 -m pip install --user iterm2
-
-# Re-trigger the Automation permission dialog by re-running the wizard:
-./bin/multi-cc-im start
-# Pick `iterm2` again → confirm prefs → confirm install. macOS will pop
-# the "iTerm2 wants to control multi-cc-im" dialog; click OK.
+python3 -m pip install --user --break-system-packages iterm2
 ```
 
 ### iTerm2: tab title from `/rename` not appearing in `/list`
 
-- Verify the iTerm2 Python API preference is enabled: `iTerm2 → Preferences → General → Magic → ☑ Enable Python API`. The wizard checks this with an `import iterm2` smoke test, but a later macOS update can revoke the Automation permission silently.
+- The wizard's empirical connect smoke (above) already verified the Python API preference. If `/list` still misses tab titles, a later macOS update may have revoked the Automation permission silently — re-run `./bin/multi-cc-im start` so the connect smoke re-triggers the system permission dialog.
 - The iTerm2 adapter reads `session.autoName` (set by cc's `/rename`). If the title still shows the default cc title `Claude Code [...]`, retry `/rename` inside the cc TUI.
 
 ### `multi-cc-im start` says "another daemon already running"
