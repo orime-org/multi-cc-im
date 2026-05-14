@@ -1,3 +1,5 @@
+import { appendFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   parseHookPayload,
   runHookReceiver,
@@ -10,6 +12,29 @@ export interface RunHookCommandOpts {
   stdin: string;
   /** Where state files live (e.g. `~/.multi-cc-im/state/`). */
   stateDir: string;
+  /**
+   * Event name as passed on the CLI (`Stop` / `PreToolUse` /
+   * `PermissionRequest`). Recorded verbatim in the entry trace before
+   * stdin is parsed so the trace shows which command cc actually
+   * invoked, independent of payload content. Falls back to
+   * `<unknown>` if caller (tests) omits.
+   */
+  event?: string;
+  /**
+   * Override the hook-trace log path. Default writes to
+   * `<dirname(stateDir)>/hook-trace.log` (= `~/.multi-cc-im/hook-trace.log`
+   * in production). Tests pass `null` to disable the file write (keeps
+   * test tmp dirs clean) or a custom path to assert format.
+   *
+   * Trace is a best-effort diagnostic — failures swallowed so the hook
+   * never breaks cc's turn.
+   *
+   * Per issue 377 diagnostic 2026-05-14: needed to determine whether
+   * cc actually invokes the hook for iTerm cc sessions (and what env
+   * it passes) since the receiver's silent-exit branches leave no
+   * disk footprint and daemon.log shows nothing.
+   */
+  traceLogPath?: string | null;
   /**
    * Override the pane-origin detector chain for tests / sandboxed
    * environments. Returning undefined simulates "cc not in a supported
@@ -62,9 +87,55 @@ export interface HookCommandResult {
  * dispatcher does the actual write — this keeps the function unit-testable
  * (no fixture dependence on `process.stdout` capture).
  */
+/**
+ * Best-effort heartbeat: append a one-line trace to `hook-trace.log`
+ * BEFORE any parsing / detector / IMWork gate runs. The line records
+ * env state at hook-subprocess entry so we can diagnose "cc invoked
+ * the hook with what env" without instrumenting cc itself.
+ *
+ * Format (single line, append-only, mode 0600):
+ *   {ISO-ts} hook event={argv} pid={pid} ITERM_SESSION_ID={value-or-empty} WEZTERM_PANE={value-or-empty} stdin-bytes={N}
+ *
+ * Failures (ENOENT parent / EACCES / disk full) are swallowed — this
+ * is a diagnostic only; the hook must never break cc's turn.
+ *
+ * Per issue 377 diagnostic 2026-05-14.
+ */
+async function writeHookEntryTrace(
+  traceLogPath: string,
+  args: { event: string; stdinBytes: number },
+): Promise<void> {
+  try {
+    const ts = new Date().toISOString();
+    const iterm = process.env.ITERM_SESSION_ID ?? '';
+    const wez = process.env.WEZTERM_PANE ?? '';
+    const line =
+      `${ts} hook event=${args.event} pid=${process.pid} ` +
+      `ITERM_SESSION_ID=${iterm} WEZTERM_PANE=${wez} stdin-bytes=${args.stdinBytes}\n`;
+    await appendFile(traceLogPath, line, { mode: 0o600 });
+  } catch {
+    /* swallow — diagnostic only */
+  }
+}
+
 export async function runHookCommand(
   opts: RunHookCommandOpts,
 ): Promise<HookCommandResult> {
+  // Heartbeat trace BEFORE every other check so we capture invocations
+  // that would silent-exit downstream (empty stdin / parse fail /
+  // missing env / IMWork gate). Default path is sibling of stateDir's
+  // parent (= `<root>/hook-trace.log`); tests pass null to skip.
+  const traceLogPath =
+    opts.traceLogPath === null
+      ? null
+      : opts.traceLogPath ?? join(dirname(opts.stateDir), 'hook-trace.log');
+  if (traceLogPath !== null) {
+    await writeHookEntryTrace(traceLogPath, {
+      event: opts.event ?? '<unknown>',
+      stdinBytes: opts.stdin.length,
+    });
+  }
+
   if (opts.stdin.length === 0) {
     return {
       exitCode: 1,
