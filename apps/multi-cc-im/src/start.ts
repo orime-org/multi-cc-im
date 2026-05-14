@@ -206,6 +206,23 @@ export async function runStartCommand(
       logStream.write(`${ts} ${line}\n`);
     }
   });
+  /**
+   * File-only sink. Same destination as `log`'s file half, but skips
+   * stderr — used for high-volume / low-signal traces (iterm2-helper
+   * per-invocation lines, etc.) that AI needs for post-mortem but
+   * users shouldn't see clutter their daemon console. Tests inject
+   * `opts.log` and bypass file I/O entirely → fileOnlyLog falls back
+   * to a no-op so tests stay clean. Per user feedback 2026-05-14
+   * after PR #175 real-account smoke: iterm2-helper lines were
+   * flooding the daemon console.
+   */
+  const fileOnlyLog =
+    opts.log === undefined && logStream
+      ? (line: string) => {
+          const ts = new Date().toISOString();
+          logStream!.write(`${ts} ${line}\n`);
+        }
+      : () => {};
 
   log(`multi-cc-im start (root: ${paths.root})`);
 
@@ -514,11 +531,12 @@ export async function runStartCommand(
       : createITerm2Adapter({
           python: { path: python3! },
           helperScript: { path: iterm2HelperPath! },
-          // Thread the daemon's dual-write logger so each iterm2-helper
-          // subprocess invocation lands in `~/.multi-cc-im/daemon.log`
-          // alongside the daemon's own stderr — gives users + AI a single
-          // source for post-mortem when iTerm2 stops responding.
-          log,
+          // Use `fileOnlyLog` (NOT `log`): iterm2-helper fires on every
+          // listSessions / sendText / sendKeystroke — high volume, low
+          // signal for users. Goes into `~/.multi-cc-im/daemon.log` for
+          // AI post-mortem but is silent on the daemon console.
+          // Per user feedback 2026-05-14 after PR #175 smoke.
+          log: fileOnlyLog,
         });
   const cliAdapter = createCcCliAdapter({
     stateDir: paths.stateDir,
