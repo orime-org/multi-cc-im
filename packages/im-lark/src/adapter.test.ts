@@ -741,17 +741,32 @@ describe('createLarkAdapter', () => {
       });
       await adapter.start(makeHandler());
       expect(logs).toContain('[lark] connecting to Feishu WS...');
-      expect(logs).toContain('[lark] WS connected');
+      // Connected line now reports attempt count for diagnosability —
+      // match the prefix to stay tolerant of the attempt suffix.
+      const connectedIdx = logs.findIndex((l) =>
+        l.startsWith('[lark] WS connected'),
+      );
+      expect(connectedIdx).toBeGreaterThanOrEqual(0);
       // Ordering: connecting log fires before connected log.
       const connectingIdx = logs.indexOf('[lark] connecting to Feishu WS...');
-      const connectedIdx = logs.indexOf('[lark] WS connected');
       expect(connectingIdx).toBeLessThan(connectedIdx);
     });
 
-    it('onReconnecting callback emits a user-readable log explaining the wait', async () => {
+    it('onError after successful connect triggers retry log + onReady fires "reconnected — bridge ready"', async () => {
+      // The previous SDK-driven `onReconnecting` callback no longer fires
+      // because we set `autoReconnect: false` and drive retries ourselves
+      // (per user feedback 2026-05-14: SDK exp-backoff was too slow).
+      // The reconnect path now uses onError → scheduled retry → onReady
+      // fires the second time, logged as "WS reconnected — bridge ready".
       const dispatcher = makeStubDispatcher();
       const logs: string[] = [];
-      let cbs!: { onReady: () => void; onError: (err: Error) => void; onReconnecting: () => void; onReconnected: () => void };
+      let cbs!: {
+        onReady: () => void;
+        onError: (err: Error) => void;
+        onReconnecting: () => void;
+        onReconnected: () => void;
+      };
+      let startCount = 0;
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
         log: (line) => logs.push(line),
@@ -760,8 +775,12 @@ describe('createLarkAdapter', () => {
         }),
         buildWSClient: (_creds, captured) => {
           cbs = captured;
+          startCount += 1;
           return {
             start: async () => {
+              // First WSClient: fire onReady so adapter.start() resolves.
+              // Subsequent WSClients (built when retry timer fires) also
+              // fire onReady so the "reconnected" branch logs.
               cbs.onReady();
             },
             close: () => {},
@@ -770,16 +789,88 @@ describe('createLarkAdapter', () => {
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
+      expect(startCount).toBe(1);
 
-      // Simulate the SDK losing the WS and starting to reconnect.
-      cbs.onReconnecting();
-      cbs.onReconnected();
+      // Simulate the WS dropping after connect. onError schedules a retry
+      // (1s default — fake-timer through it by waiting).
+      cbs.onError(new Error('socket closed'));
+      // Wait for the 1s retry timer to fire + the new WSClient onReady.
+      await new Promise((r) => setTimeout(r, 1100));
 
       const joined = logs.join('\n');
-      expect(joined).toMatch(
-        /\[lark\] WS reconnecting \(Feishu network glitch, SDK retrying\)/,
-      );
+      // First-attempt successful connect line.
+      expect(joined).toContain('[lark] WS connected');
+      // Error reported with attempt count.
+      expect(joined).toMatch(/\[lark\] WS error \(attempt 1\)/);
+      // Retry kicked in.
+      expect(joined).toMatch(/\[lark\] 连接中\.\.\. \(尝试 2\)/);
+      // Re-ready branch surfaces the reconnected line.
       expect(joined).toContain('[lark] WS reconnected — bridge ready');
+
+      await adapter.stop();
+    });
+
+    it('10 consecutive failures emit a cool-down log line, then loop continues', async () => {
+      // Per user feedback 2026-05-14: SDK exponential backoff was
+      // replaced with fixed 1s retry; every 10 consecutive failures the
+      // loop sleeps 5s ("冷却 5s 后继续重试") and then resumes without
+      // resetting attempt-counter. This test forces 10 failures and
+      // verifies the cool-down banner fires.
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      let cbs!: {
+        onReady: () => void;
+        onError: (err: Error) => void;
+        onReconnecting: () => void;
+        onReconnected: () => void;
+      };
+      let startCount = 0;
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        log: (line) => logs.push(line),
+        // Fast timings for the test — production defaults to 1000ms /
+        // 5000ms / 10 attempts.
+        retryIntervalMs: 10,
+        cooldownMs: 50,
+        cooldownAfter: 10,
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, captured) => {
+          cbs = captured;
+          startCount += 1;
+          return {
+            start: async () => {
+              if (startCount === 11) {
+                // 11th invocation (after the cool-down branch) finally
+                // succeeds, so adapter.start() can resolve.
+                cbs.onReady();
+              } else {
+                // Use process.nextTick to give the test loop a chance to
+                // observe the new WSClient before onError fires.
+                process.nextTick(() => cbs.onError(new Error('connect refused')));
+              }
+            },
+            close: () => {},
+          };
+        },
+        buildDispatcher: () => dispatcher,
+      });
+
+      // 10 retries × 10ms + 1 cool-down × 50ms + 11th attempt ≈ 160ms.
+      // Generous budget (500ms) for setTimeout drift.
+      await adapter.start(makeHandler());
+      await new Promise((r) => setTimeout(r, 100));
+
+      const joined = logs.join('\n');
+      // The 10th failure should be followed by the cool-down line —
+      // attempt count uses `attempt + 1` semantics so "失败 10 次" is
+      // expected when 10 consecutive errors fire.
+      expect(joined).toMatch(/\[lark\] 连接失败 10 次，冷却 50ms 后继续重试/);
+      // The loop must NOT abort — attempt 11 fires and connects.
+      expect(joined).toContain('[lark] WS connected (after 11 attempt(s))');
+
+      await adapter.stop();
     });
   });
 });
