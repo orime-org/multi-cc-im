@@ -237,6 +237,46 @@ describe('selectTerminal', () => {
     expect(capturedHints[1]).toContain('brew install --cask iterm2');
   });
 
+  it('picking wezterm when not installed → error with brew hint, no further prompts', async () => {
+    // The select shows the not-installed warning, but user picks anyway.
+    // Wizard must hard-stop instead of proceeding to a flow that will
+    // crash at adapter creation (P7 smoke 2026-05-14).
+    const io = makeScripted({ selects: ['wezterm'] });
+    const result = await selectTerminal({
+      io,
+      deps: baseDeps({
+        detectWezTermInstalled: async () => false,
+        detectIterm2Installed: async () => true,
+      }),
+    });
+    expect(result.status).toBe('error');
+    if (result.status === 'error') {
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toMatch(/WezTerm is not installed/);
+      expect(result.message).toContain('brew install --cask wezterm');
+    }
+  });
+
+  it('picking iterm2 when not installed → error with brew hint, no prefs prompt', async () => {
+    const io = makeScripted({ selects: ['iterm2'] });
+    const result = await selectTerminal({
+      io,
+      deps: baseDeps({
+        detectWezTermInstalled: async () => true,
+        detectIterm2Installed: async () => false,
+        resolvePython3: async () => {
+          throw new Error('should not be called when iterm2 missing');
+        },
+      }),
+    });
+    expect(result.status).toBe('error');
+    if (result.status === 'error') {
+      expect(result.exitCode).toBe(1);
+      expect(result.message).toMatch(/iTerm2 is not installed/);
+      expect(result.message).toContain('brew install --cask iterm2');
+    }
+  });
+
   it('pip install uses --break-system-packages flag (PEP 668 bypass)', async () => {
     const io = makeScripted({
       selects: ['iterm2'],

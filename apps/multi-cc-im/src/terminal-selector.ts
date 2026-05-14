@@ -200,6 +200,31 @@ export async function selectTerminal(
     return { status: 'cancelled' };
   }
 
+  // Gate on installed status. The hint shown in the select option warned
+  // the user this terminal wasn't on disk; if they pick it anyway, hard-
+  // stop rather than walking them through prefs / pip install for a
+  // terminal that doesn't exist. Per P7 smoke feedback 2026-05-14.
+  if (choice === 'wezterm' && !wezInstalled) {
+    return {
+      status: 'error',
+      exitCode: 1,
+      message:
+        'multi-cc-im start: WezTerm is not installed.\n' +
+        '  Install: `brew install --cask wezterm`\n' +
+        '  Then re-run `multi-cc-im start`.',
+    };
+  }
+  if (choice === 'iterm2' && !it2Installed) {
+    return {
+      status: 'error',
+      exitCode: 1,
+      message:
+        'multi-cc-im start: iTerm2 is not installed.\n' +
+        '  Install: `brew install --cask iterm2`\n' +
+        '  Then re-run `multi-cc-im start`.',
+    };
+  }
+
   if (choice === 'wezterm') {
     return { status: 'configured', id: 'wezterm' };
   }
