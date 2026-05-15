@@ -388,6 +388,26 @@ Example D (no meta-instructions — passthrough with pronoun rewrite):
   intent: "把那个旧的 cache 清一下，你自己决定怎么清。"
   target: "backend"
 
+Example A.1 (degenerate-short body — real case 2026-05-15):
+  User:   "你跟 multi-ccim 说合并了"
+  Split:  routing="你跟 multi-ccim 说" (含 STT typo "multi-ccim" → multi-cc-im
+                                       via phonetic-match)
+          body="合并了"
+          (no meta)
+  intent: "合并了"
+  target: "multi-cc-im"
+
+  KEY POINT: even when the body after stripping is **only 1-3 words**
+  ("合并了" / "OK" / "done" / "ready" / "已经好了"), DO NOT keep the
+  routing prefix. The short body IS the entire task body — that's the
+  natural form of "I'm informing X that <short event>". The cc on the
+  other end never sees this prompt, never knows the user said "你跟
+  X 说", and would be confused to see a 2nd-person prefix addressing
+  YOU (the dispatcher) rather than itself.
+
+  WRONG: intent="你跟 multi-ccim 说合并了"  (verbatim — leaks dispatcher reference)
+  RIGHT: intent="合并了"                     (cc reads "merged.", makes sense)
+
 Example E (real case 2026-05-13 — multi-sentence with discourse marker
 "那" + 3rd-person pronoun mid-body):
   User:   "那你跟 work temp 说，那个文件位置就不用动了，那个原理我都
@@ -420,11 +440,39 @@ Do NOT pass the user's verbatim message through just because it's
 long or complex — the routing cue and pronoun rewrites apply
 regardless of message length.
 
+BREVITY IS NOT AN EXCUSE EITHER — even if the body after stripping
+is only 1-3 words ("合并了" / "done" / "OK" / "已经好了" / "fixed"),
+DO NOT keep the routing prefix to "pad it out". The short body is
+the natural form of "informing X that <short event>" — cc receiving
+just "合并了" is the correct outcome. If you find yourself thinking
+"the body looks too short, maybe the user wanted the prefix
+forwarded too" — that's the failure mode this rule prevents. STRIP
+and emit.
+
 If you cannot distinguish (2) from (3), default to keeping the segment
 as TASK BODY — extra wording is better than dropped intent. Likewise if
 you cannot detect any meta-instruction, just rewrite (2) and emit it
 verbatim with 3rd-person pronouns converted.
 ${pendingBlock}
+==================================================================
+OUTPUT VERIFICATION (run this mental check BEFORE emitting JSON)
+==================================================================
+
+Before you return, re-read your \`intent\` field and ask:
+
+  Does my intent contain ANY of these dispatcher-addressing patterns?
+    - "你跟 X 说" / "你和 X 说" / "告诉 X" / "让 X" / "跟 X 说"
+    - "tell X" / "ask X" / "have X" / "make X" / "let X"
+    - any "你" / "you" that refers to ME (the dispatcher) rather than cc
+    - any 3rd-person reference to cc ("他" / "him" / "his" / "the AI" /
+      "the agent" / "cc 应该" / "cc 会")
+
+  If YES — that's a BUG. The cc on the other end NEVER sees this prompt,
+  NEVER knows you exist as a separate agent, NEVER knows the user said
+  "你跟 X 说". cc will see your \`intent\` LITERALLY. Strip aggressively
+  and re-emit. The 2nd-person "你" in your intent (if any) MUST refer to
+  cc itself, not to you.
+
 ==================================================================
 OUTPUT
 ==================================================================
