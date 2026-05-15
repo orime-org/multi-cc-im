@@ -10,7 +10,7 @@
  * `<input type="radio">` + sibling-combinator hack (see layout.tsx CSS).
  * Data freshness is user-driven: click `↻ refresh` (or browser reload)
  * to fetch new state. Per
- * [DD 2026-05-15 §6 revision](../../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md#6-revision-2026-05-15--manual-refresh--css-tabs).
+ * [DD 2026-05-15 §6 revision](../../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md).
  */
 
 import type { FC } from 'hono/jsx';
