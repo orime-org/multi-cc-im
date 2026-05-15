@@ -354,6 +354,36 @@ describe('ai-router — renderRoutingPrompt', () => {
       expect(out).toMatch(/long or complex|message length/);
     });
 
+    it('INTENT EXTRACTION has a BREVITY IS NOT AN EXCUSE counterpart (real case 2026-05-15)', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+      });
+      // 2026-05-15 case: user sent "你跟 multi-ccim 说合并了" (3-char body),
+      // AI kept the full string in intent instead of stripping to just "合并了".
+      // Root cause: prompt examples all had multi-sentence bodies, model
+      // didn't generalize to the degenerate-short case. Fix: explicit
+      // BREVITY-IS-NOT-AN-EXCUSE clause + new Example A.1.
+      expect(out).toMatch(/BREVITY IS NOT AN EXCUSE/);
+      expect(out).toContain('Example A.1');
+      expect(out).toContain('你跟 multi-ccim 说合并了');
+      expect(out).toContain('合并了');
+    });
+
+    it('OUTPUT VERIFICATION self-check block flags dispatcher-addressing residue', () => {
+      const out = renderRoutingPrompt({
+        userMsg: 'whatever',
+        tabs: ['multi-cc-im'],
+        currentTab: null,
+      });
+      // Final guardrail before AI emits JSON: re-read intent and reject
+      // any "你跟 X 说" / "tell X" / 3rd-person-about-cc residue.
+      expect(out).toMatch(/OUTPUT VERIFICATION/);
+      expect(out).toContain('dispatcher-addressing');
+      expect(out).toContain('NEVER sees this prompt');
+    });
+
     it('lists conversational starters (那 / OK / 好 / 那么 / Then / So) as part of routing cues to strip', () => {
       const out = renderRoutingPrompt({
         userMsg: 'whatever',
