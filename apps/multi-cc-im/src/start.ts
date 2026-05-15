@@ -23,6 +23,14 @@ import {
   createITerm2Adapter,
   resolvePython3Path,
 } from '@multi-cc-im/term-iterm2';
+import {
+  startMonitor,
+  ErrorRingBuffer,
+  DEFAULT_MONITOR_PORT,
+  type MonitorHandle,
+  type DaemonStateSnapshot,
+  type SessionSnapshot,
+} from '@multi-cc-im/monitor';
 import type { TerminalId } from '@multi-cc-im/shared';
 import {
   selectTerminal,
@@ -542,6 +550,11 @@ export async function runStartCommand(
     stateDir: paths.stateDir,
   });
 
+  // Shared error ring buffer for the monitor dashboard. Orchestrator's
+  // onError pushes here; monitor reads at render time. N=200 per
+  // [DD 2026-05-15](../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md) §4.
+  const errorBuffer = new ErrorRingBuffer({ capacity: 200 });
+
   // ===== 3. Build + start orchestrator =====
   const orchestrator = opts.buildOrchestrator
     ? opts.buildOrchestrator()
@@ -563,11 +576,67 @@ export async function runStartCommand(
           log(
             `  ⚠️  orchestrator [${ctx.phase}${tag ? ' ' + tag : ''}]: ${msg}`,
           );
+          // Mirror into the monitor ring buffer so the dashboard's
+          // "recent errors" panel reflects production failures.
+          errorBuffer.push(ctx.phase, msg);
         },
       });
 
   await orchestrator.start();
   log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
+
+  // ===== 3b. Start monitor dashboard =====
+  // Local-only web dashboard for daemon health + sessions + cost.
+  // Port 40719 fixed (DD 2026-05-15 D1). Failures (port collision) are
+  // surfaced to the user but DO NOT abort daemon — IM bridge still
+  // works, just no dashboard.
+  const daemonStartedAt = new Date();
+  const activeTerminalId: TerminalId = termId;
+  let monitorHandle: MonitorHandle | null = null;
+  try {
+    monitorHandle = await startMonitor({
+      port: DEFAULT_MONITOR_PORT,
+      log,
+      errorBuffer,
+      getDaemonState: (): DaemonStateSnapshot => ({
+        pid: process.pid,
+        startedAt: daemonStartedAt.toISOString(),
+        uptimeSeconds: Math.floor(
+          (Date.now() - daemonStartedAt.getTime()) / 1000,
+        ),
+        activeTerminal: activeTerminalId,
+        imAdapter: selectedEntry.id,
+        // v1: don't probe lark WS state; just report "connected" if
+        // orchestrator is up (lark's own retry loop logs to stderr).
+        // Future enhancement: expose connection state via IMAdapter API.
+        imConnection: 'connected',
+        imLastReconnectAt: null,
+        imReconnectAttempts: 0,
+      }),
+      getSessions: async (): Promise<SessionSnapshot[]> => {
+        try {
+          const panes = await termAdapter.listPanes();
+          return panes.map((p) => ({
+            paneId: String(p.paneId),
+            title: p.title,
+            cwd: p.cwd,
+            hasRenamed: p.title.length > 0,
+            addressable: p.title.length > 0,
+          }));
+        } catch {
+          return [];
+        }
+      },
+    });
+  } catch (err) {
+    log(
+      `  ⚠️  monitor dashboard failed to start: ${formatErrorWithCause(err)}`,
+    );
+    log(
+      `     (port ${DEFAULT_MONITOR_PORT} in use? bridge still runs without dashboard)`,
+    );
+  }
+
   // Next-step hint — IMWork starts OFF on every daemon launch (per
   // DD #8 §5.3 always-fresh lifecycle), so the user MUST send `/start`
   // from their IM session before the bridge actually routes anything.
@@ -580,6 +649,11 @@ export async function runStartCommand(
     exitCode: 0,
     stderr: '',
     shutdown: async () => {
+      // Stop monitor BEFORE orchestrator so a slow /api/sessions call
+      // doesn't race with termAdapter.stop().
+      if (monitorHandle) {
+        await monitorHandle.stop().catch(() => {});
+      }
       await orchestrator.stop();
       // Close the diagnostic log stream cleanly so the shutdown banner
       // ends up on disk before the process exits. Tests with injected
