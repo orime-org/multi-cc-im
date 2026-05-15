@@ -49,7 +49,7 @@
 **核心约束实现**（CLAUDE.md「不破坏现有 cc 进程」）：
 - bridge 不 spawn 用户 cc；cc 继续在用户 WezTerm tab / iTerm2 tab 里以 TUI 形式跑
 - bridge 只通过 (a) cc 原生 hook 事件（出站 + permission gate） + (b) 终端的 send-text 子命令（wezterm cli / iTerm2 Python API） 跟 cc 通信
-- **唯一例外**：daemon 自起一次性 `claude --print` 子进程做 IM 路由 triage（[DD #73](superpowers/specs/2026-05-09-ai-routing-dd.md)），独立 session、headless、`--disable-slash-commands`、不沾用户 tab
+- **唯一例外**：daemon 自起一次性 `claude --print` 子进程做 IM 路由 triage（[DD: AI-routed IM dispatch](superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)），独立 session、headless、`--disable-slash-commands`、不沾用户 tab
 
 ## 包依赖方向
 
