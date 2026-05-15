@@ -1355,7 +1355,7 @@ function handleBridgeCommand(
   switch (command) {
     case 'list':
       return {
-        echo: formatSessionInventory(sessions).join('\n'),
+        echo: formatSessionInventory(sessions, terminalId).join('\n'),
         dispatches: [],
       };
 
@@ -1372,7 +1372,7 @@ function handleBridgeCommand(
           '  #frontend /1   /  /2       → 权限允许 / 拒绝（仅当有 pending PreToolUse）',
           '',
           'Bridge 命令（直接 /<cmd>）：',
-          '  /list                      → 列当前 wezterm tabs（含可寻址状态）',
+          '  /list                      → 列当前终端 tabs（含可寻址状态）',
           '  /help                      → 本帮助',
           '  /current                   → 显示 current_session + IMWork 状态',
           '  /start                     → 开启 IM 模式（默认 auto-approve；加 `off` 切 ask 模式）',
@@ -1429,7 +1429,7 @@ function handleBridgeCommand(
           headerLine,
           ...(terminalId ? [`✓ terminal: ${terminalId}`] : []),
           '',
-          ...formatSessionInventory(sessions),
+          ...formatSessionInventory(sessions, terminalId),
           ...formatNumericTabWarning(sessions),
           ...formatDuplicateTabWarning(sessions),
           '',
@@ -1470,18 +1470,28 @@ function handleBridgeCommand(
 }
 
 /**
- * Render the wezterm-tabs inventory block for `/start` + `/list` echoes.
+ * Render the terminal-tabs inventory block for `/start` + `/list` echoes.
  *
- * Lists **all** wezterm panes (zsh / cc / vim / 任何东西) — daemon 不知道每个
- * pane 里跑啥，只知道 tab title 是不是被 /rename 过。每行显示寻址状态：
+ * Lists **all** panes (zsh / cc / vim / 任何东西) of the active terminal —
+ * daemon 不知道每个 pane 里跑啥，只知道 tab title 是不是被 /rename 过。每行
+ * 显示寻址状态：
  *   - 有 /rename → `[可寻址 #<name>]`
  *   - 没 /rename → `[未 /rename — 进 cc TUI 跑 /rename <name>]`
+ *
+ * `termLabel` is the human-facing terminal name (`wezterm` / `iterm2`) —
+ * heading reads `当前 <termLabel> tabs:`. Defaults to `wezterm` for callers
+ * that don't pass it (back-compat).
  */
-function formatSessionInventory(sessions: readonly SessionInfo[]): string[] {
+function formatSessionInventory(
+  sessions: readonly SessionInfo[],
+  termLabel: string = 'wezterm',
+): string[] {
   if (sessions.length === 0) {
-    return ['当前 wezterm tabs: (无 — 请先开 wezterm tab 启动 cc 并 /rename)'];
+    return [
+      `当前 ${termLabel} tabs: (无 — 请先开 ${termLabel} tab 启动 cc 并 /rename)`,
+    ];
   }
-  const lines = ['当前 wezterm tabs:'];
+  const lines = [`当前 ${termLabel} tabs:`];
   sessions.forEach((s, i) => {
     const status =
       s.tabTitle.length > 0
