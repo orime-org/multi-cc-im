@@ -300,9 +300,30 @@ describe('router — bridge commands (bare /<command>)', () => {
     const result = await routeOn(incoming('/list'), {
       registry: fixedRegistry([FRONTEND]),
       state,
+      terminalId: 'wezterm',
     });
     expect(result.echo).toContain('wezterm tabs');
     expect(result.echo).not.toContain('可用 cc sessions');
+  });
+
+  it('/list with terminalId=iterm2 → header reads "iterm2 tabs" (issue 376 cosmetic)', async () => {
+    const state = memState(null);
+    const result = await routeOn(incoming('/list'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+      terminalId: 'iterm2',
+    });
+    expect(result.echo).toContain('iterm2 tabs');
+    expect(result.echo).not.toContain('wezterm tabs');
+  });
+
+  it('/list with terminalId omitted → falls back to "wezterm tabs" (back-compat default)', async () => {
+    const state = memState(null);
+    const result = await routeOn(incoming('/list'), {
+      registry: fixedRegistry([FRONTEND]),
+      state,
+    });
+    expect(result.echo).toContain('wezterm tabs');
   });
 
   it('/list → /rename\'d pane renders [可寻址 #<name>] status; un-renamed renders /rename hint', async () => {
