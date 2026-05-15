@@ -3,7 +3,7 @@
 /**
  * HTML shell for the monitor dashboard. SSR-only.
  *
- * Per [DD 2026-05-15 §6 revision (2026-05-15)](../../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md#6-revision-2026-05-15--manual-refresh--css-tabs):
+ * Per [DD 2026-05-15 §6 revision](../../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md):
  * the original C1 = `<meta refresh content="5">` was replaced after live
  * dogfooding: user prefers manual `↻ refresh` button + CSS-only tab nav
  * (no client JS, just `<input type="radio">` + `:checked ~` sibling
