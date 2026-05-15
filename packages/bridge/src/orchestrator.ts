@@ -80,8 +80,8 @@ const DEFAULT_REAPER_DELAY_MS = 30_000;
 
 /**
  * Reaper window for AskUserQuestion. Must exceed the AskUserQuestion-
- * specific cc-side hook timeout (300s per `apps/setup-hooks.ts`
- * EVENT_MATCHER_SPECS.PreToolUse[<AskUserQuestion>]). 310s = 300s
+ * specific cc-side hook timeout (310s per `apps/setup-hooks.ts`
+ * EVENT_MATCHER_SPECS.PreToolUse[<AskUserQuestion>]). 320s = 310s
  * cc-side + 10s margin.
  *
  * Per real-account smoke 2026-05-12 root cause: with the regular 10s
@@ -91,11 +91,16 @@ const DEFAULT_REAPER_DELAY_MS = 30_000;
  * when the reply arrived → routed the answer as a new task → cc
  * never received it in the AskUserQuestion's tool result.
  *
+ * 2026-05-15 sub-revision: bumped from 130_000 → 320_000 alongside the
+ * cc-side hook timeout bump (120s → 310s). Real-mobile usage showed
+ * the §9.5-era 2-min budget runs out of phone notification + app
+ * switch + thumb-typing time; 5-min user budget covers it.
+ *
  * Reaper's defensive purpose (cleanup of SIGKILL'd hook orphans) is
  * unaffected — orphans get reaped 5min later instead of 10s later,
  * which is fine for the rare SIGKILL case.
  */
-const ASK_USER_QUESTION_REAPER_DELAY_MS = 130_000;
+const ASK_USER_QUESTION_REAPER_DELAY_MS = 320_000;
 
 const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
@@ -141,11 +146,11 @@ export interface CreateOrchestratorOpts {
   reaperDelayMs?: number;
   /**
    * Reaper window (ms) specifically for AskUserQuestion's PermissionRequest
-   * files. Default `130_000` (cc-side AskUserQuestion hook timeout 120s
-   * + 10s margin per DD §9.5). Required because AskUserQuestion holds the
-   * hook for up to 110s waiting for IM reply — reaping at the regular
-   * 30s would unlink the live Request file mid-flow. Tests inject a small
-   * value.
+   * files. Default `320_000` (cc-side AskUserQuestion hook timeout 310s
+   * + 10s margin per DD §10 sub-revision 2026-05-15). Required because
+   * AskUserQuestion holds the hook for up to 300s waiting for IM reply —
+   * reaping at the regular 30s would unlink the live Request file
+   * mid-flow. Tests inject a small value.
    */
   askUserQuestionReaperDelayMs?: number;
   /**

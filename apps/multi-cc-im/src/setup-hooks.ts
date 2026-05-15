@@ -56,13 +56,15 @@ const HOOK_EVENTS = ['PreToolUse', 'PermissionRequest', 'Stop'] as const;
  * object (including `timeout`), so overlapping matchers with different
  * timeouts double-fire the same script. Disjoint matchers avoid that.
  *
- * Per [DD: AskUserQuestion IM bridge](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md) §6 P1 + §9.5:
- * - `AskUserQuestion` → timeout 120 (2 min) — hook holds polling for an
+ * Per [DD: AskUserQuestion IM bridge](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md) §6 P1 + §9.5 + §10 sub-revision 2026-05-15:
+ * - `AskUserQuestion` → timeout 310 (~5 min) — hook holds polling for an
  *   IM-side natural-language reply (D2-B "hook holds until IM reply").
- *   §9.5 shortened from the original 300s: 2 min covers a user who's
- *   briefly attending the phone; after that the hook self-constructs
- *   an allow + updatedInput with empty answers so cc records the tool
- *   as completed with empty user answers (no deny channel).
+ *   §10 sub-revision 2026-05-15 reverted §9.5's 120s back to ~5 min
+ *   after real mobile usage showed 2 min runs out (phone notification
+ *   delay + app switch + reading + thinking + thumb-typing while out
+ *   exceeds 2 min). After timeout the hook self-constructs an allow +
+ *   updatedInput with empty answers so cc records the tool as completed
+ *   with empty user answers (no deny channel).
  * - Everything else → timeout 20 — original IM permission gate RTT
  *   budget: 10s internal poll (`PERMISSION_TIMEOUT_MS` in
  *   `cli-cc/hook-receiver.ts`) + 10s margin for stdout write + daemon
@@ -81,7 +83,7 @@ const EVENT_MATCHER_SPECS: Record<
   readonly MatcherSpec[]
 > = {
   PreToolUse: [
-    { matcher: 'AskUserQuestion', timeout: 120 },
+    { matcher: 'AskUserQuestion', timeout: 310 },
     { matcher: '^(?!AskUserQuestion$).+$', timeout: 20 },
   ],
   PermissionRequest: [{ matcher: '', timeout: 120 }],

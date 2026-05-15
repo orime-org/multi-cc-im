@@ -156,7 +156,7 @@ Reply with anything that makes sense:
 - Natural language — `我选第二个` / `the mongo one` / `do option 2 with a side of fries`
 - Free text not matching any option — your reply goes through verbatim
 
-The daemon hands your answer back to cc as a normal `AskUserQuestion` tool result (per cc's official agent-sdk channel: `permissionDecision: 'allow'` + `updatedInput: {questions, answers}`), so cc records the tool as completed successfully with your answers. If you don't reply within 2 minutes the hook self-injects empty answers so cc unblocks and decides what to do next; if you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的回复` in IM.
+The daemon hands your answer back to cc as a normal `AskUserQuestion` tool result (per cc's official agent-sdk channel: `permissionDecision: 'allow'` + `updatedInput: {questions, answers}`), so cc records the tool as completed successfully with your answers. If you don't reply within ~5 minutes the hook self-injects empty answers so cc unblocks and decides what to do next; if you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的回复` in IM. (Timeout was bumped from 2 min to 5 min on 2026-05-15 after mobile usage showed 2 min runs out — phone notification delay + reading + thumb-typing while on the go easily exceeds 2 min. See [DD §10](docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md).)
 
 **Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): each question gets one entry in the injected `answers` map.
 

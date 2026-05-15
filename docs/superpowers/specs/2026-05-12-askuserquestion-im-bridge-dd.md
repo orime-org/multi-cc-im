@@ -294,3 +294,52 @@ Single PR. Scope smaller than the original v1.9 P1-P6 split because no new infra
 - **Cross-page docs lookup**: tool-specific protocols often span multiple docs pages (hooks reference + Agent SDK user-input + tool-specific behavior). Fetch all related pages before locking schema. (Captured in `feedback_upstream_schema_real_smoke.md`.)
 - **DD candidate completeness**: candidates must include officially documented paths, even when those paths require reading docs outside the primary section.
 - **Smoke ≠ semantic correctness**: a passing smoke (cc consumes the response and continues) does not mean the transcript records the right thing. Inspect transcript literals as part of smoke validation, not just behavior.
+
+---
+
+## 10. Sub-revision 2026-05-15 — timeouts back to ~5 min
+
+Direct user feedback via IM 2026-05-15: AskUserQuestion 「好像是失效了，要么就是给的时间太短了。Ask user question 应该至少给300秒，也就是5分钟的时间，不然的话，手机上面 8M 回复根本来不及，它就给空答案了」。
+
+§9.5 revised cc-side timeout from 300_000ms → 120_000ms (and internal poll 290s → 110s, reaper 310s → 130s) under the assumption that **2 min suffices when the user is "briefly attending the phone"**. Real mobile usage on 2026-05-15 falsified that assumption:
+
+- phone IM notification delivery has its own latency
+- user switching from whatever app they're in → IM app → tab takes seconds
+- reading the question + options + descriptions on a small screen takes longer than on desktop
+- thumb-typing a free-text answer is 3-5× slower than keyboard
+- if the user is genuinely out (commuting, in a meeting, in a queue), the elapsed wall-clock to reply easily exceeds 2 min
+
+### 10.1 Revised numbers (replaces §9.5)
+
+| Layer | §9.5 value | §10 value | What it protects |
+| --- | --- | --- | --- |
+| `hook-receiver.ts` `ASK_USER_QUESTION_TIMEOUT_MS` (hook internal poll deadline) | 110_000ms | **300_000ms** | User-perceptible budget — how long the user has from notification to having their reply land in cc's tool result. |
+| `setup-hooks.ts` AUQ matcher `timeout` (cc-side OS-level hook kill) | 120 (s) | **310** | cc-side budget. Must equal poll deadline + small margin so the hook stdout deterministic and daemon retry budget aren't truncated. |
+| `orchestrator.ts` `ASK_USER_QUESTION_REAPER_DELAY_MS` (daemon orphan cleanup) | 130_000ms | **320_000ms** | Defensive cleanup of SIGKILL'd hooks. Must exceed cc-side timeout so the daemon doesn't unlink a live Request file while the hook is still polling. |
+
+10s margin between adjacent layers preserved.
+
+### 10.2 What did NOT change
+
+- A2 hook IPC mechanism (file-based PermissionRequest/Response)
+- B0 D5-D `allow + updatedInput.answers` channel (§9 retract / §9.3 protocol)
+- AI router AUQ prompt + answer schema
+- Late-reply dead-drop IM notice (`⏱ cc 已超时，本轮不再等待`)
+- IM echo two-state rendering (`target / 你答 ①: <label>` vs `target / 自由回答: <text>`)
+
+The change is **literal constants only** — no structural / protocol / scope rework.
+
+### 10.3 Why this is a sub-revision, not a new DD
+
+- One sub-decision changes (timeout magnitude) on an axis already DD-locked (D2-B "hook holds until IM reply")
+- Candidate space: trivially small (number to pick; user already provided floor 300s)
+- Reversibility: cheap — three constants + 1 test + doc rewrites
+- Below "重大决策" threshold (no architecture / safety model / cross-package interface change)
+
+Per CLAUDE.md "5 步 DD 流程" applies to architecture lock-in; sub-revisions of magnitude on an existing axis are recorded inline.
+
+### 10.4 PermissionRequest left at 120s
+
+`setup-hooks.ts` `PermissionRequest` event still has `timeout: 120` (the v1.12 "mirror AUQ" decision per DD #v1.12 D8). User has not reported PermissionRequest timeouts failing on mobile yet, so scope is held to AUQ.
+
+If future feedback shows PermissionRequest dialogs also time out on mobile, the same revision pattern applies (separate sub-revision under v1.12 DD).

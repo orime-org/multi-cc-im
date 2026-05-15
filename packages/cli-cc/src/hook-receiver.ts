@@ -146,14 +146,18 @@ const PERMISSION_TIMEOUT_MS = 10_000;
 
 /**
  * AskUserQuestion-specific hook internal poll deadline. Per
- * [DD AskUserQuestion IM bridge §9.5](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#95-revised-timeouts):
+ * [DD AskUserQuestion IM bridge §10 sub-revision 2026-05-15](../../../docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md):
  * AUQ holds the hook polling for an IM-side reply (D2-B "hook holds
- * until IM reply"). User-side 2-min budget is enough per user direction
- * (originally 5 min).
+ * until IM reply"). User-side budget is **5 min** (300s) — revised back
+ * up from §9.5's 2 min after real mobile usage showed 2 min runs out:
+ * phone notification delay + app switching + reading options +
+ * thinking + thumb-typing the reply often exceeds 2 min when the user
+ * is out and about. 5 min covers that comfortably without making cc
+ * wait absurdly long on truly-unattended dialogs.
  *
- * **110s internal vs 120s cc-side**: same 10s margin model as the
- * regular flow — preserves the `hook stdout deterministic` + daemon
- * retry budget + network jitter envelope.
+ * **300s internal vs 310s cc-side**: same 10s margin model — preserves
+ * the `hook stdout deterministic` + daemon retry budget + network
+ * jitter envelope.
  *
  * On timeout (user never replied): hook **self-constructs** an
  * `updatedInput` with empty `answers` per question and returns
@@ -162,7 +166,7 @@ const PERMISSION_TIMEOUT_MS = 10_000;
  * rephrase, give up). Crucially we **do NOT use the deny channel** for
  * timeout; deny is not part of AUQ's documented response semantics.
  */
-const ASK_USER_QUESTION_TIMEOUT_MS = 110_000;
+const ASK_USER_QUESTION_TIMEOUT_MS = 300_000;
 
 const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
 
@@ -216,8 +220,9 @@ export interface RunHookReceiverOpts {
   permissionTimeoutMs?: number;
   /**
    * Override the AskUserQuestion-specific poll deadline (ms). Default
-   * `ASK_USER_QUESTION_TIMEOUT_MS` (110s per DD §9.5). Tests use a small
-   * value to exercise the timeout branch without waiting 110s.
+   * `ASK_USER_QUESTION_TIMEOUT_MS` (300s per DD §10 sub-revision
+   * 2026-05-15). Tests use a small value to exercise the timeout branch
+   * without waiting 300s.
    */
   askUserQuestionTimeoutMs?: number;
   /**
