@@ -226,6 +226,8 @@ Feishu doesn't render markdown, so cc replies are simplified before sending — 
   - `[external_paths] wezterm = "..."` — cached WezTerm CLI path (wezterm users)
   - `[external_paths] python3 = "..."` — cached Python 3 path (iTerm2 users)
 - `~/.multi-cc-im/state/` — runtime state, daemon self-manages
+- `~/.multi-cc-im/daemon.log` — daemon stderr mirror (lark connect / orchestrator events / iterm2-helper traces); always written. `tail -f` to watch live.
+- `~/.multi-cc-im/hook-trace.log` — cc-hook subprocess invocation trace. **Only written when `MULTI_CC_IM_DEBUG=<non-empty>` env is set**; silent by default. Useful for diagnosing "cc replied but IM never got it" — set the flag in the shell that launches both the daemon AND the relevant cc instances, reproduce the issue, then read the log.
 - `apps/multi-cc-im/dist/iterm2-helper.py` — bundled Python script the iTerm2 adapter spawns per call (copied from `packages/term-iterm2/bin/iterm2-helper.py` by `pnpm build`)
 
 Override the root with the `MULTI_CC_IM_HOME` env var.

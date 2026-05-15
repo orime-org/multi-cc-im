@@ -127,17 +127,46 @@ async function writeHookEntryTrace(
   );
 }
 
+/**
+ * Hook diagnostic trace is **env-gated** by `MULTI_CC_IM_DEBUG`. When
+ * the env is not set, no trace is written — keeps the steady-state
+ * I/O footprint at zero (every cc turn fires 1-3 hook subprocesses;
+ * even a tiny per-invocation append would accumulate). Set the env to
+ * any non-empty value in the shell that launches both the daemon AND
+ * the relevant cc instances:
+ *
+ *   export MULTI_CC_IM_DEBUG=1
+ *   ./bin/multi-cc-im start
+ *   # then `claude` in the relevant terminal tab
+ *
+ * cc subprocesses inherit shell env so the hook sees the flag; daemon
+ * uses the same gate so the two sides match without a second knob.
+ *
+ * Per issue 377 follow-up (PR #177 + #178 introduced the trace as a
+ * permanent gateable knob, not a temporary band-aid).
+ */
+function isHookTraceEnabled(): boolean {
+  const v = process.env.MULTI_CC_IM_DEBUG;
+  return v !== undefined && v.length > 0 && v !== '0';
+}
+
 export async function runHookCommand(
   opts: RunHookCommandOpts,
 ): Promise<HookCommandResult> {
   // Heartbeat trace BEFORE every other check so we capture invocations
   // that would silent-exit downstream (empty stdin / parse fail /
-  // missing env / IMWork gate). Default path is sibling of stateDir's
-  // parent (= `<root>/hook-trace.log`); tests pass null to skip.
+  // missing env / IMWork gate). Resolution order:
+  //   1. `opts.traceLogPath === null` → tests opt out explicitly
+  //   2. `opts.traceLogPath` set → tests override path
+  //   3. else → file write only when `MULTI_CC_IM_DEBUG` env is set
+  //     (silent in steady state; opt-in for debugging)
   const traceLogPath =
     opts.traceLogPath === null
       ? null
-      : opts.traceLogPath ?? join(dirname(opts.stateDir), 'hook-trace.log');
+      : opts.traceLogPath ??
+        (isHookTraceEnabled()
+          ? join(dirname(opts.stateDir), 'hook-trace.log')
+          : null);
   if (traceLogPath !== null) {
     await writeHookEntryTrace(traceLogPath, {
       event: opts.event ?? '<unknown>',
