@@ -220,14 +220,19 @@ Feishu doesn't render markdown, so cc replies are simplified before sending — 
 
 ## Monitor dashboard
 
-`multi-cc-im start` boots a local-only web dashboard at **`http://127.0.0.1:40719`** alongside the IM bridge. The daemon prints the URL on stderr at startup — click it (or paste in your browser) any time to check on:
+`multi-cc-im start` boots a local-only web dashboard at **`http://127.0.0.1:40719`** alongside the IM bridge. The daemon prints the URL on stderr at startup — click it (or paste in your browser) any time.
 
-- **Daemon state** — pid, uptime, active terminal (wezterm / iterm2), IM adapter, IM connection
-- **Sessions** — live `termAdapter.listPanes()` pane list (matches what `/list` returns over IM), with `hasRenamed` flag so you can spot un-named tabs
-- **Recent errors** — in-process ring buffer (last 200, FIFO) of anything orchestrator emitted via `onError`
-- **Cost** — recent cc sessions tailed from `~/.claude/projects/<slug>/<sid>.jsonl`, with model + token totals + USD estimate (LiteLLM Claude 4.x price table, vendored)
+**Layout**:
 
-The page auto-refreshes every 5 seconds via `<meta http-equiv="refresh">` — no client JS, no SPA, just SSR HTML. JSON routes are also exposed for scripting: `/api/state`, `/api/sessions`, `/api/errors`, `/api/cost`.
+- **Sticky daemon-state header** — pid · uptime · active terminal (wezterm / iterm2) · IM adapter + connection pill (always visible)
+- **Three tabs** below the header:
+  - **sessions** (default) — live `termAdapter.listPanes()` pane list (matches what `/list` returns over IM), with addressable flag so you can spot un-named tabs
+  - **cost** — recent cc sessions tailed from `~/.claude/projects/<slug>/<sid>.jsonl`, with model + token totals + USD estimate (LiteLLM Claude 4.x price table, vendored)
+  - **errors** — in-process ring buffer (last 200, FIFO) of anything orchestrator emitted via `onError`
+
+**No auto-refresh, no client JS**. Page is SSR-only HTML. Tabs switch via a CSS `<input type="radio">` + sibling-selector hack — zero network cost, instant. To pull fresh data, click the `↻ refresh` button at the top (or hit F5 / Cmd+R). Reloading resets the active tab to `sessions`.
+
+JSON routes for scripting / curl: `/api/state`, `/api/sessions`, `/api/errors`, `/api/cost`.
 
 Bind-only-to-loopback (`127.0.0.1`) — never reachable over the network. If port `40719` is already in use, the bridge starts anyway; daemon stderr will say so and you'll just be missing the dashboard.
 

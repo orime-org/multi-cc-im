@@ -101,7 +101,40 @@ describe('startMonitor', () => {
     expect(body).toContain('multi-cc-im monitor');
     expect(body).toContain('frontend');
     expect(body).toContain('12345');                        // pid
-    expect(body).toContain('meta http-equiv="refresh"');    // 5s auto-refresh
+    // Per DD §6 revision (2026-05-15): meta refresh removed in favor of
+    // manual `↻ refresh` button + CSS-only tabs.
+    expect(body).not.toContain('meta http-equiv="refresh"');
+    expect(body).toContain('↻ refresh');
+  });
+
+  it('GET / renders CSS-only tabs (3 radios + 3 labels + 3 panels)', async () => {
+    handle = await startMonitor({
+      port,
+      log: () => {},
+      getDaemonState: () => STATE,
+      getSessions: async () => SESSIONS,
+      errorBuffer: new ErrorRingBuffer(),
+      ccProjectsRoot: projectsRoot,
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/`);
+    const body = await r.text();
+    // Three radio inputs all share the same `name="tab"` so the
+    // browser treats them as one exclusive group.
+    expect(body).toContain('id="tab-sessions"');
+    expect(body).toContain('id="tab-cost"');
+    expect(body).toContain('id="tab-errors"');
+    expect(body).toContain('name="tab"');
+    // Default checked = sessions (the first one). hono/jsx renders a bare
+    // `checked` boolean attribute when the prop is truthy.
+    expect(body).toMatch(/id="tab-sessions"[^>]*checked/);
+    // Three tab-nav labels pointing at the three radios.
+    expect(body).toContain('for="tab-sessions"');
+    expect(body).toContain('for="tab-cost"');
+    expect(body).toContain('for="tab-errors"');
+    // Three panel sections.
+    expect(body).toContain('id="panel-sessions"');
+    expect(body).toContain('id="panel-cost"');
+    expect(body).toContain('id="panel-errors"');
   });
 
   it('GET /api/state returns daemon state JSON', async () => {
