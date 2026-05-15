@@ -298,6 +298,68 @@ describe('runHookCommand', () => {
     expect(trace).toMatch(/not-json/);
   });
 
+  it('env-gate: default (no MULTI_CC_IM_DEBUG) silently skips trace writing', async () => {
+    const tracePath = join(stateDir, '..', 'hook-trace.log'); // default path = sibling of stateDir
+    const prev = process.env.MULTI_CC_IM_DEBUG;
+    delete process.env.MULTI_CC_IM_DEBUG;
+    try {
+      await setupBoundState();
+      await runHookCommand({
+        event: 'Stop',
+        stdin: STOP,
+        stateDir,
+        // No traceLogPath / no env → silent
+        resolvePaneId: () => PANE_ID,
+      });
+      const { stat } = await import('node:fs/promises');
+      await expect(stat(tracePath)).rejects.toThrow(/ENOENT/);
+    } finally {
+      if (prev !== undefined) process.env.MULTI_CC_IM_DEBUG = prev;
+    }
+  });
+
+  it('env-gate: MULTI_CC_IM_DEBUG=1 enables default trace file write', async () => {
+    const tracePath = join(stateDir, '..', 'hook-trace.log');
+    const prev = process.env.MULTI_CC_IM_DEBUG;
+    process.env.MULTI_CC_IM_DEBUG = '1';
+    try {
+      await setupBoundState();
+      await runHookCommand({
+        event: 'Stop',
+        stdin: STOP,
+        stateDir,
+        resolvePaneId: () => PANE_ID,
+      });
+      const { readFile, unlink } = await import('node:fs/promises');
+      const content = await readFile(tracePath, 'utf-8');
+      expect(content).toMatch(/hook event=Stop/);
+      await unlink(tracePath).catch(() => {});
+    } finally {
+      if (prev === undefined) delete process.env.MULTI_CC_IM_DEBUG;
+      else process.env.MULTI_CC_IM_DEBUG = prev;
+    }
+  });
+
+  it('env-gate: MULTI_CC_IM_DEBUG=0 treated as disabled', async () => {
+    const tracePath = join(stateDir, '..', 'hook-trace.log');
+    const prev = process.env.MULTI_CC_IM_DEBUG;
+    process.env.MULTI_CC_IM_DEBUG = '0';
+    try {
+      await setupBoundState();
+      await runHookCommand({
+        event: 'Stop',
+        stdin: STOP,
+        stateDir,
+        resolvePaneId: () => PANE_ID,
+      });
+      const { stat } = await import('node:fs/promises');
+      await expect(stat(tracePath)).rejects.toThrow(/ENOENT/);
+    } finally {
+      if (prev === undefined) delete process.env.MULTI_CC_IM_DEBUG;
+      else process.env.MULTI_CC_IM_DEBUG = prev;
+    }
+  });
+
   it('entry trace: traceLogPath=null disables file write (tests + opt-out)', async () => {
     const tracePath = join(stateDir, 'hook-trace.log');
     await runHookCommand({

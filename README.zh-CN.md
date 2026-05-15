@@ -226,6 +226,8 @@ daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `Permi
   - `[external_paths] wezterm = "..."` — 缓存 WezTerm CLI 路径（wezterm 用户）
   - `[external_paths] python3 = "..."` — 缓存 Python 3 路径（iTerm2 用户）
 - `~/.multi-cc-im/state/` — 运行时状态，daemon 自管理
+- `~/.multi-cc-im/daemon.log` — daemon stderr 镜像（lark 连接 / orchestrator 事件 / iterm2-helper trace）；始终写盘，`tail -f` 实时看
+- `~/.multi-cc-im/hook-trace.log` — cc hook 子进程调用 trace。**只有 `MULTI_CC_IM_DEBUG=<非空>` env 设了才写**；默认静默。诊断「cc 回复了但 IM 没收到」类问题用：在启动 daemon 跟相关 cc 实例**的同一 shell** 里 export 这个 env、复现问题、再读 log
 - `apps/multi-cc-im/dist/iterm2-helper.py` — bundle 里的 Python 脚本，iTerm2 adapter 每次 invocation spawn 它（`pnpm build` 时从 `packages/term-iterm2/bin/iterm2-helper.py` 复制过来）
 
 要换路径设 `MULTI_CC_IM_HOME` 环境变量。
