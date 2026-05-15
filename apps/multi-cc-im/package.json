@@ -19,6 +19,7 @@
     "@multi-cc-im/bridge": "workspace:*",
     "@multi-cc-im/cli-cc": "workspace:*",
     "@multi-cc-im/im-lark": "workspace:*",
+    "@multi-cc-im/monitor": "workspace:*",
     "@multi-cc-im/shared": "workspace:*",
     "@multi-cc-im/storage-files": "workspace:*",
     "@multi-cc-im/term-iterm2": "workspace:*",
