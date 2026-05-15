@@ -220,14 +220,19 @@ daemon 把你选的 `appliedSuggestionIndex` 解析成 cc 自己提供的 `Permi
 
 ## 监控 dashboard
 
-`multi-cc-im start` 会跟 IM bridge 一起起一个本地 web dashboard：**`http://127.0.0.1:40719`**。daemon 启动时会把 URL 打到 stderr，你可以随时点开（或复制到浏览器）查看：
+`multi-cc-im start` 会跟 IM bridge 一起起一个本地 web dashboard：**`http://127.0.0.1:40719`**。daemon 启动时会把 URL 打到 stderr，你可以随时点开（或复制到浏览器）。
 
-- **daemon state** — pid、uptime、当前终端（wezterm / iterm2）、IM adapter、IM 连接状态
-- **sessions** — 实时 `termAdapter.listPanes()` 列表（跟 IM 端 `/list` 看到的一致），标 `hasRenamed`，未命名 tab 一眼可见
-- **最近错误** — 进程内环形 buffer（最近 200 条，FIFO），凡是 orchestrator `onError` 抛的全在
-- **cost** — 最近的 cc session 从 `~/.claude/projects/<slug>/<sid>.jsonl` tail 出来，给 model + token 总数 + 美元估算（价格表 vendored LiteLLM Claude 4.x 子集）
+**布局**：
 
-页面 5 秒整页刷一次 (`<meta http-equiv="refresh">`)，无 client JS / SPA — 纯 SSR HTML。同时附 JSON 接口给脚本拉数：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
+- **顶 sticky daemon-state header** — pid · uptime · 当前终端（wezterm / iterm2）· IM adapter + 连接 pill（始终可见）
+- header 下 **3 个 tab**：
+  - **sessions**（默认）— 实时 `termAdapter.listPanes()` 列表（跟 IM 端 `/list` 看到的一致），标 addressable，未命名 tab 一眼可见
+  - **cost** — 最近的 cc session 从 `~/.claude/projects/<slug>/<sid>.jsonl` tail 出来，给 model + token 总数 + 美元估算（价格表 vendored LiteLLM Claude 4.x 子集）
+  - **errors** — 进程内环形 buffer（最近 200 条，FIFO），凡是 orchestrator `onError` 抛的全在
+
+**无自动刷新，无 client JS**。整页 SSR HTML。Tab 切换走 CSS `<input type="radio">` + sibling 选择器 hack — 零网络成本，瞬间切换。想拉新数据：点页面顶 `↻ refresh` 按钮（或按 F5 / Cmd+R）。整页 reload 后 active tab 回到 `sessions`。
+
+附 JSON 接口给脚本/curl 拉数：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 
 只绑 loopback (`127.0.0.1`)，外网永远连不上。如果 `40719` 端口被占，bridge 仍正常启动，daemon stderr 会告知 — 只是 dashboard 这次起不来。
 

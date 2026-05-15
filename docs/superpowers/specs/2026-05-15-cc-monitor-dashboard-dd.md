@@ -249,3 +249,37 @@ export function createMonitorApp(opts: MonitorOpts): {
 
 **Drive-by 不在本 DD 范围**（单独 follow-up）:
 - conventions.md 「/usage /cost 计算」段过期字段 (`cache_creation.ephemeral_5m/1h`) → 改 flat `cache_creation_input_tokens`
+
+---
+
+## 6. 修订 2026-05-15 — 手动刷新 + CSS tabs
+
+PR #187 实施落地后用户跑真实 dashboard 反馈：「上方需要三个 tab 标签切换。现在太丑了」+「不用 [meta refresh]。我希望前端靠用户手动刷新看最新数据」。
+
+**修订项**：
+
+| 原 §4 决策 | 撤销 | 新决策 |
+|---|---|---|
+| C1 SSR + `<meta http-equiv="refresh" content="5">` 5 秒整页刷一次 | ❌ | **C1' SSR + 手动刷新**：删 meta refresh；页面顶 `↻ refresh` 按钮 `<a href="/">` 触发整页 reload；用户 F5 / Cmd+R 同效；数据新鲜度由用户主动操作触发 |
+| 单页堆叠 sessions / cost / errors 三 section | ❌ | **3-tab 布局**：sessions / cost / errors 各一 tab；daemon state 留顶 sticky header（4 个字段 KV pills 横排，始终可见）；CSS-only 切换（`<input type="radio">` + `:checked ~ .panel` sibling combinator hack，no client JS） |
+
+**没改的**：A2 hono / B0 纯内存 / D1 port 40719 / 错误 buffer N=200 / vendored LiteLLM 价格表 — 全部保持。
+
+**理由**：
+- meta refresh 每 5 秒整页 reload 在 dashboard 长时间打开时眼睛累 + 网络 round-trip / fetch 浪费（本地无所谓但不优雅）；用户实际「扫一眼 → 关掉」usage pattern 不需要 5s 自动刷
+- 堆叠 3 个长表格列在一页（12 sessions / 21 costs / 0 errors）视觉重 + 重要信息（daemon state）容易被往下滑出视野
+- CSS radio hack 是 SSR 项目里业界公认 progressive enhancement 模式（MDN / web.dev 都背书），no client JS 契约不破；坏处是 reload 回 default tab（sessions）— 接受，符合「手动刷 = 整页重置」直觉
+- Tab 状态 lives in DOM radio inputs，刷新前 active tab 体现在 `:checked` 上 — 切 tab 零网络成本 + 零 latency
+
+**为什么不需要重走 5 步 DD**：
+- 用户在 PR #187 真实使用反馈上当场拍板修订（"不用 meta refresh"）
+- 修订项仅替换 C 维度内一个 sub-decision（5s auto-refresh vs manual refresh）+ 新增视觉布局优化（tab 切分），不动 A / B / D 任何主决策
+- 候选空间小（手动刷 vs auto-refresh 二选一；tab 实现 a/b/c 三选一推荐 a 后用户未否定）+ 反悔代价低（纯前端 css/jsx 改动 < 1 天）→ 不达"重大决策"启发式阈值
+
+**实施落地**（同 PR）：
+- `views/layout.tsx` 删 `refreshSeconds` prop + `<meta refresh>` tag；加 tab CSS（radio hidden / sibling-checked panel show/hide / sticky `.daemon-header`）
+- `views/dashboard.tsx` 重排：sticky header + `↻ refresh` 按钮 + 3-radio + tab-nav + 3-panel；default checked = `tab-sessions`
+- `views/daemon-state.tsx` 改从 4-row table → 单行 KV pills（`pid · uptime · terminal · IM (lark) [connected pill]`）
+- `index.test.ts` 改既有 GET / 断言 `not.toContain('meta http-equiv="refresh"')` + 必含 `↻ refresh`；加新 case 验证 3 radio + 3 label + 3 panel 全在 + default checked = sessions
+
+**Test/build**：1012/1012 pass (+1 tab test)，bundle 425 KB，bin smoke `0.1.0`。
