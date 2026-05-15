@@ -133,13 +133,14 @@ describe('runSetupHooksCommand', () => {
       expect(groups[0]!.hooks[0]!.timeout).toBe(120);
     });
 
-    it('PreToolUse group 1: matcher="AskUserQuestion", timeout=120 (2 min for IM-reply hold per DD §9.5)', async () => {
+    it('PreToolUse group 1: matcher="AskUserQuestion", timeout=310 (~5 min for IM-reply hold per DD §10)', async () => {
       // AskUserQuestion holds the hook subprocess polling for an IM-side
-      // natural-language reply (DD §6 P1). §9.5 shortened from 300s to
-      // 120s: 2 min is sufficient per user direction, the timeout path now
-      // self-constructs allow + empty answers (no deny channel). Literal
-      // string matcher per cc docs (letters/digits/_/| only → literal
-      // exact match).
+      // natural-language reply (DD §6 P1). §10 sub-revision 2026-05-15
+      // reverted §9.5's 120s back to 310s after real mobile usage showed
+      // 2 min runs out (phone notification + app switch + thumb-typing
+      // while out of house exceeds 2 min). Timeout path self-constructs
+      // allow + empty answers (no deny channel). Literal string matcher
+      // per cc docs (letters/digits/_/| only → literal exact match).
       const r = await run();
       const groups = r.settings.hooks!.PreToolUse as Array<{
         matcher: string;
@@ -147,7 +148,7 @@ describe('runSetupHooksCommand', () => {
       }>;
       const askGroup = groups.find((g) => g.matcher === 'AskUserQuestion');
       expect(askGroup).toBeDefined();
-      expect(askGroup!.hooks[0]!.timeout).toBe(120);
+      expect(askGroup!.hooks[0]!.timeout).toBe(310);
     });
 
     it('PreToolUse group 2: matcher="^(?!AskUserQuestion$).+$" (negative lookahead), timeout=20', async () => {
