@@ -1030,6 +1030,42 @@ exit 0
     const dumped = readFileSync(envDumpPath, 'utf8').trim();
     expect(dumped).toBe('WEZTERM_PANE=<unset>');
   });
+
+  // Regression — cc 2.1.141 `--print` mode probes stdin and waits for EOF
+  // before processing the argv prompt. With Node's prior `execFileAsync`
+  // call, stdin was left as an open pipe — cc hung until our 30s timeout,
+  // 100% AI routing failure in production, daemon fell back to substring
+  // matching with `intent=<verbatim userMsg>`. Fix: spawn + immediate
+  // `child.stdin.end()` to signal EOF (memory:
+  // feedback_execfile_input_footgun + feedback_node_spawn_stdin_epipe).
+  //
+  // Regression test: stub reads stdin to EOF *before* emitting output. If
+  // `runClaudeArgvOnly` doesn't close stdin, the stub hangs forever; we
+  // pass a tight 1500ms timeout so a regression manifests as a
+  // routeViaAI null-result (timeout) instead of a hung test.
+  it('closes child stdin immediately so cc binaries that probe stdin EOF proceed (cc 2.1.141 regression)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-stdin-eof-'));
+    const stub = join(dir, 'claude-stub-eof');
+    writeFileSync(
+      stub,
+      `#!/bin/sh\ncat > /dev/null\ncat <<'EOF'\n${JSON.stringify({
+        result: '{"target":"frontend","intent":"hi","reason":"stdin-eof"}',
+      })}\nEOF\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    chmodSync(stub, 0o755);
+
+    const out = await routeViaAI({
+      userMsg: 'hi frontend',
+      tabs: ['frontend'],
+      currentTab: null,
+      claudeBinary: stub,
+      timeoutMs: 1500,
+    });
+    expect(out.target).toBe('frontend');
+    expect(out.intent).toBe('hi');
+    expect(out.reason).toBe('stdin-eof');
+  });
 });
 
 // ============================================================================

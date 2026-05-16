@@ -1,5 +1,4 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import {
   AskUserQuestionAIOutputSchema,
   PermissionDialogAIOutputSchema,
@@ -35,7 +34,100 @@ import {
  * Acceptable in IM context (user expects seconds not ms).
  */
 
-const execFileAsync = promisify(execFile);
+/**
+ * Spawn `claude --print` with prompt passed via argv (NOT stdin), then
+ * immediately close stdin so cc receives EOF and proceeds to process argv.
+ *
+ * **Why not `execFileAsync`** (regression discovered 2026-05-16, daemon.log):
+ * Node's `execFile`/`execFileAsync` leaves the child's stdin as an
+ * **open pipe** by default — the parent never writes, never ends. cc
+ * 2.1.141 `--print` mode probes stdin and waits for EOF (presumably to
+ * support `echo "..." | claude --print` for additional context). With
+ * stdin pipe open and no data, cc waits up to its own timeout, then
+ * Node's `timeout` option fires SIGTERM at `timeoutMs`. Result: 100%
+ * `AI router target=none reason="cc timeout after 30000ms / Warning:
+ * no stdin data rec…" fallback=substring` in production, AI routing
+ * effectively dead, daemon silently fell back to substring matching.
+ *
+ * **Fix**: spawn + `child.stdin.end()` immediately signals EOF; cc
+ * then proceeds to use the argv prompt without waiting.
+ *
+ * Memory references: `feedback_execfile_input_footgun.md` (use spawn +
+ * `stdin.end()` for stdin-reading children) + `feedback_node_spawn_stdin_epipe.md`
+ * (`stdin.on('error', () => {})` to swallow EPIPE if the child closes
+ * its read side before we end the write side).
+ *
+ * **Rejection shape**: mirrors `child_process.execFile` rejection
+ * (`code` / `signal` / `killed` / `stderr`) so `explainExecError`
+ * (which classifies failures as ENOENT / timeout / non-zero exit / etc.)
+ * works unchanged against the new error.
+ */
+function runClaudeArgvOnly(opts: {
+  binary: string;
+  args: readonly string[];
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+}): Promise<{ stdout: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(opts.binary, [...opts.args], { env: opts.env });
+
+    // Close stdin **immediately** — see function JSDoc for cc 2.1.141
+    // `--print` behavior. swallow EPIPE/ECONNRESET on the write side in
+    // case cc has already closed its read side by the time we end.
+    child.stdin.on('error', () => {
+      /* intentional swallow per feedback_node_spawn_stdin_epipe.md */
+    });
+    child.stdin.end();
+
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    let timedOut = false;
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuf += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString('utf8');
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, opts.timeoutMs);
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      const wrapped = Object.assign(err, {
+        stdout: stdoutBuf,
+        stderr: stderrBuf,
+      });
+      reject(wrapped);
+    });
+
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0 && !timedOut) {
+        resolve({ stdout: stdoutBuf });
+        return;
+      }
+      const err = new Error(
+        `Command failed: ${opts.binary} ${opts.args.join(' ')}`,
+      ) as Error & {
+        code?: number | null;
+        signal?: NodeJS.Signals | null;
+        killed?: boolean;
+        stdout?: string;
+        stderr?: string;
+      };
+      err.code = code;
+      err.signal = signal;
+      err.killed = timedOut;
+      err.stdout = stdoutBuf;
+      err.stderr = stderrBuf;
+      reject(err);
+    });
+  });
+}
 
 /**
  * One pending PreToolUse approval visible to the AI router. Caller maps
@@ -855,10 +947,11 @@ export async function routeViaAI(
 
   let stdout: string;
   try {
-    const result = await execFileAsync(claudeBinary, args, {
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024, // 1MB plenty for cc envelope
+    const result = await runClaudeArgvOnly({
+      binary: claudeBinary,
+      args,
       env: childEnv,
+      timeoutMs,
     });
     stdout = result.stdout;
   } catch (err) {
@@ -1185,10 +1278,11 @@ export async function routeAskUserQuestionViaAI(
 
   let stdout: string;
   try {
-    const result = await execFileAsync(claudeBinary, args, {
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024,
+    const result = await runClaudeArgvOnly({
+      binary: claudeBinary,
+      args,
       env: childEnv,
+      timeoutMs,
     });
     stdout = result.stdout;
   } catch {
@@ -1466,10 +1560,11 @@ export async function routePermissionRequestViaAI(
 
   let stdout: string;
   try {
-    const result = await execFileAsync(claudeBinary, args, {
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024,
+    const result = await runClaudeArgvOnly({
+      binary: claudeBinary,
+      args,
       env: childEnv,
+      timeoutMs,
     });
     stdout = result.stdout;
   } catch {
