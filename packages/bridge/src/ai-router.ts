@@ -804,13 +804,27 @@ function formatToolInputForPrompt(input: Record<string, unknown>): string {
 /**
  * Build the argv for the spawned `claude --print` call.
  *
- * Flags (per DD #73 §6.4):
+ * Flags (per DD #73 §6.4 + 2026-05-16 hook-isolation revision):
  * - `--print`                    — headless one-shot (no TUI)
  * - `--model claude-sonnet-4-6`  — Sonnet 4.6 for robust instruction-following
  * - `--output-format json`       — structured cc envelope around our inner JSON
  * - `--permission-mode bypassPermissions` — no tool prompts (we don't call tools)
  * - `--disable-slash-commands`   — skip skills/commands loading
  * - `--setting-sources user`     — only ~/.claude/, skip project CLAUDE.md
+ * - `--settings '{"disableAllHooks":true}'` — **critical**: prevent user-
+ *   level Stop/PreToolUse hooks (e.g. `suggest-watcher.sh`) from firing
+ *   inside the triage subprocess. Without this, cc 2.1.x runs every
+ *   user hook AND any skill they trigger, turning a 1-turn JSON echo
+ *   into a 15-turn 70s $0.26 multi-turn agentic loop. cc source map
+ *   (`hooks/hooksConfigSnapshot.ts:47`) shows `disableAllHooks` in
+ *   non-managed settings (which `--settings` JSON injects into the
+ *   `flagSettings` source) makes `getHooksFromAllowedSources()` return
+ *   only `policySettings?.hooks ?? {}` — user-level hooks skipped, OAuth
+ *   / keychain / auto-memory paths untouched (NOT going through `--bare`
+ *   / `CLAUDE_CODE_SIMPLE=1` which would also kill OAuth).
+ *   Verified empirically 2026-05-16: 70s → 4.7s, 15 turns → 1 turn,
+ *   $0.26 → $0.059. Verified in cc source: `hooks.ts:1982/3022` bare-mode
+ *   guard is separate from `disableAllHooks` policy snapshot.
  */
 export function buildClaudeArgs(opts: { model: string; prompt: string }): string[] {
   return [
@@ -820,6 +834,7 @@ export function buildClaudeArgs(opts: { model: string; prompt: string }): string
     '--permission-mode', 'bypassPermissions',
     '--disable-slash-commands',
     '--setting-sources', 'user',
+    '--settings', '{"disableAllHooks":true}',
     opts.prompt,
   ];
 }
