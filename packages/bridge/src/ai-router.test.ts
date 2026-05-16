@@ -672,6 +672,34 @@ describe('ai-router — buildClaudeArgs', () => {
     expect(idx).toBeGreaterThan(-1);
     expect(args[idx + 1]).toBe('claude-haiku-4-5');
   });
+
+  // Regression — cc 2.1.x runs every user-level hook inside the daemon's
+  // triage subprocess unless we tell it not to. Without --settings
+  // '{"disableAllHooks":true}', a 1-turn JSON echo turns into 15 turns /
+  // 70s / $0.26 because user Stop hooks (e.g. `suggest-watcher.sh`) fire
+  // and trigger their skills. Verified empirically 2026-05-16: with this
+  // flag, baseline drops to 4.7s / 1 turn / $0.059.
+  //
+  // cc source map evidence:
+  // - `hooksConfigSnapshot.ts:47` — `mergedSettings.disableAllHooks === true`
+  //   makes `getHooksFromAllowedSources()` return `policySettings?.hooks ?? {}`,
+  //   skipping all user-level hooks while leaving managed (policy) hooks alive.
+  // - `--settings <json>` injects into the `flagSettings` source (non-managed,
+  //   feeds `mergedSettings`).
+  // - Distinct from `--bare`/`CLAUDE_CODE_SIMPLE=1` which would also kill
+  //   keychain reads (→ OAuth loss) per `hooks.ts:1982`. We deliberately
+  //   pick the narrower mechanism to preserve DD #73 "no API key needed".
+  it('includes --settings {"disableAllHooks":true} to suppress user hooks (cc 2.1.x regression)', () => {
+    const args = buildClaudeArgs({ model: 'haiku', prompt: 'p' });
+    const idx = args.indexOf('--settings');
+    expect(idx).toBeGreaterThan(-1);
+    const settingsJson = args[idx + 1];
+    expect(settingsJson).toBeDefined();
+    const parsed = JSON.parse(settingsJson!);
+    expect(parsed).toEqual({ disableAllHooks: true });
+    // Sanity — we are NOT also passing --bare (would kill OAuth).
+    expect(args).not.toContain('--bare');
+  });
 });
 
 // ============================================================================
