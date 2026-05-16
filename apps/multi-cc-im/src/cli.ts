@@ -54,7 +54,7 @@ Exit codes:
 // in this app + all workspace packages — both are bumped together.
 // TODO: import from package.json directly (needs tsup JSON loader config)
 // so we never forget to bump this on release.
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
