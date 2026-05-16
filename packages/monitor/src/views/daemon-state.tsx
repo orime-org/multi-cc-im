@@ -19,6 +19,12 @@ function formatUptime(seconds: number): string {
   return `${h}h ${m % 60}m`;
 }
 
+/**
+ * Single-line KV pills inside the sticky `.daemon-header` band — replaces
+ * the previous 4-row stacked table. The 4 fields users always want to see
+ * (pid / uptime / terminal / IM connection) stay above the tab nav so they
+ * never get hidden when switching tabs.
+ */
 export const DaemonStateView: FC<Props> = ({ state }) => {
   const imPillClass =
     state.imConnection === 'connected'
@@ -27,33 +33,30 @@ export const DaemonStateView: FC<Props> = ({ state }) => {
         ? 'pill-warn'
         : 'pill-error';
   return (
-    <table>
-      <tbody>
-        <tr>
-          <th>daemon pid</th>
-          <td><code>{state.pid}</code></td>
-        </tr>
-        <tr>
-          <th>uptime</th>
-          <td>{formatUptime(state.uptimeSeconds)}</td>
-        </tr>
-        <tr>
-          <th>active terminal</th>
-          <td><code>{state.activeTerminal}</code></td>
-        </tr>
-        <tr>
-          <th>IM ({state.imAdapter})</th>
-          <td>
-            <span class={`pill ${imPillClass}`}>{state.imConnection}</span>
-            {state.imReconnectAttempts > 0 && (
-              <span class="meta"> · {state.imReconnectAttempts} reconnect(s)
-                {state.imLastReconnectAt &&
-                  ` · last ${relativeTime(state.imLastReconnectAt)}`}
-              </span>
-            )}
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="daemon-header">
+      <span class="kv">
+        <span class="kv-key">pid</span>
+        <span class="kv-val"><code>{state.pid}</code></span>
+      </span>
+      <span class="kv">
+        <span class="kv-key">uptime</span>
+        <span class="kv-val">{formatUptime(state.uptimeSeconds)}</span>
+      </span>
+      <span class="kv">
+        <span class="kv-key">terminal</span>
+        <span class="kv-val"><code>{state.activeTerminal}</code></span>
+      </span>
+      <span class="kv">
+        <span class="kv-key">IM ({state.imAdapter})</span>
+        <span class={`pill ${imPillClass}`}>{state.imConnection}</span>
+        {state.imReconnectAttempts > 0 && (
+          <span class="kv-key">
+            {state.imReconnectAttempts} reconnect(s)
+            {state.imLastReconnectAt &&
+              ` · last ${relativeTime(state.imLastReconnectAt)}`}
+          </span>
+        )}
+      </span>
+    </div>
   );
 };
