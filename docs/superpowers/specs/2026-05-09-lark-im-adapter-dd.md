@@ -293,3 +293,37 @@ Rationale:
 §11.4 M5 marked `❌ won't-do v1 (cancelled 2026-05-11)`. §8.4 "interactive cards" recommendation degrades to "text-only via `@<tab> /1 /2`". No future milestone scheduled unless either:
 - Feishu adds WSClient delivery for card callbacks, or
 - The project relaxes the no-public-IP constraint (would require a fresh DD revisit).
+
+### 11.6 §11.5 cancel reasoning 撤销（2026-05-18，β.MVP P1）
+
+**Background**: 2026-05-18 修 cc → IM md table 渲染时 `npm search` 发现直接竞品 [`@leviyuan/lodestar` v0.2.9](https://github.com/leviyuan/lodestar)（"夜航星"）已开源用 Card Kit + button callback 做 IM-native cc frontend。源码 verify (`/tmp/lodestar/daemon.ts:326-343`)：
+
+```typescript
+const ws = new lark.WSClient({ appId, appSecret, ... })
+const dispatcher = new lark.EventDispatcher({})
+dispatcher.register({ 'im.message.receive_v1': async (d) => { ... } })
+dispatcher.register({ 'card.action.trigger': async (d) => { ... } })  // ← 这里
+ws.start({ eventDispatcher: dispatcher })
+```
+
+`card.action.trigger` 事件**跟 `im.message.receive_v1` 注册在同一个 `lark.WSClient` 同一个 `EventDispatcher`，全走 WebSocket 长连接**，无需 webhook、无需 public IP。
+
+**§11.5 cancel reasoning 字面错**：
+- 当时假设「button callback only delivers via HTTP webhook」是错的
+- 真实路径：WSClient 长连接订阅 `card.action.trigger` 事件 → handler 收 button click
+- core constraint #1「No public IP」**不冲突** — WSClient 本身就是 long-connection 无 public IP 设计
+
+**正式撤销** §11.5「Option 1 cancel M5」。Interactive cards 含 button **可以做**，不与 no-public-IP 冲突。
+
+**当前项目路径** — β.MVP (per [战略 DD: multi-cc-im vs Lodestar](2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md))：
+
+| Phase | Scope |
+|---|---|
+| P1 | 本撤销 + Card Kit v1 wrapper + WS subscribe `card.action.trigger` 基础设施 |
+| P2 | md → card 转换器，含 table |
+| P3 | bridge outbound dispatcher：cc reply 含 table 用 card；其他 text |
+| P4-P8 | β.MVP 完成 + 真账号 smoke 后评估闸再决 |
+
+**§8.4 同步修订**：「interactive cards (text + card)」恢复为支持的 msg_type，不再降级 text-only。
+
+**学到 lesson**：DD cancel reasoning 必须 source-verify，**不能凭官方 docs 字面表述假设**。§11.5 当时只读 Feishu docs 「webhook 配置」段就 cancel，没去看 WSClient EventDispatcher 完整事件列表。Lodestar 实证打脸 1 周。教训：DD reasoning 必含「证伪假设的最低成本验证步骤」（如本案应为「跑一次 `lark.WSClient` 订阅 `card.action.trigger`」），不只引官方 docs 字面。

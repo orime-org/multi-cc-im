@@ -89,6 +89,18 @@ export interface CreateLarkAdapterOpts {
    * fires without waiting for 10 real retries.
    */
   cooldownAfter?: number;
+  /**
+   * Optional `card.action.trigger` handler — fires when a user clicks
+   * a button on an interactive card sent to a chat the bot is in. The
+   * event is delivered over the same WebSocket as `im.message.receive_v1`
+   * (verified via lodestar source 2026-05-18, formerly assumed
+   * webhook-only — see [DD #86 §11.6](../../../docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md#116-115-cancel-reasoning-撤销2026-05-18β-mvp-p1)).
+   *
+   * P1 (this PR) registers the event so callbacks are reachable; the
+   * actual UX (PreToolUse three-button approval cards / AUQ option
+   * rows) lands in P4 / P5. Default is a log-only stub.
+   */
+  onCardAction?: (data: unknown) => Promise<void>;
 }
 
 /**
@@ -337,6 +349,26 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
                 err instanceof Error ? err : new Error(String(err)),
               );
             }
+          }
+        },
+        // β.MVP P1 (2026-05-18): `card.action.trigger` subscribe over the
+        // same WSClient as `im.message.receive_v1` — see DD #86 §11.6 for
+        // the cancel reasoning that this overturns. P1 registers a
+        // log-only stub; P4 wires the real PreToolUse three-button →
+        // PermissionResponse handler via `opts.onCardAction`.
+        'card.action.trigger': async (data: unknown) => {
+          if (opts.onCardAction) {
+            try {
+              await opts.onCardAction(data);
+            } catch (err) {
+              log(
+                `[lark] card.action.trigger handler threw: ${formatErrorWithCause(err)}`,
+              );
+            }
+          } else {
+            log(
+              `[lark] card.action.trigger received (no handler wired; P1 stub) data=${JSON.stringify(data).slice(0, 200)}`,
+            );
           }
         },
       });
