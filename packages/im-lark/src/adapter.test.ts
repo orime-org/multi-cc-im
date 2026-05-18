@@ -559,6 +559,85 @@ describe('createLarkAdapter', () => {
       expect(sentText.text).not.toContain('```');
     });
 
+    // β.MVP P3 (2026-05-18): cc reply containing a markdown table → adapter
+    // routes through `mdToCard` and sends as `msg_type: 'interactive'`
+    // (schema-2.0 card JSON) so the table renders with native column_set
+    // rows on mobile instead of `|...|---|` character garbage.
+    it('card path: cc reply containing md table → msg_type=interactive + card JSON content', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const replyWithTable = [
+        '改完了，结果：',
+        '',
+        '| 文件 | 状态 |',
+        '|---|---|',
+        '| router.ts | ✅ |',
+        '| adapter.ts | ✅ |',
+      ].join('\n');
+      await adapter.send(replyWithTable, {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+
+      const sent = create.mock.calls[0]![0];
+      expect(sent.data.msg_type).toBe('interactive');
+      expect(sent.data.receive_id).toBe('oc_chat');
+      const parsed = JSON.parse(sent.data.content) as {
+        schema: string;
+        body: { elements: Array<{ tag: string }> };
+      };
+      expect(parsed.schema).toBe('2.0');
+      const tags = parsed.body.elements.map((e) => e.tag);
+      // markdown(intro) + column_set(header) + 2 × column_set(rows)
+      expect(tags).toEqual(['markdown', 'column_set', 'column_set', 'column_set']);
+    });
+
+    it('text path preserved: cc reply WITHOUT table still goes msg_type=text + stripMarkdown', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(async () => ({ code: 0 }));
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+      await adapter.send('just a paragraph, no tables here', {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+      const sent = create.mock.calls[0]![0];
+      expect(sent.data.msg_type).toBe('text');
+      expect(JSON.parse(sent.data.content)).toEqual({
+        text: 'just a paragraph, no tables here',
+      });
+    });
+
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(async () => ({ code: 230020, msg: 'permission denied' }));
