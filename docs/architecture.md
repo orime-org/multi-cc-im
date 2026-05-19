@@ -188,6 +188,35 @@ lark user → Lark WS event → im-lark.onMessage(IncomingMessage{replyCtx})
    → imAdapter.send(echo, replyCtx)             # IM 反馈：→ frontend received
 ```
 
+#### 1.a Image inbound — C.1 reply-thread join（β.MVP P6，PR #209）
+
+```
+lark user 发图 → message_type='image' → im-lark.onMessage：
+   → 用 tenant_access_token Bearer 调 /open-apis/im/v1/messages/{id}/resources/{key}?type=image
+   → 落 ~/.multi-cc-im/inbound/lark/images/<ts>-attachment.png（mode 0600，30 MB cap）
+   → IncomingMessage{ text:null, attachments:[{kind:'image',localPath,mimetype}],
+                      replyToMessageId: data.message.parent_id ?? undefined,
+                      replyCtx }
+orchestrator.handleInbound 检测 image-only msg：
+   → pendingImages.set(msgId, {imagePath, storedAt: now()})
+   → imAdapter.send('🖼️ 图已收到。在该图上回复并附 #<tab>...')
+   → return（不进 route）
+
+lark user 在该图上 reply text '#<tab> 看这图'：
+   → IncomingMessage{ text:'#<tab> 看这图',
+                      replyToMessageId: <image msg id> }
+   → 走正常 route() → 得 dispatches[]
+   → handleInbound 检 pendingImages.get(replyToMessageId) 命中：
+       pendingImages.delete(...)
+       dispatches.map(d => ({...d, content: `请看 @${imagePath}\n${d.content}`}))
+   → dispatchOne(d, msg) 把含 image 路径的 content 通过 wezterm/iterm2 send-text 投递
+   → cc Read 工具读图（@<path> 触发）
+
+TTL 30 min：lazy on lookup + 60s 间隔 sweep（setInterval + unref 不阻 exit）
+```
+状态文件不涉及（in-memory map），daemon 重启 stash 清空。
+详见 [DD: IM image to cc](superpowers/specs/2026-05-19-im-image-to-cc-dd.md) §6 C.1。
+
 ### 2. Outbound：cc Stop hook → IM (lark)
 
 ```
