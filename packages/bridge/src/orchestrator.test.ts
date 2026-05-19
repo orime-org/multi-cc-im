@@ -1377,16 +1377,21 @@ describe('createOrchestrator — IM permission gate', () => {
     );
     expect(capturedRequest).not.toBeNull();
     const req = capturedRequest as unknown as IMAUQRequest;
-    // makePreToolUse hardcodes tool_use_id='tu_1' (separate from
-    // permissionRequest's requestId). pendingAUQ keys on the former.
-    expect(req.toolUseId).toBe('tu_1');
+    // 2026-05-19 fix: daemon mints a UUID v4 nonce for the AUQ button
+    // toolUseId (cc's `p.tool_use_id` is empty-string in real AUQ
+    // PreToolUse — see orchestrator handlePreToolUse comment).
+    expect(req.toolUseId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    const capturedNonce = req.toolUseId;
 
-    // Simulate user clicking the second option (MongoDB).
+    // Simulate user clicking the second option (MongoDB) — click
+    // carries the daemon-side nonce, NOT cc's tool_use_id.
     const toastResp = await im.handler!.onCardAction!({
       action: {
         value: {
           kind: 'auq',
-          toolUseId: 'tu_1',
+          toolUseId: capturedNonce,
           questionIdx: 0,
           optionIdx: 1,
         },
