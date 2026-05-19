@@ -9,6 +9,7 @@ import {
 } from '@multi-cc-im/shared';
 import type { LarkCredentials } from './credentials.js';
 import { stripMarkdown } from './markdown.js';
+import { mdToCard } from './md-to-card.js';
 
 /**
  * Minimal shape of the Feishu/Lark SDK `Client` we actually use for sending.
@@ -24,7 +25,14 @@ export interface LarkClientShape {
           params: { receive_id_type: 'chat_id' | 'open_id' | 'union_id' | 'user_id' };
           data: {
             receive_id: string;
-            msg_type: 'text';
+            /**
+             * - `'text'` — plain text (`content: JSON.stringify({text})`); used
+             *   when `mdToCard` returns null (no table) per β.MVP P3.
+             * - `'interactive'` — schema-2.0 card JSON stringified into
+             *   `content`; used when `mdToCard` returns a card (md table
+             *   detected). Per [P3 strategic DD](../../../docs/superpowers/specs/2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md).
+             */
+            msg_type: 'text' | 'interactive';
             content: string;
           };
         }) => Promise<{ code?: number; msg?: string; data?: unknown }>;
@@ -490,20 +498,40 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
         );
       }
 
-      // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
-      // parse markdown, so cc's `**bold**` / `# heading` / fenced code
-      // would render literally. `stripMarkdown` simplifies the syntax
-      // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
-      // 2026-05-11.
-      const stripped = stripMarkdown(content);
-      const response = await client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: replyCtx.chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text: stripped }),
-        },
-      });
+      // Try the card path first: if cc's reply contains a GFM table,
+      // `mdToCard` emits a Lark Card Kit schema-2.0 card whose tables
+      // render as `column_set` rows on mobile. Lark `msg_type: 'text'`
+      // doesn't parse md, so a verbatim table would look like garbage
+      // (`|...|---|`). Per [β.MVP P3](../../../docs/superpowers/specs/2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md)
+      // (2026-05-18). Returns null when no table present → falls
+      // through to text path with `stripMarkdown`.
+      const card = mdToCard(content);
+      let response: Awaited<ReturnType<LarkClientShape['im']['v1']['message']['create']>>;
+      if (card !== null) {
+        response = await client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: replyCtx.chatId,
+            msg_type: 'interactive',
+            content: JSON.stringify(card),
+          },
+        });
+      } else {
+        // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
+        // parse markdown, so cc's `**bold**` / `# heading` / fenced code
+        // would render literally. `stripMarkdown` simplifies the syntax
+        // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
+        // 2026-05-11.
+        const stripped = stripMarkdown(content);
+        response = await client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: replyCtx.chatId,
+            msg_type: 'text',
+            content: JSON.stringify({ text: stripped }),
+          },
+        });
+      }
 
       if (response.code !== 0) {
         throw new Error(
