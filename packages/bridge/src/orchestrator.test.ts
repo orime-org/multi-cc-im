@@ -12,6 +12,7 @@ import {
   readIMOriginFile,
   readPermissionResponseFile,
   readPermissionDialogResponseFile,
+  writePermissionRequestFile,
   writePermissionDialogRequestFile,
   permissionDialogRequestPath,
   permissionDialogResponsePath,
@@ -25,6 +26,8 @@ import type {
   CLIAdapter,
   CLIHandler,
   IMAdapter,
+  IMAUQRequest,
+  IMAUQSender,
   IMHandler,
   IMReplyContext,
   IncomingMessage,
@@ -1247,6 +1250,205 @@ describe('createOrchestrator — IM permission gate', () => {
     expect(
       lines.some((l) => l.startsWith('[AskUserQuestion forward')),
     ).toBe(true);
+    await orch.stop();
+  });
+
+  // β.MVP P5 (DD γ 2026-05-19): AUQ button-card path. When the IM
+  // adapter exposes `sendAUQ`, the bridge sends a typed AUQRequest
+  // instead of the text fallback and registers a pendingAUQ entry so
+  // the later card click can be routed through the v1.9 D5-D
+  // `handlePermissionResponseFromIM` path with `updatedInput.answers`.
+  it('AskUserQuestion → goes through sendAUQ (button path) when adapter implements IMAUQSender', async () => {
+    const im = makeMockIM();
+    const sentButtonCards: {
+      toolUseId: string;
+      tabName: string;
+      firstOptLabel: string | undefined;
+      sourceTag: string | undefined;
+    }[] = [];
+    (im as unknown as IMAUQSender).sendAUQ =
+      async (req, _ctx, opts) => {
+        sentButtonCards.push({
+          toolUseId: req.toolUseId,
+          tabName: req.tabName,
+          firstOptLabel: req.questions[0]?.options[0]?.label,
+          sourceTag: opts?.sourceTag,
+        });
+      };
+
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im as IMAdapter,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+    im.sent.length = 0;
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE,
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            {
+              question: 'Pick a database',
+              options: [
+                { label: 'Postgres', description: 'mature relational' },
+                { label: 'MongoDB', description: 'doc store' },
+              ],
+            },
+          ],
+        },
+        requestId: 'toolu_btn_test',
+      }),
+    );
+
+    expect(sentButtonCards).toHaveLength(1);
+    expect(sentButtonCards[0]!.tabName).toBe('frontend');
+    expect(sentButtonCards[0]!.firstOptLabel).toBe('Postgres');
+    expect(sentButtonCards[0]!.sourceTag).toBe('frontend');
+    // Text path NOT taken when button capability present:
+    expect(im.sent).toHaveLength(0);
+    await orch.stop();
+  });
+
+  it('card.action auq click → handlePermissionResponseFromIM writes Response with answers + reason', async () => {
+    const im = makeMockIM();
+    let capturedRequest: IMAUQRequest | null = null;
+    (im as unknown as IMAUQSender).sendAUQ =
+      async (req) => {
+        capturedRequest = req;
+      };
+
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im as IMAdapter,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+    im.sent.length = 0;
+
+    const requestId = 'cafebabe';
+    // Simulate the hook subprocess having written a PermissionRequest
+    // file (which it does in prod before invoking onPreToolUse).
+    // Without it, handlePermissionResponseFromIM falls into the
+    // dead-drop branch and never writes a Response file.
+    const toolInput = {
+      questions: [
+        {
+          question: 'Pick a database',
+          options: [
+            { label: 'Postgres' },
+            { label: 'MongoDB' },
+          ],
+        },
+      ],
+    };
+    await writePermissionRequestFile({
+      stateDir: permStateDir,
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+      toolName: 'AskUserQuestion',
+      toolInput,
+      createdAt: Date.now(),
+    });
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE,
+        toolName: 'AskUserQuestion',
+        toolInput,
+        requestId,
+        sessionId: SID_A,
+      }),
+    );
+    expect(capturedRequest).not.toBeNull();
+    const req = capturedRequest as unknown as IMAUQRequest;
+    // makePreToolUse hardcodes tool_use_id='tu_1' (separate from
+    // permissionRequest's requestId). pendingAUQ keys on the former.
+    expect(req.toolUseId).toBe('tu_1');
+
+    // Simulate user clicking the second option (MongoDB).
+    const toastResp = await im.handler!.onCardAction!({
+      action: {
+        value: {
+          kind: 'auq',
+          toolUseId: 'tu_1',
+          questionIdx: 0,
+          optionIdx: 1,
+        },
+      },
+    });
+    expect(toastResp).toEqual({
+      toast: { type: 'success', content: '已回答: MongoDB' },
+    });
+
+    // Read the PermissionResponse file that handlePermissionResponseFromIM
+    // wrote — decision=allow, reason mentions the click, updatedInput.answers
+    // pairs question text with chosen label.
+    const resp = await readPermissionResponseFile(
+      permissionResponsePath({
+        stateDir: permStateDir,
+        paneId: FRONTEND_PANE,
+        sessionId: SID_A,
+        requestId,
+      }),
+    );
+    expect(resp?.decision).toBe('allow');
+    expect(resp?.reason).toContain('IM button click');
+    expect(resp?.reason).toContain('MongoDB');
+    if (resp?.decision !== 'allow') throw new Error('expected allow');
+    const ui = resp.updatedInput as
+      | { answers?: Record<string, string>; questions?: unknown[] }
+      | undefined;
+    expect(ui?.answers).toEqual({ 'Pick a database': 'MongoDB' });
+    expect(Array.isArray(ui?.questions)).toBe(true);
+    await orch.stop();
+  });
+
+  it('card.action auq stale click (no pending) → warning toast, no Response file', async () => {
+    const im = makeMockIM();
+    (im as unknown as IMAUQSender).sendAUQ =
+      async () => {};
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im as IMAdapter,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please ask'));
+
+    const toastResp = await im.handler!.onCardAction!({
+      action: {
+        value: {
+          kind: 'auq',
+          toolUseId: 'never-registered',
+          questionIdx: 0,
+          optionIdx: 0,
+        },
+      },
+    });
+    expect(toastResp).toEqual({
+      toast: { type: 'warning', content: '该问题已超时或已回答' },
+    });
     await orch.stop();
   });
 
