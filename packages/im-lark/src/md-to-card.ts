@@ -159,19 +159,84 @@ function makeTableRow(cells: string[]): CardColumnSetElement {
 }
 
 /**
+ * Auto-wrap bare URLs in markdown so Lark Card Kit `markdown` elements
+ * render them as clickable links. On Feishu mobile, bare URLs only get
+ * colored as link-styled text but aren't clickable — the renderer
+ * requires explicit `[text](url)` syntax.
+ *
+ * Strategy: mask spans we MUST NOT modify (fenced code, inline code,
+ * existing markdown links, angle autolinks) with a unique placeholder
+ * unlikely to occur in any user text, apply a bare-URL regex to the
+ * rest, then unmask.
+ *
+ * Why daemon-side fix instead of cc prompt habit: prompt habit only
+ * holds for THIS cc tab. Other cc tabs across the multi-tab fleet have
+ * no awareness. Single-point fix in mdToCard lifts all cc tabs.
+ */
+function autolinkBareUrls(md: string): string {
+  const masked: string[] = [];
+  // Placeholder must NOT collide with anything in real cc reply text.
+  // The `__MULTICCAUTOLINK_MASK_N__` form combines a project-specific
+  // prefix + numeric index + suffix; vanishingly unlikely in natural
+  // markdown unless the user literally writes this exact token (and if
+  // they do, it'd still roundtrip cleanly since unmask is keyed on the
+  // exact same delimited pattern).
+  const PRE = '__MULTICCAUTOLINK_MASK_';
+  const POST = '__';
+  const mask = (input: string, re: RegExp): string =>
+    input.replace(re, (m) => {
+      const placeholder = `${PRE}${masked.length}${POST}`;
+      masked.push(m);
+      return placeholder;
+    });
+
+  let working = md;
+  // Order matters: fenced first (largest spans), then inline code, then
+  // existing markdown links / angle autolinks. Stops bare-URL regex
+  // from touching content inside these.
+  working = mask(working, /```[\s\S]*?```/g);
+  working = mask(working, /`[^`\n]+`/g);
+  working = mask(working, /\[[^\]\n]*?\]\([^)\n]+?\)/g);
+  working = mask(working, /<https?:\/\/[^>\s]+>/g);
+
+  // Wrap bare URLs. Stops at whitespace + common punctuation that
+  // can't be part of a URL. Trailing sentence punctuation gets
+  // captured then trimmed off the link, kept after.
+  working = working.replace(
+    /https?:\/\/[^\s)<>`'"\]]+/g,
+    (url) => {
+      const trailPunct = /[.,;:!?]+$/;
+      const tm = url.match(trailPunct);
+      const trail = tm ? tm[0] : '';
+      const clean = trail ? url.slice(0, -trail.length) : url;
+      return `[${clean}](${clean})${trail}`;
+    },
+  );
+
+  // Unmask in order — placeholder pattern is unique so this is safe.
+  const unmaskRe = new RegExp(
+    `${PRE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)${POST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+    'g',
+  );
+  working = working.replace(unmaskRe, (_, idx) => masked[Number(idx)] ?? '');
+  return working;
+}
+
+/**
  * Convert a markdown string to a Lark card JSON. Returns null when the
  * input doesn't require card rendering (no tables) unless `force: true`
  * is passed.
  *
  * Algorithm:
- *   1. Lex md with `marked`.
- *   2. If no table token AND `!force` → return null.
- *   3. Walk tokens, accumulating non-table tokens into a markdown
+ *   1. Auto-link bare URLs (so they render clickable in Lark cards).
+ *   2. Lex md with `marked`.
+ *   3. If no table token AND `!force` → return null.
+ *   4. Walk tokens, accumulating non-table tokens into a markdown
  *      buffer (Lark `markdown` element parses them natively).
- *   4. On table token → flush buffer as `markdown` element, emit one
+ *   5. On table token → flush buffer as `markdown` element, emit one
  *      `column_set` per row (header + data).
- *   5. On `hr` token → flush buffer, emit `{ tag: 'hr' }` element.
- *   6. Final flush returns the assembled card body.
+ *   6. On `hr` token → flush buffer, emit `{ tag: 'hr' }` element.
+ *   7. Final flush returns the assembled card body.
  */
 /**
  * Feishu Card Kit v1 hard limit: a single card schema 2.0 accepts at
@@ -253,8 +318,10 @@ export function splitMarkdownByTableCapacity(
 export function mdToCard(markdown: string, opts: MdToCardOpts = {}): CardSchema | null {
   const trimmed = markdown.trim();
   if (trimmed.length === 0) return null;
+  // Step 1 — autolink bare URLs so Lark renders them clickable on mobile.
+  const preprocessed = autolinkBareUrls(trimmed);
 
-  const tokens = marked.lexer(trimmed);
+  const tokens = marked.lexer(preprocessed);
   const hasTable = tokens.some(tokenRequiresCard);
   if (!hasTable && !opts.force) return null;
 

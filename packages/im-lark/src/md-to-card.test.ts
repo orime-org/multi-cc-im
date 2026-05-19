@@ -191,6 +191,87 @@ describe('mdToCard — output schema invariants', () => {
   });
 });
 
+// 2026-05-19 hotfix: Feishu mobile renders bare URLs as link-styled
+// text (blue) but they're not clickable — user has to copy. Autolink
+// preprocessor wraps `https://...` into `[url](url)` so Lark renders
+// clickable. Skips fenced code, inline code, existing markdown links,
+// angle autolinks.
+describe('mdToCard — autolink bare URLs (2026-05-19)', () => {
+  function getMarkdownContent(card: CardSchema | null): string {
+    if (!card) return '';
+    const els = card.body.elements;
+    return els
+      .map((e) => (e.tag === 'markdown' ? (e as { content: string }).content : ''))
+      .join('\n');
+  }
+
+  it('bare URL in paragraph → wrapped as [url](url)', () => {
+    const card = mdToCard('See https://example.com for info\n\n| a | b |\n|---|---|\n| 1 | 2 |');
+    const content = getMarkdownContent(card);
+    expect(content).toContain('[https://example.com](https://example.com)');
+    // Total URL occurrences should be exactly 2 (one inside `[]`, one inside `()`)
+    const matches = content.match(/https:\/\/example\.com/g);
+    expect(matches?.length).toBe(2);
+  });
+
+  it('existing markdown link `[text](url)` is NOT double-wrapped', () => {
+    const md = 'Click [here](https://example.com) now\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('[here](https://example.com)');
+    expect(content).not.toContain('[[here]');
+    expect(content).not.toContain('[https://example.com](https://example.com)');
+  });
+
+  it('inline code with URL is NOT modified', () => {
+    const md = 'Like `curl https://example.com` to test\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('`curl https://example.com`');
+    expect(content).not.toContain('[https://example.com](https://example.com)');
+  });
+
+  it('fenced code block URL is NOT modified', () => {
+    const md = '```\nhttps://example.com\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('```\nhttps://example.com\n```');
+  });
+
+  it('angle-bracket autolink `<https://...>` is NOT modified', () => {
+    const md = 'see <https://example.com> here\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('<https://example.com>');
+    expect(content).not.toContain('[<https://example.com>]');
+  });
+
+  it('multiple bare URLs in same paragraph all wrapped', () => {
+    const md = 'A https://a.io and B https://b.io\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('[https://a.io](https://a.io)');
+    expect(content).toContain('[https://b.io](https://b.io)');
+  });
+
+  it('trailing punctuation (period / comma / semicolon) NOT swallowed into URL', () => {
+    const md = 'visit https://example.com. End.\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    // URL itself doesn't include the period
+    expect(content).toContain('[https://example.com](https://example.com).');
+    // Period stays as text after the link
+    expect(content).not.toContain('example.com.](');
+  });
+
+  it('http (not just https) URLs also wrapped', () => {
+    const md = 'old style http://example.com works\n\n| a | b |\n|---|---|\n| 1 | 2 |';
+    const card = mdToCard(md);
+    const content = getMarkdownContent(card);
+    expect(content).toContain('[http://example.com](http://example.com)');
+  });
+});
+
 describe('mdToCard — real cc reply fixtures', () => {
   it('cc summary table from daemon.log 2026-05-15 (issue list)', () => {
     const md = [
