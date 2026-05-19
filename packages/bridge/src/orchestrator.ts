@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import type {
   CLIAdapter,
   CLIHandler,
@@ -979,8 +980,23 @@ export function createOrchestrator(
       // implements `sendAUQ`, future tg/wechat may not). Fall back to
       // the legacy text path (numbered list + user types `/1` etc.)
       // when capability absent. Per DD γ P5 2026-05-19.
+      // **toolUseId source** (2026-05-19 fix): cc fires PreToolUse hook
+      // BEFORE allocating the real `tool_use_id` for AskUserQuestion calls
+      // — `p.tool_use_id` was observed empty-string in real account smoke
+      // (raw `card.action.trigger` evidence:
+      //  `"value":{"kind":"auq","optionIdx":0,"questionIdx":0,"toolUseId":""}`).
+      // The empty string propagated into the Lark card button value and
+      // back through the click event → tripped our
+      // `CardActionValueSchema.toolUseId: z.string().min(1)` invariant
+      // (`too_small / String must contain at least 1 character(s)`).
+      //
+      // We mint a daemon-side nonce instead. `pendingAUQ` keys on it,
+      // the card carries it as the click-back identifier, click handling
+      // resolves (paneId, replyCtx, questions) from the map. Cc's empty
+      // `tool_use_id` is no longer load-bearing.
+      const auqNonce = randomUUID();
       const auqReq = buildAUQRequest({
-        toolUseId: p.tool_use_id,
+        toolUseId: auqNonce,
         tabName,
         toolInput: p.tool_input,
       });
