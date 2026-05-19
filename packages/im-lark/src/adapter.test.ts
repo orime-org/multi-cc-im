@@ -1088,6 +1088,64 @@ describe('createLarkAdapter', () => {
       expect(result).toEqual({});
     });
 
+    // 2026-05-19 hotfix: post-Feishu-config-flip real-account smoke showed
+    // the SDK delivering the FULL webhook envelope (`{schema, event_id,
+    // event_type, event:{action,...}}`) to the WS handler, not the
+    // unwrapped inner shape. `CardActionEventSchema` preprocesses to
+    // detect the outer envelope and unwrap `event` to the inner shape.
+    it('card.action.trigger: outer envelope is unwrapped and handler sees inner action', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(async () => ({ code: 0 }));
+      let receivedToolUseId: string | null = null;
+      const handler = makeHandler();
+      handler.onCardAction = async (event) => {
+        const v = event.action.value;
+        if (v.kind === 'auq') receivedToolUseId = v.toolUseId;
+        return { toast: { type: 'success' as const, content: 'ok' } };
+      };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      // The Feishu webhook envelope shape — real-account 2026-05-19 evidence.
+      const outerEnvelope = {
+        schema: '2.0',
+        event_id: 'f5db0ebed15a71cbbfcb18c92be48313',
+        token: 'c-014f7222',
+        create_time: '1779179594971499',
+        event_type: 'card.action.trigger',
+        tenant_key: '1539abc',
+        event: {
+          action: {
+            value: {
+              kind: 'auq',
+              toolUseId: 'tu_envelope',
+              questionIdx: 0,
+              optionIdx: 1,
+            },
+            tag: 'interactive_container',
+          },
+          context: { open_chat_id: 'oc_chat' },
+          operator: { open_id: 'ou_user' },
+        },
+      };
+      const result = await dispatcher.invoke('card.action.trigger', outerEnvelope);
+
+      expect(receivedToolUseId).toBe('tu_envelope');
+      expect(result).toEqual({
+        toast: { type: 'success', content: 'ok' },
+      });
+    });
+
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(async () => ({ code: 230020, msg: 'permission denied' }));

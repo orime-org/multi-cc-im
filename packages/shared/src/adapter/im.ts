@@ -46,8 +46,20 @@ export type CardActionValue = z.infer<typeof CardActionValueSchema>;
  * Source: larksuite/node-sdk + lodestar/daemon.ts:206 handleCardAction
  * (MIT). Free-text submissions land under `form_value` / `input_value`
  * (key drift across schema versions — see lodestar comment).
+ *
+ * **Envelope unwrap (2026-05-19 hotfix)**: Real-account smoke after the
+ * Feishu 「回调 tab」 config flip showed the SDK delivering the FULL
+ * webhook envelope (`{schema, event_id, token, event_type, event:{action,...}}`)
+ * to the WS handler, not the unwrapped inner shape. The lodestar
+ * `daemon.ts:206 const action = data?.action` works because lodestar
+ * runs its own Bun-served webhook receiver that pre-unwraps; we use
+ * the SDK's WS dispatcher which doesn't.
+ *
+ * Solution: `z.preprocess` — if `data.event` looks like our shape,
+ * unwrap; otherwise pass through (covers SDK-unwrapped path for tests
+ * and future SDK behavior changes).
  */
-export const CardActionEventSchema = z.object({
+const InnerCardActionShape = z.object({
   action: z.object({
     value: CardActionValueSchema,
     tag: z.string().optional(),
@@ -66,6 +78,21 @@ export const CardActionEventSchema = z.object({
     })
     .optional(),
 });
+
+export const CardActionEventSchema = z.preprocess((raw) => {
+  if (typeof raw !== 'object' || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  // Outer envelope detection: has both `event_type` (webhook framing)
+  // and a nested `event` object — unwrap to inner. Otherwise return as-is.
+  if (
+    typeof obj.event_type === 'string' &&
+    typeof obj.event === 'object' &&
+    obj.event !== null
+  ) {
+    return obj.event;
+  }
+  return raw;
+}, InnerCardActionShape);
 export type CardActionEvent = z.infer<typeof CardActionEventSchema>;
 
 /**
