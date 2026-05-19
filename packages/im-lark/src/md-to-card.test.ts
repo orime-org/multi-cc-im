@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { mdToCard, type CardSchema, type CardElement } from './md-to-card.js';
+import {
+  mdToCard,
+  splitMarkdownByTableCapacity,
+  FEISHU_CARD_TABLE_LIMIT,
+  type CardSchema,
+  type CardElement,
+} from './md-to-card.js';
+
+function countTables(md: string): number {
+  // GFM table = header row `| ... |` + alignment row `|---|...|`
+  // immediately following. Match the alignment row pattern alone (it's
+  // unique to tables); `m` flag makes `^` match line starts so we don't
+  // require a leading `\n` (chunks may start with the alignment row's
+  // header).
+  const m = md.match(/^\|[-: |]+\|$/gm);
+  return m ? m.length : 0;
+}
 
 function tagsOf(card: CardSchema | null): string[] {
   return (card?.body.elements ?? []).map((e) => e.tag);
@@ -202,5 +218,105 @@ describe('mdToCard — real cc reply fixtures', () => {
     expect(card).not.toBeNull();
     const row1 = card!.body.elements[1] as Extract<CardElement, { tag: 'column_set' }>;
     expect(row1.columns[1]?.elements[0]?.content).toBe('✅');
+  });
+});
+
+describe('splitMarkdownByTableCapacity', () => {
+  function makeTable(n: number): string {
+    return `| C${n} | V${n} |\n|---|---|\n| a | b |`;
+  }
+
+  it('exposes FEISHU_CARD_TABLE_LIMIT = 3', () => {
+    expect(FEISHU_CARD_TABLE_LIMIT).toBe(3);
+  });
+
+  it('empty / whitespace input → []', () => {
+    expect(splitMarkdownByTableCapacity('')).toEqual([]);
+    expect(splitMarkdownByTableCapacity('   \n\n  ')).toEqual([]);
+  });
+
+  it('0 tables → 1 chunk (the input)', () => {
+    const md = 'hello world\n\nno tables here';
+    expect(splitMarkdownByTableCapacity(md)).toEqual(['hello world\n\nno tables here']);
+  });
+
+  it('exactly 3 tables → 1 chunk (at limit, no split)', () => {
+    const md = `intro\n\n${makeTable(1)}\n\n${makeTable(2)}\n\n${makeTable(3)}\n\nend`;
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(1);
+    expect(countTables(chunks[0]!)).toBe(3);
+  });
+
+  it('4 tables → 2 chunks (3 + 1)', () => {
+    const md = `intro\n\n${makeTable(1)}\n\n${makeTable(2)}\n\n${makeTable(3)}\n\n${makeTable(4)}`;
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(2);
+    expect(countTables(chunks[0]!)).toBe(3);
+    expect(countTables(chunks[1]!)).toBe(1);
+  });
+
+  it('5 tables → 2 chunks (3 + 2)', () => {
+    const tables = [1, 2, 3, 4, 5].map(makeTable).join('\n\n');
+    const md = `lead\n\n${tables}\n\ntrailing`;
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(2);
+    expect(countTables(chunks[0]!)).toBe(3);
+    expect(countTables(chunks[1]!)).toBe(2);
+  });
+
+  it('6 tables → 2 chunks (3 + 3)', () => {
+    const md = [1, 2, 3, 4, 5, 6].map(makeTable).join('\n\n');
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(2);
+    expect(countTables(chunks[0]!)).toBe(3);
+    expect(countTables(chunks[1]!)).toBe(3);
+  });
+
+  it('7 tables → 3 chunks (3 + 3 + 1)', () => {
+    const md = [1, 2, 3, 4, 5, 6, 7].map(makeTable).join('\n\n');
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(3);
+    expect(countTables(chunks[0]!)).toBe(3);
+    expect(countTables(chunks[1]!)).toBe(3);
+    expect(countTables(chunks[2]!)).toBe(1);
+  });
+
+  it('a single table is never split across chunks', () => {
+    const bigTable = ['| H |', '|---|', '| r1 |', '| r2 |', '| r3 |', '| r4 |'].join('\n');
+    // Force a 4-table input where the 4th is this multi-row table —
+    // it must land in chunk 2 intact, not partially in chunk 1.
+    const md = `${makeTable(1)}\n\n${makeTable(2)}\n\n${makeTable(3)}\n\n${bigTable}`;
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[1]).toContain('r1');
+    expect(chunks[1]).toContain('r2');
+    expect(chunks[1]).toContain('r3');
+    expect(chunks[1]).toContain('r4');
+  });
+
+  it('custom tableLimit=1 → each table its own chunk', () => {
+    const md = `${makeTable(1)}\n\n${makeTable(2)}\n\n${makeTable(3)}`;
+    const chunks = splitMarkdownByTableCapacity(md, 1);
+    expect(chunks).toHaveLength(3);
+    for (const c of chunks) {
+      expect(countTables(c)).toBe(1);
+    }
+  });
+
+  it('tableLimit < 1 throws RangeError (precondition)', () => {
+    expect(() => splitMarkdownByTableCapacity('any', 0)).toThrow(RangeError);
+    expect(() => splitMarkdownByTableCapacity('any', -1)).toThrow(RangeError);
+  });
+
+  it('trailing markdown between tables follows the preceding table chunk', () => {
+    const md = `${makeTable(1)}\n\nbetween12\n\n${makeTable(2)}\n\nbetween23\n\n${makeTable(3)}\n\nbetween34\n\n${makeTable(4)}\n\ntail`;
+    const chunks = splitMarkdownByTableCapacity(md);
+    expect(chunks).toHaveLength(2);
+    // chunk 1: tables 1-3 + their intervening text + the text right
+    // before table 4 (which gets bumped to chunk 2)
+    expect(chunks[0]).toContain('between12');
+    expect(chunks[0]).toContain('between23');
+    expect(chunks[0]).toContain('between34');
+    expect(chunks[1]).toContain('tail');
   });
 });

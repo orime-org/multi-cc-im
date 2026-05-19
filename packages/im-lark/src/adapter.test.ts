@@ -643,6 +643,178 @@ describe('createLarkAdapter', () => {
       });
     });
 
+    // 2026-05-19 — Feishu rejects cards with > 3 md tables (code 230099
+    // ErrCode 11310 card table number over limit; verified via
+    // larksuite/openclaw-lark source). The adapter splits the reply
+    // into N consecutive IM messages, each ≤ 3 tables, each prefixed
+    // with a `**[X/Y]**` section marker.
+    it('table-limit split: 5-table cc reply → 2 IM messages (3 + 2) with section markers', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const fiveTables = [
+        'lead intro',
+        '',
+        '| t1 | v1 |',
+        '|---|---|',
+        '| 1 | 2 |',
+        '',
+        '| t2 | v2 |',
+        '|---|---|',
+        '| 3 | 4 |',
+        '',
+        '| t3 | v3 |',
+        '|---|---|',
+        '| 5 | 6 |',
+        '',
+        '| t4 | v4 |',
+        '|---|---|',
+        '| 7 | 8 |',
+        '',
+        '| t5 | v5 |',
+        '|---|---|',
+        '| 9 | 0 |',
+        '',
+        'closing line',
+      ].join('\n');
+      await adapter.send(fiveTables, {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+
+      expect(create).toHaveBeenCalledTimes(2);
+      const first = create.mock.calls[0]![0];
+      const second = create.mock.calls[1]![0];
+      expect(first.data.msg_type).toBe('interactive');
+      expect(second.data.msg_type).toBe('interactive');
+
+      const firstCard = JSON.parse(first.data.content) as {
+        schema: string;
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+      const secondCard = JSON.parse(second.data.content) as {
+        schema: string;
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+
+      const firstFirstEl = firstCard.body.elements[0]!;
+      const secondFirstEl = secondCard.body.elements[0]!;
+      expect(firstFirstEl.tag).toBe('markdown');
+      expect(secondFirstEl.tag).toBe('markdown');
+      expect(firstFirstEl.content).toContain('**[1/2]**');
+      expect(secondFirstEl.content).toContain('**[2/2]**');
+
+      const firstTables = firstCard.body.elements.filter((e) => e.tag === 'column_set').length;
+      const secondTables = secondCard.body.elements.filter((e) => e.tag === 'column_set').length;
+      expect(firstTables).toBeGreaterThanOrEqual(6);
+      expect(secondTables).toBeGreaterThanOrEqual(4);
+    });
+
+    it('serial send order: messages arrive in chunk order (await each)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const sendOrder: string[] = [];
+      const create = vi.fn(
+        async (opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => {
+          const card = JSON.parse(opts.data.content) as {
+            body: { elements: Array<{ tag: string; content?: string }> };
+          };
+          const markerEl = card.body.elements[0];
+          if (markerEl?.tag === 'markdown' && markerEl.content) {
+            const m = /\*\*\[(\d+)\/(\d+)\]\*\*/.exec(markerEl.content);
+            if (m) sendOrder.push(`${m[1]}/${m[2]}`);
+          }
+          await new Promise((r) => setTimeout(r, 0));
+          return { code: 0 };
+        },
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const md4 = ['| a | b |', '|---|---|', '| 1 | 2 |']
+        .concat(['', '| c | d |', '|---|---|', '| 3 | 4 |'])
+        .concat(['', '| e | f |', '|---|---|', '| 5 | 6 |'])
+        .concat(['', '| g | h |', '|---|---|', '| 7 | 8 |'])
+        .join('\n');
+      await adapter.send(md4, {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+
+      expect(sendOrder).toEqual(['1/2', '2/2']);
+    });
+
+    it('single-chunk (≤ 3 tables) preserves PR #197 surface: NO section marker', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const oneTable = ['intro', '', '| a | b |', '|---|---|', '| 1 | 2 |'].join('\n');
+      await adapter.send(oneTable, {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = create.mock.calls[0]![0];
+      const card = JSON.parse(sent.data.content) as {
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+      // First element should be the `intro` paragraph, NOT a `**[1/1]**` marker.
+      const firstEl = card.body.elements[0];
+      expect(firstEl?.tag).toBe('markdown');
+      expect(firstEl?.content).not.toContain('[1/1]');
+      expect(firstEl?.content).toContain('intro');
+    });
+
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(async () => ({ code: 230020, msg: 'permission denied' }));

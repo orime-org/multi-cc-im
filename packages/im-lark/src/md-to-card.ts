@@ -173,6 +173,83 @@ function makeTableRow(cells: string[]): CardColumnSetElement {
  *   5. On `hr` token → flush buffer, emit `{ tag: 'hr' }` element.
  *   6. Final flush returns the assembled card body.
  */
+/**
+ * Feishu Card Kit v1 hard limit: a single card schema 2.0 accepts at
+ * most this many GFM markdown tables before the backend rejects the
+ * `cardkit.v1.card.create` / `im.v1.message.create(msg_type=interactive)`
+ * call with `code:230099 ErrCode:11310 card table number over limit`.
+ *
+ * Verified by [[reference_feishu_cardkit_limits]] — three larksuite
+ * repositories (openclaw-lark / node-sdk / oapi-sdk-python) all use
+ * `FEISHU_CARD_TABLE_LIMIT = 3` as the empirical cap (2026-03 实测).
+ */
+export const FEISHU_CARD_TABLE_LIMIT = 3;
+
+/**
+ * Split a markdown string into N chunks such that each chunk contains
+ * at most `tableLimit` GFM tables. Used by the Lark adapter to send a
+ * cc reply that contains more tables than fit in one card as a series
+ * of consecutive IM messages, each a valid card.
+ *
+ * Algorithm:
+ *   1. Lex with `marked`.
+ *   2. Walk tokens, copying each token's `raw` to the current chunk.
+ *   3. When a `table` token would push the chunk's table count past
+ *      `tableLimit`, flush the current chunk and start a new one with
+ *      the table as its first token.
+ *   4. Final flush returns the array of chunks (each is a complete md
+ *      string with original surface form preserved — no token
+ *      re-serialization, so paragraph spacing / list markers etc.
+ *      survive intact).
+ *
+ * Invariant: a single table is never split across chunks. A chunk may
+ * contain less than `tableLimit` tables when followed by non-table
+ * content that exceeds the budget on the next table boundary.
+ *
+ * @param markdown - The full cc reply markdown.
+ * @param tableLimit - Per-chunk table cap. Defaults to `FEISHU_CARD_TABLE_LIMIT`.
+ * @returns Array of md string chunks; length 1 when total tables ≤ limit.
+ */
+export function splitMarkdownByTableCapacity(
+  markdown: string,
+  tableLimit: number = FEISHU_CARD_TABLE_LIMIT,
+): string[] {
+  if (tableLimit < 1) {
+    throw new RangeError(`tableLimit must be >= 1, got ${tableLimit}`);
+  }
+  const trimmed = markdown.trim();
+  if (trimmed.length === 0) return [];
+
+  const tokens = marked.lexer(trimmed);
+  const tableCount = tokens.filter((t) => t.type === 'table').length;
+  if (tableCount <= tableLimit) return [trimmed];
+
+  const chunks: string[] = [];
+  let buffer: string[] = [];
+  let bufferTables = 0;
+
+  const flush = (): void => {
+    const content = buffer.join('').trim();
+    if (content.length > 0) chunks.push(content);
+    buffer = [];
+    bufferTables = 0;
+  };
+
+  for (const token of tokens) {
+    if (token.type === 'table') {
+      if (bufferTables >= tableLimit) {
+        flush();
+      }
+      buffer.push(token.raw);
+      bufferTables += 1;
+    } else {
+      buffer.push(token.raw);
+    }
+  }
+  flush();
+  return chunks;
+}
+
 export function mdToCard(markdown: string, opts: MdToCardOpts = {}): CardSchema | null {
   const trimmed = markdown.trim();
   if (trimmed.length === 0) return null;
