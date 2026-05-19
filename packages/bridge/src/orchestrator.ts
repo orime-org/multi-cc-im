@@ -4,6 +4,11 @@ import type {
   CLIHandler,
   HookDecision,
   IMAdapter,
+  IMAUQQuestion,
+  IMAUQRequest,
+  IMAUQSender,
+  IMCardActionEvent,
+  IMCardActionResponse,
   IMHandler,
   IMReplyContext,
   IncomingMessage,
@@ -518,8 +523,105 @@ export function createOrchestrator(
     }
   }
 
+  /**
+   * Pending AskUserQuestion state — set when the adapter renders a
+   * button card, looked up when the user clicks a button. Per
+   * [DD γ P5 2026-05-19](../../docs/superpowers/specs/2026-05-19-auq-pretooluse-card-buttons-dd.md).
+   *
+   * Cleanup paths:
+   *   - successful button click → deleted in `handleCardAction`
+   *   - timeout → cc hook eventually times out 310s after; the
+   *     existing AUQ reaper unlinks the request file. The pending
+   *     entry here is dropped when the next click arrives as `stale`.
+   *
+   * Multi-cc-pane scenarios share one map keyed on cc-issued
+   * `toolUseId` (server-unique), so no collision.
+   */
+  const pendingAUQ = new Map<
+    string,
+    {
+      paneId: PaneId;
+      replyCtx: IMReplyContext;
+      questions: IMAUQQuestion[];
+      tabName: string;
+    }
+  >();
+
+  /**
+   * Dispatches a `card.action.trigger` click back to the originating
+   * workflow. P5 routes `kind:'auq'` clicks through the same
+   * `handlePermissionResponseFromIM` path used by AI-matched natural
+   * language replies (DD §9 D5-D `updatedInput.answers`), so the cc
+   * hook output stays identical regardless of click vs typed reply.
+   *
+   * `kind:'permission'` is wired in P4 (next branch).
+   */
+  async function handleCardAction(
+    event: IMCardActionEvent,
+  ): Promise<IMCardActionResponse | void> {
+    const value = event.action.value;
+    if (value.kind === 'auq') {
+      const entry = pendingAUQ.get(value.toolUseId);
+      if (!entry) {
+        log(
+          `[card.action auq] stale click toolUseId=${value.toolUseId} questionIdx=${value.questionIdx}`,
+        );
+        return {
+          toast: { type: 'warning', content: '该问题已超时或已回答' },
+        };
+      }
+      if (value.optionIdx === undefined) {
+        // Free-text branch is not surfaced as a button in P5; reaching
+        // here means a custom Lark client sent the callback shape. Drop
+        // the entry (treat as deny) so cc doesn't stall waiting.
+        log(
+          `[card.action auq] customText branch (no button source); ignoring + leaving pending`,
+        );
+        return {
+          toast: { type: 'info', content: '请直接回复消息作自由文本回答' },
+        };
+      }
+      const q = entry.questions[value.questionIdx];
+      const opt = q?.options[value.optionIdx];
+      if (!q || !opt) {
+        log(
+          `[card.action auq] invalid q/opt idx q=${value.questionIdx} o=${value.optionIdx} toolUseId=${value.toolUseId}`,
+        );
+        return { toast: { type: 'error', content: '选项无效' } };
+      }
+      const answers: Record<string, string> = { [q.text]: opt.label };
+      const questionsPayload = entry.questions.map((qq) => ({
+        question: qq.text,
+        ...(qq.header !== undefined ? { header: qq.header } : {}),
+        multiSelect: qq.multiSelect ?? false,
+        options: qq.options.map((o) => ({
+          label: o.label,
+          ...(o.description !== undefined ? { description: o.description } : {}),
+        })),
+      }));
+      pendingAUQ.delete(value.toolUseId);
+      try {
+        await handlePermissionResponseFromIM(
+          entry.paneId,
+          'allow',
+          entry.replyCtx,
+          `IM button click: ${opt.label}`,
+          { questions: questionsPayload, answers },
+        );
+      } catch (err) {
+        onError(err, { phase: 'cardActionAUQDeliver', paneId: entry.paneId });
+        return { toast: { type: 'error', content: '回答投递失败' } };
+      }
+      return { toast: { type: 'success', content: `已回答: ${opt.label}` } };
+    }
+    // `kind:'permission'` lands in P4 — log + acknowledge for now.
+    log(`[card.action] kind=${value.kind} not yet wired (P4 work)`);
+    return {};
+  }
+
   const imHandler: IMHandler = {
     onMessage: handleInbound,
+    onCardAction: handleCardAction,
     async onError(err) {
       onError(err, { phase: 'imAdapter' });
     },
@@ -873,15 +975,48 @@ export function createOrchestrator(
     // /1 = 允许 /2 = 拒绝 vocabulary doesn't fit "pick option N"). The
     // hook-receiver side (P2) makes sure we get here even in auto mode.
     if (p.tool_name === 'AskUserQuestion') {
-      const { body, optionCount, questionCount } = formatAskUserQuestionPrompt({
+      // Try the button-card path when the adapter supports it (lark
+      // implements `sendAUQ`, future tg/wechat may not). Fall back to
+      // the legacy text path (numbered list + user types `/1` etc.)
+      // when capability absent. Per DD γ P5 2026-05-19.
+      const auqReq = buildAUQRequest({
+        toolUseId: p.tool_use_id,
         tabName,
         toolInput: p.tool_input,
       });
+      const supportsAUQButton =
+        'sendAUQ' in opts.imAdapter &&
+        typeof (opts.imAdapter as unknown as IMAUQSender).sendAUQ === 'function';
       log(
-        `[AskUserQuestion forward pane=${paneId} tab=${tabName}] questions=${questionCount} options=${optionCount}`,
+        `[AskUserQuestion forward pane=${paneId} tab=${tabName}] questions=${auqReq.questions.length} path=${supportsAUQButton ? 'button' : 'text'}`,
       );
       try {
-        await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
+        if (supportsAUQButton && auqReq.questions.length > 0) {
+          // Register pending entry BEFORE send so a click that races
+          // back ahead of the local promise resolution still resolves.
+          pendingAUQ.set(auqReq.toolUseId, {
+            paneId,
+            replyCtx,
+            questions: auqReq.questions,
+            tabName,
+          });
+          try {
+            await (opts.imAdapter as unknown as IMAUQSender).sendAUQ(
+              auqReq,
+              replyCtx,
+              { sourceTag: tabName },
+            );
+          } catch (sendErr) {
+            pendingAUQ.delete(auqReq.toolUseId);
+            throw sendErr;
+          }
+        } else {
+          const { body } = formatAskUserQuestionPrompt({
+            tabName,
+            toolInput: p.tool_input,
+          });
+          await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
+        }
       } catch (err) {
         onError(err, { phase: 'preToolUseAskQuestionForward', paneId });
       }
@@ -916,6 +1051,60 @@ export function createOrchestrator(
    * missing `options`, etc.) returns a one-liner pointing to cc TUI. Throw-
    * free; preserves the daemon's "no exception in event handler" contract.
    */
+  /**
+   * Parse cc's `AskUserQuestion` `tool_input` into the typed
+   * `IMAUQRequest` the button-card path needs. Mirrors the defensive
+   * parsing of `formatAskUserQuestionPrompt` — any shape mismatch
+   * yields an empty `questions: []` so the caller falls back to the
+   * text path (which also tolerates malformed input).
+   *
+   * Per DD γ P5 2026-05-19.
+   */
+  function buildAUQRequest(o: {
+    toolUseId: string;
+    tabName: string;
+    toolInput: Record<string, unknown>;
+  }): IMAUQRequest {
+    const raw = o.toolInput.questions;
+    if (!Array.isArray(raw)) {
+      return { toolUseId: o.toolUseId, tabName: o.tabName, questions: [] };
+    }
+    const questions: IMAUQQuestion[] = [];
+    raw.forEach((q, questionIdx) => {
+      const qq = q as {
+        question?: unknown;
+        header?: unknown;
+        multiSelect?: unknown;
+        options?: unknown;
+      };
+      const text = typeof qq.question === 'string' ? qq.question : '';
+      if (text.length === 0) return;
+      const optionsRaw = Array.isArray(qq.options) ? qq.options : [];
+      const options = optionsRaw
+        .map((opt) => {
+          const oo = opt as { label?: unknown; description?: unknown };
+          const label = typeof oo.label === 'string' ? oo.label : '';
+          if (label.length === 0) return null;
+          return typeof oo.description === 'string' && oo.description.length > 0
+            ? { label, description: oo.description }
+            : { label };
+        })
+        .filter((x): x is { label: string; description?: string } => x !== null);
+      if (options.length === 0) return;
+      const question: IMAUQQuestion = {
+        questionIdx,
+        text,
+        multiSelect: qq.multiSelect === true,
+        options,
+      };
+      if (typeof qq.header === 'string' && qq.header.length > 0) {
+        question.header = qq.header;
+      }
+      questions.push(question);
+    });
+    return { toolUseId: o.toolUseId, tabName: o.tabName, questions };
+  }
+
   function formatAskUserQuestionPrompt(opts: {
     tabName: string;
     toolInput: Record<string, unknown>;
