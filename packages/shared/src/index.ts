@@ -39,8 +39,18 @@ export type {
   VoiceSender as IMVoiceSender,
   TypingIndicator as IMTypingIndicator,
   SendOptions as IMSendOptions,
+  CardActionValue as IMCardActionValue,
+  CardActionEvent as IMCardActionEvent,
+  CardActionResponse as IMCardActionResponse,
+  AUQQuestion as IMAUQQuestion,
+  AUQRequest as IMAUQRequest,
+  AUQSender as IMAUQSender,
 } from './adapter/im.js';
-export { ReplyContextSchema as IMReplyContextSchema } from './adapter/im.js';
+export {
+  ReplyContextSchema as IMReplyContextSchema,
+  CardActionValueSchema as IMCardActionValueSchema,
+  CardActionEventSchema as IMCardActionEventSchema,
+} from './adapter/im.js';
 
 // Term adapter
 export type {

@@ -1,13 +1,17 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import {
   formatErrorWithCause,
+  IMCardActionEventSchema,
   type CredentialStore,
   type IMAdapter,
+  type IMAUQRequest,
+  type IMAUQSender,
   type IMHandler,
   type IMReplyContext,
   type IMSendOptions,
   type IncomingMessage,
 } from '@multi-cc-im/shared';
+const CardActionEventSchema = IMCardActionEventSchema;
 import type { LarkCredentials } from './credentials.js';
 import { stripMarkdown } from './markdown.js';
 import { mdToCard, splitMarkdownByTableCapacity } from './md-to-card.js';
@@ -98,18 +102,6 @@ export interface CreateLarkAdapterOpts {
    * fires without waiting for 10 real retries.
    */
   cooldownAfter?: number;
-  /**
-   * Optional `card.action.trigger` handler — fires when a user clicks
-   * a button on an interactive card sent to a chat the bot is in. The
-   * event is delivered over the same WebSocket as `im.message.receive_v1`
-   * (verified via lodestar source 2026-05-18, formerly assumed
-   * webhook-only — see [DD #86 §11.6](../../../docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md#116-115-cancel-reasoning-撤销2026-05-18β-mvp-p1)).
-   *
-   * P1 (this PR) registers the event so callbacks are reachable; the
-   * actual UX (PreToolUse three-button approval cards / AUQ option
-   * rows) lands in P4 / P5. Default is a log-only stub.
-   */
-  onCardAction?: (data: unknown) => Promise<void>;
 }
 
 /**
@@ -147,7 +139,68 @@ export interface CreateLarkAdapterOpts {
  */
 const SEEN_MSGID_MAX = 200;
 
-export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
+/**
+ * Build a Lark Card Kit schema-2.0 card from an `AUQRequest`. Each
+ * option becomes an `interactive_container` (the whole row is
+ * clickable, mirrors lodestar `cards/turn.ts:386-402` pattern) carrying
+ * a `card.action.trigger` callback with `value.kind = 'auq'`. Free-text
+ * fallback is intentionally NOT rendered as a button — users can simply
+ * reply in IM (v1.9 D5/D6 natural-language path handles the routing).
+ *
+ * Per [DD γ P5 (2026-05-19)](../../../docs/superpowers/specs/2026-05-19-auq-pretooluse-card-buttons-dd.md).
+ */
+function buildAUQCard(req: IMAUQRequest): Record<string, unknown> {
+  const q = req.questions[0];
+  if (!q) {
+    throw new Error('buildAUQCard: empty questions array');
+  }
+  const elements: Record<string, unknown>[] = [];
+  // Question header
+  const heading = q.header ? `**[${q.header}]** ${q.text}` : q.text;
+  elements.push({ tag: 'markdown', content: heading });
+  // Options — one interactive_container per option, click → callback.
+  q.options.forEach((opt, optionIdx) => {
+    const desc = opt.description ? `\n${opt.description}` : '';
+    elements.push({
+      tag: 'interactive_container',
+      background_style: 'default',
+      has_border: true,
+      corner_radius: '6px',
+      padding: '8px 12px',
+      margin: '4px 0px 4px 0px',
+      behaviors: [
+        {
+          type: 'callback',
+          value: {
+            kind: 'auq',
+            toolUseId: req.toolUseId,
+            questionIdx: q.questionIdx,
+            optionIdx,
+          },
+        },
+      ],
+      elements: [
+        { tag: 'markdown', content: `**${opt.label}**${desc}` },
+      ],
+    });
+  });
+  // Free-text reminder — no button, just a hint that natural reply
+  // also works (v1.9 D5/D6 natural-language path).
+  elements.push({
+    tag: 'markdown',
+    content: '_或直接回复消息作自由文本回答_',
+  });
+  // Multi-question disclaimer (P5: render only Q[0]).
+  if (req.questions.length > 1) {
+    elements.push({
+      tag: 'markdown',
+      content: `_（cc 共问 ${req.questions.length} 题，IM 只显示第 1 题；其余请在 cc TUI 操作）_`,
+    });
+  }
+  return { schema: '2.0', body: { elements } };
+}
+
+export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter & IMAUQSender {
   const log = opts.log ?? (() => {});
 
   let wsClient: LarkWSClientShape | undefined;
@@ -362,22 +415,45 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
         },
         // β.MVP P1 (2026-05-18): `card.action.trigger` subscribe over the
         // same WSClient as `im.message.receive_v1` — see DD #86 §11.6 for
-        // the cancel reasoning that this overturns. P1 registers a
-        // log-only stub; P4 wires the real PreToolUse three-button →
-        // PermissionResponse handler via `opts.onCardAction`.
+        // the cancel reasoning that this overturns.
+        //
+        // P5 (2026-05-19): payload zod-parsed against `CardActionEventSchema`
+        // (`{action:{value:{kind, ...}}}` per lodestar daemon.ts:206 handleCardAction)
+        // and forwarded to `handler.onCardAction`. Adapter returns the
+        // handler's `{toast}` so Feishu renders the bubble; parse failure
+        // / no-handler / handler-throw all log + return empty (never crash
+        // the WS event loop).
         'card.action.trigger': async (data: unknown) => {
-          if (opts.onCardAction) {
-            try {
-              await opts.onCardAction(data);
-            } catch (err) {
-              log(
-                `[lark] card.action.trigger handler threw: ${formatErrorWithCause(err)}`,
-              );
-            }
-          } else {
+          if (!handler.onCardAction) {
             log(
-              `[lark] card.action.trigger received (no handler wired; P1 stub) data=${JSON.stringify(data).slice(0, 200)}`,
+              `[lark] card.action.trigger received (no handler wired) data=${JSON.stringify(
+                data,
+              ).slice(0, 200)}`,
             );
+            return {};
+          }
+          const parsed = CardActionEventSchema.safeParse(data);
+          if (!parsed.success) {
+            log(
+              `[lark] card.action.trigger payload failed zod parse: ${parsed.error.message.slice(0, 200)}; raw=${JSON.stringify(
+                data,
+              ).slice(0, 200)}`,
+            );
+            return {};
+          }
+          try {
+            const response = await handler.onCardAction(parsed.data);
+            return response ?? {};
+          } catch (err) {
+            log(
+              `[lark] card.action.trigger handler threw: ${formatErrorWithCause(err)}`,
+            );
+            return {
+              toast: {
+                type: 'error' as const,
+                content: '处理失败，请到 cc TUI 操作',
+              },
+            };
           }
         },
       });
@@ -607,6 +683,45 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
               `(code=${response.code}, msg=${response.msg ?? '<empty>'})`,
           );
         }
+      }
+    },
+
+    async sendAUQ(
+      req: IMAUQRequest,
+      replyCtx: IMReplyContext,
+      sendOpts: IMSendOptions = {},
+    ): Promise<void> {
+      if (!started || !client) {
+        throw new Error('createLarkAdapter: sendAUQ() called before start()');
+      }
+      if (replyCtx.imType !== 'lark') {
+        throw new Error(
+          `createLarkAdapter: sendAUQ() got non-lark replyCtx (imType=${replyCtx.imType})`,
+        );
+      }
+      const card = buildAUQCard(req);
+      // sourceTag prefixed inside the first element so it shows above
+      // the question (consistent with text-path `sendMessage` prefix
+      // placement). When tag missing, body stays as buildAUQCard wrote.
+      if (sendOpts.sourceTag) {
+        const body = card.body as { elements: Record<string, unknown>[] };
+        body.elements.unshift({
+          tag: 'markdown',
+          content: `**[${sendOpts.sourceTag}]**`,
+        });
+      }
+      const response = await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: replyCtx.chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+      if (response.code !== 0) {
+        throw new Error(
+          `lark sendAUQ failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
+        );
       }
     },
 

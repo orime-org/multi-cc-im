@@ -2,6 +2,84 @@ import { z } from 'zod';
 import type { IncomingMessage } from '../types.js';
 
 /**
+ * Card-button callback payload — what the bridge embeds in
+ * `behaviors:[{type:'callback', value: ...}]` so the adapter can route
+ * the click back to the originating workflow.
+ *
+ * Per [DD 2026-05-19](../../../docs/superpowers/specs/2026-05-19-auq-pretooluse-card-buttons-dd.md)
+ * γ pickup (P5: auq / P4: permission). Future P6+ can extend the
+ * discriminated union without touching the adapter layer.
+ *
+ * `auq` shape mirrors lodestar `session-ask.ts` state-machine ids:
+ *   - toolUseId — pairs the click back with the original cc tool call
+ *   - questionIdx — which question in the AskUserQuestion array
+ *   - optionIdx — `undefined` when the user picked the free-text option
+ *   - customText — free-text answer; only set on form-submit callback
+ *
+ * `permission` shape mirrors PR #131-#135 v1.9 PermissionRequest:
+ *   - requestId — the cc-issued request id we are responding to
+ *   - decision — `allow` (one-shot) / `allow_always` (writes
+ *     PermissionUpdate to `decision.updatedPermissions`) / `deny`
+ */
+export const CardActionValueSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('auq'),
+    toolUseId: z.string().min(1),
+    questionIdx: z.number().int().nonnegative(),
+    optionIdx: z.number().int().nonnegative().optional(),
+    customText: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal('permission'),
+    requestId: z.string().min(1),
+    decision: z.enum(['allow', 'allow_always', 'deny']),
+  }),
+]);
+export type CardActionValue = z.infer<typeof CardActionValueSchema>;
+
+/**
+ * Lark `card.action.trigger` event payload — the SDK passes this raw
+ * shape into the `EventDispatcher` `card.action.trigger` handler. The
+ * adapter zod-parses it before invoking `onCardAction` so the bridge
+ * sees a typed, validated value.
+ *
+ * Source: larksuite/node-sdk + lodestar/daemon.ts:206 handleCardAction
+ * (MIT). Free-text submissions land under `form_value` / `input_value`
+ * (key drift across schema versions — see lodestar comment).
+ */
+export const CardActionEventSchema = z.object({
+  action: z.object({
+    value: CardActionValueSchema,
+    tag: z.string().optional(),
+    form_value: z.record(z.string(), z.unknown()).optional(),
+    input_value: z.unknown().optional(),
+  }),
+  context: z
+    .object({
+      open_chat_id: z.string().optional(),
+      open_message_id: z.string().optional(),
+    })
+    .optional(),
+  operator: z
+    .object({
+      open_id: z.string().optional(),
+    })
+    .optional(),
+});
+export type CardActionEvent = z.infer<typeof CardActionEventSchema>;
+
+/**
+ * Adapter return shape for `onCardAction`. Lark renders the `toast`
+ * as a transient bubble on the user's screen acknowledging the click.
+ */
+export interface CardActionResponse {
+  toast?: {
+    type: 'success' | 'error' | 'info' | 'warning';
+    content: string;
+  };
+}
+
+/**
  * Handler that an IMAdapter pushes events into.
  * Per adapter DD (TS-first hybrid): callback inject via `start(handler)`,
  * not EventEmitter / AsyncIterator.
@@ -13,6 +91,12 @@ export interface Handler {
   onDisconnect?: (reason: string) => Promise<void>;
   /** Called for non-fatal adapter errors that the bridge should be aware of. */
   onError?: (err: Error) => Promise<void>;
+  /**
+   * Called when the user clicks a card button. Adapter has already
+   * zod-parsed the IM-native payload into `CardActionEvent`. Return a
+   * `CardActionResponse` to surface a toast back on the IM client.
+   */
+  onCardAction?: (event: CardActionEvent) => Promise<CardActionResponse | void>;
 }
 
 /**
@@ -134,6 +218,59 @@ export interface Adapter {
   send(content: string, replyCtx: ReplyContext, opts?: SendOptions): Promise<void>;
   /** Stop polling, drain in-flight requests, release sockets. */
   stop(): Promise<void>;
+}
+
+/**
+ * Single question inside an AskUserQuestion forward payload.
+ *
+ * Mirrors the cc tool input shape, projected to just what the IM
+ * adapter needs to render. Free-text submit always available via the
+ * `customText` branch of `CardActionValue.kind='auq'`.
+ */
+export interface AUQQuestion {
+  /** Index of this question inside the original tool_input.questions array. */
+  questionIdx: number;
+  /** The question prose (rendered as the card title / lead line). */
+  text: string;
+  /** Optional short header label (≤ 12 chars per cc convention). */
+  header?: string;
+  /** True when cc allows multi-select (P5 stub: still single-select UI). */
+  multiSelect?: boolean;
+  /** Option list. Buttons render one per entry. */
+  options: { label: string; description?: string }[];
+}
+
+/**
+ * AskUserQuestion forward payload — what the bridge hands to an
+ * adapter capable of native button rendering.
+ */
+export interface AUQRequest {
+  /** Pairs the click back with the originating cc tool call. */
+  toolUseId: string;
+  /** Cc tab title surfaced as `sourceTag` in the card prefix. */
+  tabName: string;
+  /** All questions in this AskUserQuestion turn; usually 1. */
+  questions: AUQQuestion[];
+}
+
+/**
+ * Capability: render an AskUserQuestion forward as a native button
+ * card. Adapter is responsible for emitting click callbacks under
+ * `behaviors:[{type:'callback', value:{kind:'auq', ...}}]` so the
+ * bridge's `onCardAction` handler can match clicks back to a pending
+ * AUQ.
+ *
+ * Per [DD 2026-05-19](../../../docs/superpowers/specs/2026-05-19-auq-pretooluse-card-buttons-dd.md)
+ * γ P5: implementing adapters (Lark) render buttons; non-implementing
+ * adapters fall through the bridge's text-path fallback (numbered list
+ * + user types `/1` etc.).
+ */
+export interface AUQSender extends Adapter {
+  sendAUQ(
+    req: AUQRequest,
+    replyCtx: ReplyContext,
+    opts?: SendOptions,
+  ): Promise<void>;
 }
 
 /** Capability: send an image attachment to a conversation. */

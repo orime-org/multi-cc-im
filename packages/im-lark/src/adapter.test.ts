@@ -38,15 +38,16 @@ function makeHandler(): IMHandler & { received: IncomingMessage[]; errors: Error
 }
 
 interface CapturedDispatcher {
-  handlers: Record<string, (data: unknown) => Promise<void> | void>;
+  handlers: Record<string, (data: unknown) => Promise<unknown> | unknown>;
   fire(eventName: string, data: unknown): Promise<void>;
+  invoke(eventName: string, data: unknown): Promise<unknown>;
 }
 
 function makeStubDispatcher(): lark.EventDispatcher & CapturedDispatcher {
-  const handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  const handlers: Record<string, (data: unknown) => Promise<unknown> | unknown> = {};
   const stub = {
     handlers,
-    register(handles: Record<string, (data: unknown) => Promise<void> | void>) {
+    register(handles: Record<string, (data: unknown) => Promise<unknown> | unknown>) {
       Object.assign(handlers, handles);
       return stub;
     },
@@ -54,6 +55,14 @@ function makeStubDispatcher(): lark.EventDispatcher & CapturedDispatcher {
       const fn = handlers[eventName];
       if (!fn) return;
       await fn(data);
+    },
+    // Same as `fire` but returns the handler's return value — used by
+    // `card.action.trigger` tests where the response is the toast shape
+    // that Feishu surfaces back to the user.
+    async invoke(eventName: string, data: unknown): Promise<unknown> {
+      const fn = handlers[eventName];
+      if (!fn) return undefined;
+      return await fn(data);
     },
   };
   // Adapter only calls `.register()` on the dispatcher (verified by the
@@ -921,6 +930,162 @@ describe('createLarkAdapter', () => {
       expect(firstEl?.content).not.toContain('[1/1]');
       // Original `intro` paragraph still present after the tag prefix.
       expect(firstEl?.content).toContain('intro');
+    });
+
+    // β.MVP P5 (2026-05-19): sendAUQ + card.action.trigger handler.
+    // Verifies the IMAUQSender capability path — adapter renders a
+    // button card per AUQRequest, zod-parses card click events, and
+    // forwards them to handler.onCardAction.
+    it('sendAUQ: builds card with interactive_container per option + sourceTag prefix', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      await adapter.sendAUQ(
+        {
+          toolUseId: 'toolu_xyz',
+          tabName: 'operations',
+          questions: [
+            {
+              questionIdx: 0,
+              text: 'Pick a database',
+              options: [
+                { label: 'Postgres', description: 'mature relational' },
+                { label: 'MongoDB', description: 'doc store' },
+              ],
+            },
+          ],
+        },
+        { imType: 'lark', openId: 'ou_user', chatId: 'oc_chat' },
+        { sourceTag: 'operations' },
+      );
+
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = create.mock.calls[0]![0];
+      expect(sent.data.msg_type).toBe('interactive');
+      const card = JSON.parse(sent.data.content) as {
+        schema: string;
+        body: {
+          elements: Array<{
+            tag: string;
+            content?: string;
+            behaviors?: Array<{ type: string; value: Record<string, unknown> }>;
+          }>;
+        };
+      };
+      expect(card.schema).toBe('2.0');
+      // First element = sourceTag prefix markdown
+      expect(card.body.elements[0]).toEqual({
+        tag: 'markdown',
+        content: '**[operations]**',
+      });
+      // Second element = question text markdown
+      expect(card.body.elements[1]?.tag).toBe('markdown');
+      expect(card.body.elements[1]?.content).toContain('Pick a database');
+      // Then 2 interactive_container (one per option)
+      const containers = card.body.elements.filter((e) => e.tag === 'interactive_container');
+      expect(containers).toHaveLength(2);
+      expect(containers[0]?.behaviors?.[0]?.value).toEqual({
+        kind: 'auq',
+        toolUseId: 'toolu_xyz',
+        questionIdx: 0,
+        optionIdx: 0,
+      });
+      expect(containers[1]?.behaviors?.[0]?.value).toEqual({
+        kind: 'auq',
+        toolUseId: 'toolu_xyz',
+        questionIdx: 0,
+        optionIdx: 1,
+      });
+    });
+
+    it('card.action.trigger: zod-parses payload + forwards to handler.onCardAction with toast return', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(async () => ({ code: 0 }));
+      let receivedEvent: unknown = null;
+      const handler = makeHandler();
+      handler.onCardAction = async (event) => {
+        receivedEvent = event;
+        return { toast: { type: 'success' as const, content: '已回答' } };
+      };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      // Simulate Lark SDK dispatching a `card.action.trigger` event.
+      const fakeEvent = {
+        action: {
+          value: {
+            kind: 'auq',
+            toolUseId: 'toolu_abc',
+            questionIdx: 0,
+            optionIdx: 1,
+          },
+          tag: 'interactive_container',
+        },
+        context: { open_chat_id: 'oc_chat' },
+        operator: { open_id: 'ou_user' },
+      };
+      const result = await dispatcher.invoke('card.action.trigger', fakeEvent);
+
+      expect(receivedEvent).not.toBeNull();
+      expect((receivedEvent as { action: { value: { optionIdx: number } } }).action.value.optionIdx).toBe(1);
+      expect(result).toEqual({ toast: { type: 'success', content: '已回答' } });
+    });
+
+    it('card.action.trigger: malformed payload → log + empty return (no crash)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(async () => ({ code: 0 }));
+      const handler = makeHandler();
+      let handlerCalled = false;
+      handler.onCardAction = async () => {
+        handlerCalled = true;
+        return {};
+      };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+
+      const result = await dispatcher.invoke('card.action.trigger', {
+        action: { value: { kind: 'unknown', foo: 'bar' } },
+      });
+
+      expect(handlerCalled).toBe(false);
+      expect(result).toEqual({});
     });
 
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
