@@ -25,25 +25,25 @@
 
 | 候选 | 1 句话 |
 |---|---|
-| **α** 不做 X | 用户手机收到图自己想办法，cc TUI 端 paste / 截图保存 + 路径发给 cc |
-| **β** daemon download + send-text path inject | 飞书入站→download→`~/.multi-cc-im/images/`→wezterm send-text `@path 请看`→cc Read 读图 |
-| **γ** inject base64 image 到 cc stdin | cc TUI 不接受 stdin image → **不可行**（cc source verified `QueryEngine attachment` 只含 structured_output/max_turns_reached/queued_command）|
-| **δ** fork lodestar wechat image path | vendor lodestar `feishu.ts:324-378` 整套 download + format → 跟 4 维 adapter 架构冲突 |
-| **ε** cc Agent SDK 程式化注入 attachment | 走非 TUI 路径起独立 cc 进程 → 不动用户 wezterm tab → 破坏「不接管用户 cc 实例」核心约束 |
-| **ζ** 转发 image URL 不下载 | 飞书 image API 需 auth token，没 public URL → **不可行** |
+| **A** 不做 X | 用户手机收到图自己想办法，cc TUI 端 paste / 截图保存 + 路径发给 cc |
+| **B** daemon download + send-text path inject | 飞书入站→download→`~/.multi-cc-im/images/`→wezterm send-text `@path 请看`→cc Read 读图 |
+| **C** inject base64 image 到 cc stdin | cc TUI 不接受 stdin image → **不可行**（cc source verified `QueryEngine attachment` 只含 structured_output/max_turns_reached/queued_command）|
+| **D** fork lodestar wechat image path | vendor lodestar `feishu.ts:324-378` 整套 download + format → 跟 4 维 adapter 架构冲突 |
+| **E** cc Agent SDK 程式化注入 attachment | 走非 TUI 路径起独立 cc 进程 → 不动用户 wezterm tab → 破坏「不接管用户 cc 实例」核心约束 |
+| **F** 转发 image URL 不下载 | 飞书 image API 需 auth token，没 public URL → **不可行** |
 
 ---
 
 ## §2 每候选尽调
 
-### α — 不做 X
+### A — 不做 X
 
 - **UX**: 多设备协同坏 — 手机看到图，要切桌面 cc TUI paste / save，断流
 - **工程量**: 0
 - **回退**: N/A
 - **何时合适**: feature 不重要 / 团队没带宽
 
-### β — daemon download + path inject（推荐）
+### B — daemon download + path inject（推荐）
 
 - **UX**: 飞书发图 → 自动到 cc 推理上下文（cc Read 读）；用户在 IM 端无需切桌面
 - **lodestar source verified**:
@@ -62,25 +62,25 @@
 - **跟 v1.1 设计兼容**: 不冲突；扩展 IncomingMessage 字段
 - **关键 verify 需求**: cc Read 工具收到 send-text 路径后是否自动 trigger，还是需要用户 cc TUI 端确认？
 
-### γ — base64 stdin inject — 不可行
+### C — base64 stdin inject — 不可行
 
 - cc QueryEngine source verify `QueryEngine.ts:829` `case 'attachment'` 只 handle 3 类，**不含 image attachment**
 - cc TUI / `--print` 模式都不接受外部 image inject
 - 排除
 
-### δ — fork lodestar 整套
+### D — fork lodestar 整套
 
 - **工程量**: 5+ 天 (vendor 大量 wechat-Bun-runtime 风格代码 + TS-strict 化 + 跟 4 维 adapter 架构对齐)
 - **跨包风险**: 极高 — 长期维护负担
 - **跟项目「不造轮子用现有 SDK」原则**: 矛盾，lodestar 是另一项目实现，不是 SDK
 - 排除
 
-### ε — cc Agent SDK 程式化路径
+### E — cc Agent SDK 程式化路径
 
 - 起独立 cc 子进程注入 image attachment 作 SDK message — 破坏项目核心约束「不破坏现有 cc 进程，bridge 不 spawn 用户 cc 实例」（CLAUDE.md 头号原则）
 - 排除
 
-### ζ — 转发 image URL 不下载
+### F — 转发 image URL 不下载
 
 - 飞书 image API 需 `Authorization: Bearer <tenant_access_token>` — 无 public URL
 - 转给 cc Read 时 cc 不能带 bearer token 访问飞书 API
@@ -90,7 +90,7 @@
 
 ## §3 对比矩阵
 
-| 维度 | α 不做 | **β download+inject** | γ stdin | δ fork | ε SDK | ζ URL |
+| 维度 | A 不做 | **β download+inject** | C stdin | D fork | E SDK | F URL |
 |---|---|---|---|---|---|---|
 | UX 完整度 | 2/10 | **8/10** | — | 8/10 | 6/10 | — |
 | 工程量（天） | 0 | **2-3** | — | 5+ | 3-4 | — |
@@ -102,37 +102,70 @@
 
 ---
 
-## §4 推荐 = β
+## §4 推荐 = B
 
 | 理由 | 矩阵证据 |
 |---|---|
 | UX 真解决用户痛点 — 多设备协同 | UX 8/10 |
 | 复用 P1 tenant-token + wezterm send-text 现有通路 | 现 P3+ verified |
 | Source verified lodestar download pattern 可借鉴 | feishu.ts:330 |
-| 不破核心约束（cc 进程 + 用 SDK） | β 跟约束 ✅ |
+| 不破核心约束（cc 进程 + 用 SDK） | B 跟约束 ✅ |
 | 工程量中等可控 | 2-3 天 |
 | γ/ζ 物理不可行；δ/ε 破约束 — 候选实际 2 选 1 (α vs β) | 矩阵列 |
 
 ---
 
-## §5 用户决定
+## §5 用户决定 — ✅ B (2026-05-19)
 
-待用户拍板。3 个 actionable 选项：
+**主路径拍板**: B = daemon 下载图 + wezterm send-text path 给 cc + cc Read 读图。
 
-| 选项 | 一句话 | 工程量 |
+理由可追溯：UX 真解决多设备协同 / lodestar source-verified pattern / 不破核心约束 / 复用 P5 tenant-token + wezterm send-text 现有通路。
+
+## §6 Routing 层 — ✅ C.1 (2026-05-19)
+
+主路径 B 解决「图怎么进 cc」，但不解决「图属于哪个 cc tab」。Routing 候选:
+
+| 候选 | 做什么 | 后果 |
 |---|---|---|
-| α | 不做，user cc TUI 自己 paste 图 | 0 |
-| **β (推荐)** | daemon 下载图 + wezterm send-text path 给 cc + cc Read 读图 | 2-3 天 |
-| 推迟 | 先 v0.1.3 release autolink fix，image feature 下个 milestone | 0 |
+| A | image msg 必带 caption + `#tab` | 飞书图片 default 不带 caption，user 行为成本高 |
+| B | 先发 `#tab` text 占 IMOrigin → 后续图绑该 tab | 简单 + 复用 IMOrigin；race 多 tab 切换会绑错 |
+| **C.1 (推荐 + 拍板)** | 发图 → 在图上 reply 文字含 `#tab` → daemon 同时 route image + text 给 tab | UX 最 native；需新建 reply parsing 层 |
+| C.2 | reply 任意历史 cc 消息 + 附图 → reply 关系绑 tab | UX 不直觉，找历史消息再 reply 成本高 |
+| D | image 必带 caption text + AI router 分诊 | user 必须配字 |
 
-### β 实施 task table（拍板后启动）
+**用户拍板**: C.1 only，**不要 B 作 fallback** — 强制 reply pattern (user 发图后必须 reply 才 route)，避免 race。
+
+### Routing 流程
+
+1. user 发图 → daemon `onMessage` 收 image → `pendingImages.set(messageId, {imagePath, downloadedAt})`，**不**立即 route 给 cc
+2. user 在该图上 reply text `#multi-cc-im 看这图` → daemon `onMessage` 收 text + `parent_id`
+3. daemon 检测 text 含 `#tab` + 查 `pendingImages.get(parent_id)`
+4. 命中 → image + reply text 同 batch route 给 cc tab：wezterm send-text `请看这张图 @<imagePath> 任务: <reply text 去掉 #tab>`
+5. cc Read 读图 + 处理文字
+6. `pendingImages` TTL 30 分钟 evict，防内存泄漏
+
+### 现状 gap 需新建
+
+| 维度 | 现状 | 新加 |
+|---|---|---|
+| inbound `parent_id` 解析 | lark adapter 不读 | 加 |
+| `IncomingMessage.replyToMessageId` 字段 | 没 | shared 加 |
+| `pendingImages` Map | 没 | orchestrator 加 |
+| TTL cleanup | 没 | orchestrator 加 setInterval 或 lazy expire |
+
+## §7 实施 task table（启动后跑）
 
 | # | 改动 | 文件 |
 |---|---|---|
-| 1 | shared `IncomingMessage` 加 `imagePaths?: string[]` 字段 | shared/types.ts |
-| 2 | `tenant-token` reuse 实现 lark image download helper | im-lark/src/inbound-image.ts (new) |
-| 3 | lark `onMessage` 检测 image_key → 调 download → IncomingMessage.imagePaths | im-lark/src/adapter.ts |
-| 4 | orchestrator 收 imagePaths → wezterm send-text `@<path> 请看` | bridge/orchestrator.ts |
-| 5 | tests (download + send + e2e mock) | *.test.ts |
-| 6 | 4 维 verify + commit + PR + 真账号 smoke | Bash |
-| 7 | DD doc 写入 conventions.md 修订记录 | docs/conventions.md |
+| 1 | shared `IncomingMessage` 加 `imagePaths?: string[]` + `replyToMessageId?: string` | `packages/shared/src/types.ts` |
+| 2 | lark `downloadAttachment` helper (借鉴 lodestar `feishu.ts:324-348` pattern + TS strict 重写) | `packages/im-lark/src/inbound-image.ts` (new) |
+| 3 | lark `onMessage` 解析 `event.message.parent_id` + image `image_key` → 调 download → 填 IncomingMessage | `packages/im-lark/src/adapter.ts` |
+| 4 | orchestrator `pendingImages: Map<msgId, {path, time}>` + TTL evict | `packages/bridge/src/orchestrator.ts` |
+| 5 | orchestrator `handleInbound` 检测 image-only msg → 暂存到 pendingImages 不 route | 同上 |
+| 6 | orchestrator `handleInbound` 检测 reply-with-text → 查 pendingImages → 联合 route image + text 给 cc | 同上 |
+| 7 | wezterm send-text 内容格式：`请看 @<imagePath>\n<text content>` | 同上 |
+| 8 | tests (download mock + pendingImages + TTL + reply routing + e2e) | *.test.ts |
+| 9 | 4 维 verify + commit + PR | Bash |
+| 10 | 真账号 smoke（手机发图 + reply `#multi-cc-im` → cc 看到 image path） | post-merge |
+| 11 | conventions.md 加 milestone entry | docs/conventions.md |
+| 12 | release v0.1.4 | Bash |
