@@ -9,7 +9,7 @@ import {
 } from '@multi-cc-im/shared';
 import type { LarkCredentials } from './credentials.js';
 import { stripMarkdown } from './markdown.js';
-import { mdToCard } from './md-to-card.js';
+import { mdToCard, splitMarkdownByTableCapacity } from './md-to-card.js';
 
 /**
  * Minimal shape of the Feishu/Lark SDK `Client` we actually use for sending.
@@ -503,27 +503,26 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       // render as `column_set` rows on mobile. Lark `msg_type: 'text'`
       // doesn't parse md, so a verbatim table would look like garbage
       // (`|...|---|`). Per [β.MVP P3](../../../docs/superpowers/specs/2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md)
-      // (2026-05-18). Returns null when no table present → falls
-      // through to text path with `stripMarkdown`.
-      const card = mdToCard(content);
-      let response: Awaited<ReturnType<LarkClientShape['im']['v1']['message']['create']>>;
-      if (card !== null) {
-        response = await client.im.v1.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: replyCtx.chatId,
-            msg_type: 'interactive',
-            content: JSON.stringify(card),
-          },
-        });
-      } else {
-        // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
-        // parse markdown, so cc's `**bold**` / `# heading` / fenced code
-        // would render literally. `stripMarkdown` simplifies the syntax
-        // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
-        // 2026-05-11.
+      // (2026-05-18).
+      //
+      // **Table-limit split (2026-05-19, post-PR-#197 fix)**: Feishu
+      // rejects cards containing more than 3 md tables with
+      // `code:230099 ErrCode:11310 card table number over limit` (see
+      // [[reference_feishu_cardkit_limits]]). We `splitMarkdownByTableCapacity`
+      // first; if the reply contains > 3 tables it gets sent as N
+      // consecutive IM messages, each ≤ 3 tables and each prefixed
+      // with a `**[X/Y]**` section marker so the user knows the reply
+      // continues. Single-chunk replies (≤ 3 tables) preserve the
+      // original PR #197 surface form — no marker, single send.
+      const chunks = splitMarkdownByTableCapacity(content);
+      const totalChunks = chunks.length;
+
+      if (totalChunks === 0) {
+        // splitMarkdownByTableCapacity returns [] only for whitespace /
+        // empty input. Defer to the legacy single-shot path so existing
+        // behavior (text msg with empty body) doesn't change.
         const stripped = stripMarkdown(content);
-        response = await client.im.v1.message.create({
+        const response = await client.im.v1.message.create({
           params: { receive_id_type: 'chat_id' },
           data: {
             receive_id: replyCtx.chatId,
@@ -531,12 +530,61 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
             content: JSON.stringify({ text: stripped }),
           },
         });
+        if (response.code !== 0) {
+          throw new Error(
+            `lark send failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
+          );
+        }
+        return;
       }
 
-      if (response.code !== 0) {
-        throw new Error(
-          `lark send failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
-        );
+      // Serial send: chunks must arrive in order on the recipient's
+      // screen. Parallel sends would let the Feishu frontend reorder
+      // them (no msg.sequence guarantee on text/interactive msg_type).
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = chunks[i]!;
+        // Section marker is only prepended when there's more than one
+        // chunk — single-table-or-fewer replies stay marker-free to
+        // preserve PR #197 surface form.
+        const bodyMd =
+          totalChunks > 1
+            ? `**[${i + 1}/${totalChunks}]**\n\n${chunk}`
+            : chunk;
+
+        const card = mdToCard(bodyMd);
+        let response: Awaited<ReturnType<LarkClientShape['im']['v1']['message']['create']>>;
+        if (card !== null) {
+          response = await client.im.v1.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: replyCtx.chatId,
+              msg_type: 'interactive',
+              content: JSON.stringify(card),
+            },
+          });
+        } else {
+          // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
+          // parse markdown, so cc's `**bold**` / `# heading` / fenced code
+          // would render literally. `stripMarkdown` simplifies the syntax
+          // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
+          // 2026-05-11.
+          const stripped = stripMarkdown(bodyMd);
+          response = await client.im.v1.message.create({
+            params: { receive_id_type: 'chat_id' },
+            data: {
+              receive_id: replyCtx.chatId,
+              msg_type: 'text',
+              content: JSON.stringify({ text: stripped }),
+            },
+          });
+        }
+
+        if (response.code !== 0) {
+          throw new Error(
+            `lark send failed chunk ${i + 1}/${totalChunks} ` +
+              `(code=${response.code}, msg=${response.msg ?? '<empty>'})`,
+          );
+        }
       }
     },
 
