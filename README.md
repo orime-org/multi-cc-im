@@ -107,6 +107,13 @@ Fuzzy matching is supported (`#front` → `frontend` if unique). Ambiguous prefi
 
 > The `/start` echo includes a `✓ terminal: <id>` line so you can verify from the IM side which terminal adapter the daemon picked at startup (wezterm vs iterm2).
 
+### Send an image to a cc tab
+
+1. Send the image to the bot — daemon downloads it to `~/.multi-cc-im/inbound/lark/images/` and acks `🖼️ 图已收到`.
+2. **Reply to that image** in IM with `#<tab> <text>` (e.g. `#frontend 看这张图的报错`). The daemon joins the on-disk path + your text and dispatches `请看 @<path>\n<text>` to the cc tab, which uses its `Read` tool to ingest the image.
+
+The stash expires 30 minutes after the image arrives. Each image is keyed by IM message id, so a second reply to the same image routes as plain text (the first reply consumed the stash). The image flow is **reply-only** — sending text *without* replying to the image won't pick up the image even if the text contains `#<tab>`.
+
 ## Tool permission flow (ask mode only)
 
 When `/start off` is active, every cc tool call asks you first:

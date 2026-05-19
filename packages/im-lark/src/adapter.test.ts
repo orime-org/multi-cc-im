@@ -193,9 +193,157 @@ describe('createLarkAdapter', () => {
       });
     });
 
-    it('non-text message_type drops silently (v1 MVP text only — DD §8.4)', async () => {
-      const { handler } = await setupAndFire({ message_type: 'image' });
+    it('image message_type without tenantTokenStore wired → degraded drop (no crash, no emit)', async () => {
+      // setupAndFire wires no tenantTokenStore / inboundImagesDir, so the
+      // adapter takes the graceful-degrade branch — log + drop, not throw.
+      const { handler } = await setupAndFire({
+        message_type: 'image',
+        content: JSON.stringify({ image_key: 'img_v3_x' }),
+      });
       expect(handler.received).toHaveLength(0);
+    });
+
+    it('sticker / file message_type still drops silently (v1 MVP text + image only)', async () => {
+      const { handler: h1 } = await setupAndFire({ message_type: 'sticker' });
+      expect(h1.received).toHaveLength(0);
+      const { handler: h2 } = await setupAndFire({ message_type: 'file' });
+      expect(h2.received).toHaveLength(0);
+    });
+
+    it('image message with tenantTokenStore + inboundImagesDir wired → downloads, emits IncomingMessage with image attachment + replyToMessageId', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const downloadCalls: Array<{
+        messageId: string;
+        fileKey: string;
+        type: string;
+      }> = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+        tenantTokenStore: { async getToken() { return 't'; }, clear() {} },
+        inboundImagesDir: '/tmp/inbox/lark/images',
+        downloadAttachmentImpl: async (messageId, fileKey, type) => {
+          downloadCalls.push({ messageId, fileKey, type });
+          return {
+            localPath: `/tmp/inbox/lark/images/${messageId}-cat.png`,
+            bytes: 4,
+            mimetype: 'image/png',
+          };
+        },
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: {
+          ...baseInboundEvent.message,
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_v3_abc' }),
+          parent_id: 'om_parent_99',
+        },
+      });
+      expect(downloadCalls).toEqual([
+        { messageId: 'om_msg_1', fileKey: 'img_v3_abc', type: 'image' },
+      ]);
+      expect(handler.received).toHaveLength(1);
+      const m = handler.received[0]!;
+      expect(m.text).toBeNull();
+      expect(m.attachments).toEqual([
+        {
+          kind: 'image',
+          localPath: '/tmp/inbox/lark/images/om_msg_1-cat.png',
+          mimetype: 'image/png',
+        },
+      ]);
+      expect(m.replyToMessageId).toBe('om_parent_99');
+    });
+
+    it('image with no parent_id → replyToMessageId is undefined (image-only first send)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+        tenantTokenStore: { async getToken() { return 't'; }, clear() {} },
+        inboundImagesDir: '/tmp/inbox/lark/images',
+        downloadAttachmentImpl: async (messageId) => ({
+          localPath: `/tmp/inbox/lark/images/${messageId}.png`,
+          bytes: 1,
+        }),
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: {
+          ...baseInboundEvent.message,
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_v3_x' }),
+        },
+      });
+      expect(handler.received[0]!.replyToMessageId).toBeUndefined();
+    });
+
+    it('image download throws → drops without crashing the WS event loop', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+        tenantTokenStore: { async getToken() { return 't'; }, clear() {} },
+        inboundImagesDir: '/tmp/inbox/lark/images',
+        downloadAttachmentImpl: async () => {
+          throw new Error('HTTP 403');
+        },
+      });
+      await adapter.start(handler);
+      await expect(
+        dispatcher.fire('im.message.receive_v1', {
+          ...baseInboundEvent,
+          message: {
+            ...baseInboundEvent.message,
+            message_type: 'image',
+            content: JSON.stringify({ image_key: 'img_v3_x' }),
+          },
+        }),
+      ).resolves.toBeUndefined();
+      expect(handler.received).toHaveLength(0);
+    });
+
+    it('text message with parent_id → replyToMessageId carries through (reply-thread routing source)', async () => {
+      const { handler } = await setupAndFire({
+        content: JSON.stringify({ text: '#frontend 看这图' }),
+        parent_id: 'om_parent_image',
+      } as unknown as Partial<typeof baseInboundEvent['message']>);
+      expect(handler.received).toHaveLength(1);
+      expect(handler.received[0]!.replyToMessageId).toBe('om_parent_image');
+      expect(handler.received[0]!.text).toBe('#frontend 看这图');
     });
 
     it('audio message → echoes keyboard-mic hint via client.im.v1.message.create + does NOT route (DD 2026-05-12 §5)', async () => {

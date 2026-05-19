@@ -20,6 +20,16 @@ export {
   type LarkWSClientShape,
 } from './adapter.js';
 export {
+  createTenantTokenStore,
+  type TenantTokenStore,
+  type TenantTokenStoreOpts,
+} from './tenant-token.js';
+export {
+  downloadAttachment,
+  type DownloadAttachmentOpts,
+  type DownloadedAttachment,
+} from './inbound-image.js';
+export {
   larkSetupSchema,
   buildLarkSetupSchema,
   type BuildLarkSetupSchemaOpts,

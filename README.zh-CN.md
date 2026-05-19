@@ -107,6 +107,13 @@ content: 写个登录页
 
 > IM 模式每次 daemon 启动会重置为 OFF。每段会话开始记得先在 IM 发 `/start`。
 
+### 发图片给某个 cc tab
+
+1. 在 IM 直接发图给 bot — daemon 下载到 `~/.multi-cc-im/inbound/lark/images/`，回 `🖼️ 图已收到` ack。
+2. **在该图上 reply** 一条 `#<tab> <文字>`（例：`#frontend 看这张图的报错`）。daemon 把本地路径 + 你的文字拼成 `请看 @<path>\n<文字>` 发到 cc tab，cc 用 `Read` 工具读图进推理上下文。
+
+30 分钟 stash 失效。同一张图被 reply 一次就消费完（再发第二条 reply 走纯文字路径）。**只走 reply 通道** — 不点图直接发 `#<tab>` 文字不会触发 image join，即使文字提到图也只当文字路由。
+
 ## 工具审批通路（仅 ask 模式）
 
 `/start off` 模式下，cc 每次要跑工具都会先来问你：

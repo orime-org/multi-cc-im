@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import {
   createLarkAdapter,
+  createTenantTokenStore,
   LarkCredentialsSchema,
   larkSetupSchema,
   type LarkCredentials,
@@ -102,7 +103,18 @@ const larkEntry: AdapterRegistryEntry = {
       filePath: paths.credentialFor('lark'),
       schema: LarkCredentialsSchema,
     });
-    return createLarkAdapter({ credentialStore, log });
+    // β.MVP P6 (2026-05-19): wire inbound image plumbing. Shared
+    // tenant-token cache (cardkit + image download both ride the same
+    // rotation window). inboundImagesDir = `~/.multi-cc-im/inbound/lark/images`.
+    // Per [DD: IM image to cc §6 C.1](../../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md).
+    const tenantTokenStore = createTenantTokenStore();
+    const inboundImagesDir = join(paths.inboundFor('lark'), 'images');
+    return createLarkAdapter({
+      credentialStore,
+      log,
+      tenantTokenStore,
+      inboundImagesDir,
+    });
   },
   guideDocPath: join(defaultDocsDir(), 'setup-feishu.md'),
 };

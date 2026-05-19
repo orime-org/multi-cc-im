@@ -579,6 +579,222 @@ describe('createOrchestrator — inbound (IM → cc)', () => {
 });
 
 // ============================================================================
+// β.MVP P6 (DD §6 C.1, 2026-05-19): image stash + reply-thread join.
+// ============================================================================
+
+describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', () => {
+  function imageMsg(opts: {
+    msgId: string;
+    imagePath: string;
+    text?: string | null;
+    replyToMessageId?: string;
+  }): IncomingMessage {
+    return {
+      msgId: opts.msgId,
+      from: 'ou_owner',
+      text: opts.text ?? null,
+      attachments: [{ kind: 'image', localPath: opts.imagePath }],
+      replyToMessageId: opts.replyToMessageId,
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000000,
+    };
+  }
+
+  function textReply(opts: {
+    msgId: string;
+    text: string;
+    replyToMessageId?: string;
+  }): IncomingMessage {
+    return {
+      msgId: opts.msgId,
+      from: 'ou_owner',
+      text: opts.text,
+      attachments: [],
+      replyToMessageId: opts.replyToMessageId,
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000000,
+    };
+  }
+
+  it('image-only msg → stashes, hints user, does NOT dispatch to cc', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_1', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    expect(term.sendTextCalls).toEqual([]);
+    expect(im.sent).toHaveLength(1);
+    expect(im.sent[0]!.content).toContain('🖼️ 图已收到');
+    await orch.stop();
+  });
+
+  it('text reply with parent_id matching stashed image → join prepends "请看 @<path>\\n" to dispatch', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_1', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    im.sent.length = 0;
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_2',
+        text: '#frontend 看这张图',
+        replyToMessageId: 'm_img_1',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.paneId).toBe(FRONTEND_PANE);
+    expect(term.sendTextCalls[0]!.content).toMatch(
+      /^请看 @\/tmp\/inbox\/cat\.png\n/,
+    );
+    await orch.stop();
+  });
+
+  it('text reply with replyToMessageId NOT in stash → normal route, no image join', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_lonely',
+        text: '#frontend hello',
+        replyToMessageId: 'm_some_other_msg',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.content).not.toMatch(/^请看 @/);
+    await orch.stop();
+  });
+
+  it('joining a stash deletes it — a second reply to the same image does not re-fuse', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_1', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_2',
+        text: '#frontend first',
+        replyToMessageId: 'm_img_1',
+      }),
+    );
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_3',
+        text: '#frontend second',
+        replyToMessageId: 'm_img_1',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(2);
+    expect(term.sendTextCalls[0]!.content).toMatch(/^请看 @\/tmp\/inbox\/cat\.png\n/);
+    expect(term.sendTextCalls[1]!.content).not.toMatch(/^请看 @/);
+    await orch.stop();
+  });
+
+  it('TTL evicts stashed image after window passes (lazy expiry on lookup)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    let mockNow = 1700000000000;
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+      pendingImageTtlMs: 1000,
+      now: () => mockNow,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_1', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    mockNow += 1500;
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_2',
+        text: '#frontend 看这张图',
+        replyToMessageId: 'm_img_1',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.content).not.toMatch(/^请看 @/);
+    await orch.stop();
+  });
+
+  it('multi-target #a #b reply → image path prepended on BOTH dispatches', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO, API_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_1', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_2',
+        text: '#frontend #api 看图',
+        replyToMessageId: 'm_img_1',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(2);
+    for (const call of term.sendTextCalls) {
+      expect(call.content).toMatch(/^请看 @\/tmp\/inbox\/cat\.png\n/);
+    }
+    await orch.stop();
+  });
+});
+
+// ============================================================================
 // Outbound: cc Stop → IM
 // ============================================================================
 

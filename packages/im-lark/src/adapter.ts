@@ -15,8 +15,14 @@ import {
 } from '@multi-cc-im/shared';
 const CardActionEventSchema = IMCardActionEventSchema;
 import type { LarkCredentials } from './credentials.js';
+import {
+  downloadAttachment as defaultDownloadAttachment,
+  type DownloadAttachmentOpts,
+  type DownloadedAttachment,
+} from './inbound-image.js';
 import { stripMarkdown } from './markdown.js';
 import { mdToCard, splitMarkdownByTableCapacity } from './md-to-card.js';
+import type { TenantTokenStore } from './tenant-token.js';
 
 /**
  * Minimal shape of the Feishu/Lark SDK `Client` we actually use for sending.
@@ -104,6 +110,32 @@ export interface CreateLarkAdapterOpts {
    * fires without waiting for 10 real retries.
    */
   cooldownAfter?: number;
+  /**
+   * Shared tenant-token cache. **Required** to enable inbound image
+   * handling; when omitted, image events are dropped with a log line
+   * (degraded mode for callers that don't wire image inbound). Same
+   * instance the cardkit client uses — keeps both auth paths riding one
+   * rotation window.
+   */
+  tenantTokenStore?: TenantTokenStore;
+  /**
+   * Absolute directory inbound images are saved to. **Required** alongside
+   * `tenantTokenStore` to enable image handling. Daemon typically derives
+   * this from `appPaths.inboundFor('lark')` + `/images`.
+   */
+  inboundImagesDir?: string;
+  /**
+   * Override the downloader. Default is the package-level
+   * `downloadAttachment`. Tests inject a stub matching the same signature
+   * so they exercise the inbound flow without real Feishu HTTP.
+   */
+  downloadAttachmentImpl?: (
+    messageId: string,
+    fileKey: string,
+    type: 'image' | 'file',
+    name: string | undefined,
+    opts: DownloadAttachmentOpts,
+  ) => Promise<DownloadedAttachment>;
 }
 
 /**
@@ -111,10 +143,14 @@ export interface CreateLarkAdapterOpts {
  * [DD #86 §11.4 M3](../../../docs/superpowers/specs/2026-05-09-lark-im-adapter-dd.md):
  *
  * **Inbound** — `lark.WSClient` long-connection (no public IP needed) +
- * `lark.EventDispatcher` registered for `im.message.receive_v1`. Each
- * inbound text event is normalized to `IncomingMessage` and pushed via
- * `handler.onMessage`. Non-text message types (image / file / audio) are
- * ignored in v1 (DD §8.4 — MVP scope text + interactive cards only).
+ * `lark.EventDispatcher` registered for `im.message.receive_v1`. Inbound
+ * text and image events are normalized to `IncomingMessage` and pushed via
+ * `handler.onMessage`; image events trigger a `downloadAttachment` call
+ * first so `attachments[].localPath` is populated before the bridge sees
+ * the message (per [DD: IM image to cc §2.B](../../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md)).
+ * Audio events get a "use the mic-to-text keyboard" echo
+ * (DD 2026-05-12). All other types (file / sticker / etc.) still drop
+ * silently in v1.
  *
  * **Outbound** — `client.im.v1.message.create` with
  * `receive_id_type='chat_id'` + `msg_type='text'`. The chat_id is sourced
@@ -421,13 +457,109 @@ export function createLarkAdapter(
             return;
           }
 
-          // Other non-text types (image / file / sticker / etc.) still drop
-          // silently — out of scope for the audio DD. Re-evaluate per type
+          // Image messages: download via Feishu resource API, surface to the
+          // bridge as an `IncomingMessage` whose `attachments[].kind='image'`
+          // carries the on-disk path. The orchestrator either stashes the
+          // image (image-only msg) or joint-routes with a follow-up reply per
+          // [DD: IM image to cc §6 C.1](../../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md).
+          //
+          // Degraded mode: if `tenantTokenStore` / `inboundImagesDir` are not
+          // wired (legacy callers, smaller tests), drop with a log line so
+          // we don't crash the WS loop trying to download with no Bearer.
+          if (data.message.message_type === 'image') {
+            if (!opts.tenantTokenStore || !opts.inboundImagesDir) {
+              log(
+                `[lark] dropping image message_id=${data.message.message_id} (image inbound not wired — opts.tenantTokenStore/inboundImagesDir missing)`,
+              );
+              return;
+            }
+            let imageKey: string;
+            try {
+              const parsed = JSON.parse(data.message.content) as {
+                image_key?: unknown;
+              };
+              if (typeof parsed.image_key !== 'string' || parsed.image_key.length === 0) {
+                log(
+                  `[lark] dropping image event with malformed content (no .image_key string)`,
+                );
+                return;
+              }
+              imageKey = parsed.image_key;
+            } catch (err) {
+              log(
+                `[lark] dropping image event with un-parseable content: ${formatErrorWithCause(err)}`,
+              );
+              return;
+            }
+            const openId = data.sender.sender_id?.open_id;
+            if (!openId) {
+              log(`[lark] dropping image event missing sender.sender_id.open_id`);
+              return;
+            }
+            const downloadImpl = opts.downloadAttachmentImpl ?? defaultDownloadAttachment;
+            let downloaded: DownloadedAttachment;
+            try {
+              downloaded = await downloadImpl(
+                data.message.message_id,
+                imageKey,
+                'image',
+                undefined,
+                {
+                  appId: creds.appId,
+                  appSecret: creds.appSecret,
+                  tenantTokenStore: opts.tenantTokenStore,
+                  outDir: opts.inboundImagesDir,
+                },
+              );
+            } catch (err) {
+              log(
+                `[lark] image download failed for ${data.message.message_id}: ${formatErrorWithCause(err)}`,
+              );
+              return;
+            }
+            const replyCtx: IMReplyContext = {
+              imType: 'lark',
+              openId,
+              chatId: data.message.chat_id,
+              messageId: data.message.message_id,
+            };
+            const parentRaw = (data.message as { parent_id?: unknown }).parent_id;
+            const replyToMessageId =
+              typeof parentRaw === 'string' && parentRaw.length > 0 ? parentRaw : undefined;
+            const msg: IncomingMessage = {
+              msgId: data.message.message_id,
+              from: openId,
+              text: null,
+              attachments: [
+                {
+                  kind: 'image',
+                  localPath: downloaded.localPath,
+                  mimetype: downloaded.mimetype,
+                },
+              ],
+              timestamp: Number(data.message.create_time),
+              replyToMessageId,
+              replyCtx,
+            };
+            try {
+              await handler.onMessage(msg);
+            } catch (err) {
+              if (handler.onError) {
+                await handler.onError(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              }
+            }
+            return;
+          }
+
+          // Other non-text types (file / sticker / etc.) still drop silently
+          // — out of scope for the audio + image DDs. Re-evaluate per type
           // if user reports the "did my message disappear?" symptom for
           // those too.
           if (data.message.message_type !== 'text') {
             log(
-              `[lark] dropping non-text message_type=${data.message.message_type} (v1 MVP text only)`,
+              `[lark] dropping non-text message_type=${data.message.message_type} (v1 MVP text + image only)`,
             );
             return;
           }
@@ -463,12 +595,16 @@ export function createLarkAdapter(
             chatId: data.message.chat_id,
             messageId: data.message.message_id,
           };
+          const parentRaw = (data.message as { parent_id?: unknown }).parent_id;
+          const replyToMessageId =
+            typeof parentRaw === 'string' && parentRaw.length > 0 ? parentRaw : undefined;
           const msg: IncomingMessage = {
             msgId: data.message.message_id,
             from: openId,
             text: textContent,
             attachments: [],
             timestamp: Number(data.message.create_time),
+            replyToMessageId,
             replyCtx,
           };
 

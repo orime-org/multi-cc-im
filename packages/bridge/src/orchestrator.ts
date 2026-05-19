@@ -120,6 +120,23 @@ const ASK_USER_QUESTION_TOOL_NAME = 'AskUserQuestion';
  */
 const PERMISSION_DIALOG_REAPER_DELAY_MS = 130_000;
 
+/**
+ * Pending-image stash TTL (ms) for the C.1 reply-thread image route.
+ * 30 minutes per [DD: IM image to cc §6](../../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md):
+ * gives users enough time to glance at an image, switch context, and
+ * compose a `#<tab>` reply on mobile, but short enough that abandoned
+ * stashes don't pile up across an idle day.
+ */
+const DEFAULT_PENDING_IMAGE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Memory-hygiene sweep interval (ms) for `pendingImages`. Lazy expiry on
+ * lookup is the primary contract; this sweep just catches "user uploads
+ * image and never replies" cases so the map doesn't grow unbounded over
+ * the daemon's lifetime.
+ */
+const DEFAULT_PENDING_IMAGE_SWEEP_INTERVAL_MS = 60_000;
+
 export interface CreateOrchestratorOpts {
   /** Lark (or future tg / etc.) IM adapter. */
   imAdapter: IMAdapter;
@@ -208,6 +225,27 @@ export interface CreateOrchestratorOpts {
   aiPermissionRequestRouter?:
     | ((opts: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
     | null;
+  /**
+   * Pending-image TTL (ms) for the C.1 reply-thread image route. Inbound
+   * image-only messages stash their on-disk path here keyed by Feishu
+   * `message_id`; a follow-up text reply whose `replyToMessageId` matches
+   * the stash within this window joins image+text into one cc dispatch.
+   * Default 30 min per [DD: IM image to cc §6](../../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md).
+   * Tests inject a small value.
+   */
+  pendingImageTtlMs?: number;
+  /**
+   * Override `Date.now()` — tests use a deterministic clock to assert
+   * `pendingImages` TTL eviction and stash timestamps.
+   */
+  now?: () => number;
+  /**
+   * Sweep interval (ms) for evicting expired `pendingImages` entries.
+   * Default 60_000. Lazy expiry on lookup is the primary contract; the
+   * sweep is just a memory hygiene backstop. Tests inject a small value
+   * to assert the sweep fires.
+   */
+  pendingImageSweepIntervalMs?: number;
 }
 
 export interface BridgeOrchestrator {
@@ -286,6 +324,35 @@ export function createOrchestrator(
   // Reaper timers per (paneId, sid, requestId) tuple.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // β.MVP P6 (DD §6 C.1, 2026-05-19): pending-image stash for the
+  // reply-thread image route. Keyed by inbound Feishu `message_id`; a
+  // follow-up text reply that targets this id via `replyToMessageId`
+  // joins image+text into one cc dispatch. In-memory only — daemon
+  // restart drops the stash (user re-sends the image).
+  interface PendingImage {
+    imagePath: string;
+    storedAt: number;
+  }
+  const pendingImages = new Map<string, PendingImage>();
+  const pendingImageTtlMs = opts.pendingImageTtlMs ?? DEFAULT_PENDING_IMAGE_TTL_MS;
+  const pendingImageSweepIntervalMs =
+    opts.pendingImageSweepIntervalMs ?? DEFAULT_PENDING_IMAGE_SWEEP_INTERVAL_MS;
+  const now = opts.now ?? Date.now;
+  let pendingImageSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Drop pendingImages entries older than the TTL. Called on every
+   * `replyToMessageId` lookup (lazy expiry — the primary contract) and
+   * by the periodic sweep (memory hygiene backstop for the case where
+   * users send images but never reply).
+   */
+  function evictExpiredPendingImages(): void {
+    const cutoff = now() - pendingImageTtlMs;
+    for (const [k, v] of pendingImages) {
+      if (v.storedAt < cutoff) pendingImages.delete(k);
+    }
+  }
+
   // PaneRegistry adapter over termAdapter.listPanes — converts
   // TermPaneInfo[] (paneId, title, cwd) to SessionInfo[] (router shape).
   const paneRegistry: PaneRegistry = {
@@ -350,6 +417,33 @@ export function createOrchestrator(
     );
     const imWorkOn = imWork !== null;
     const imWorkAuto = imWork?.auto ?? false;
+
+    // β.MVP P6 (DD §6 C.1, 2026-05-19): image-only inbound → stash, hint,
+    // and short-circuit. The user is expected to follow up with a text
+    // reply (`#<tab> 看这图`) whose Feishu `parent_id === msgId`; that
+    // follow-up triggers the join path below where `route()` returns.
+    const imageAttachment = msg.attachments.find((a) => a.kind === 'image');
+    const isImageOnly =
+      (msg.text === null || msg.text.trim().length === 0) &&
+      imageAttachment !== undefined;
+    if (isImageOnly && imageAttachment !== undefined) {
+      pendingImages.set(msg.msgId, {
+        imagePath: imageAttachment.localPath,
+        storedAt: now(),
+      });
+      log(
+        `[pendingImage] stashed msgId=${msg.msgId} path=${imageAttachment.localPath}`,
+      );
+      try {
+        await opts.imAdapter.send(
+          '🖼️ 图已收到。在该图上回复并附 `#<tab>` 把它路由给指定 cc（30 分钟内有效）',
+          msg.replyCtx as IMReplyContext,
+        );
+      } catch (err) {
+        onError(err, { phase: 'pendingImageHint' });
+      }
+      return;
+    }
 
     // Pre-ack for plain messages (v1.10, 2026-05-12): plain msgs trigger
     // an AI subprocess (cc cold-start ~2-5 s + Haiku inference ~1-2 s),
@@ -496,9 +590,37 @@ export function createOrchestrator(
       }
     }
 
-    if (result.dispatches.length > 0) {
-      const targets = result.dispatches.map((d) => displayName(d.session)).join(', ');
-      log(`[IM → ${targets}] ${truncate(result.dispatches[0]!.content, 80)}`);
+    // β.MVP P6 (DD §6 C.1, 2026-05-19): join — if this text reply targets
+    // a stashed image, prepend `请看 @<path>\n` to each dispatch so the cc
+    // tab reads the image alongside the user's text. Lazy expiry first so
+    // a 30-min-old stash doesn't accidentally fuse onto a fresh reply.
+    evictExpiredPendingImages();
+    let joinedImagePath: string | undefined;
+    if (msg.replyToMessageId !== undefined) {
+      const stash = pendingImages.get(msg.replyToMessageId);
+      if (stash !== undefined) {
+        pendingImages.delete(msg.replyToMessageId);
+        joinedImagePath = stash.imagePath;
+        log(
+          `[pendingImage] joined msgId=${msg.msgId} replyTo=${msg.replyToMessageId} path=${stash.imagePath}`,
+        );
+      }
+    }
+    const effectiveDispatches =
+      joinedImagePath !== undefined
+        ? result.dispatches.map((d) => ({
+            ...d,
+            content: `请看 @${joinedImagePath}\n${d.content}`,
+          }))
+        : result.dispatches;
+
+    if (effectiveDispatches.length > 0) {
+      const targets = effectiveDispatches
+        .map((d) => displayName(d.session))
+        .join(', ');
+      log(
+        `[IM → ${targets}] ${truncate(effectiveDispatches[0]!.content, 80)}`,
+      );
     } else if (result.echo.length > 0) {
       // Multi-line echoes (failure echo with `可用：` tab list, plain-route
       // success echo with `target:` / `content:` lines) are unfolded so
@@ -511,7 +633,7 @@ export function createOrchestrator(
 
     // Run dispatches in parallel (each pane independent).
     const dispatchErrors: string[] = (
-      await Promise.all(result.dispatches.map((d) => dispatchOne(d, msg)))
+      await Promise.all(effectiveDispatches.map((d) => dispatchOne(d, msg)))
     ).filter((e): e is string => e !== null);
 
     const echoLines: string[] = [];
@@ -1570,6 +1692,13 @@ export function createOrchestrator(
       await opts.cliAdapter.start(cliHandler);
       await opts.termAdapter.start({});
       await opts.imAdapter.start(imHandler);
+      pendingImageSweepTimer = setInterval(
+        evictExpiredPendingImages,
+        pendingImageSweepIntervalMs,
+      );
+      // setInterval keeps the daemon process alive on its own; we don't
+      // want it pinning the event loop if the daemon is otherwise idle.
+      pendingImageSweepTimer.unref();
     },
 
     async stop(): Promise<void> {
@@ -1586,6 +1715,11 @@ export function createOrchestrator(
       });
       for (const t of reaperTimers.values()) clearTimeout(t);
       reaperTimers.clear();
+      if (pendingImageSweepTimer !== null) {
+        clearInterval(pendingImageSweepTimer);
+        pendingImageSweepTimer = null;
+      }
+      pendingImages.clear();
 
       // Cleanup IM-mode lock + daemon lock so hooks immediately see
       // "daemon not running" + "local mode" after Ctrl+C. Per
