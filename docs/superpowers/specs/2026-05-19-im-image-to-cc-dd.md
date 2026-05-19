@@ -115,24 +115,57 @@
 
 ---
 
-## §5 用户决定
+## §5 用户决定 — ✅ B (2026-05-19)
 
-待用户拍板。3 个 actionable 选项：
+**主路径拍板**: B = daemon 下载图 + wezterm send-text path 给 cc + cc Read 读图。
 
-| 选项 | 一句话 | 工程量 |
+理由可追溯：UX 真解决多设备协同 / lodestar source-verified pattern / 不破核心约束 / 复用 P5 tenant-token + wezterm send-text 现有通路。
+
+## §6 Routing 层 — ✅ C.1 (2026-05-19)
+
+主路径 B 解决「图怎么进 cc」，但不解决「图属于哪个 cc tab」。Routing 候选:
+
+| 候选 | 做什么 | 后果 |
 |---|---|---|
-| A | 不做，user cc TUI 自己 paste 图 | 0 |
-| **β (推荐)** | daemon 下载图 + wezterm send-text path 给 cc + cc Read 读图 | 2-3 天 |
-| 推迟 | 先 v0.1.3 release autolink fix，image feature 下个 milestone | 0 |
+| A | image msg 必带 caption + `#tab` | 飞书图片 default 不带 caption，user 行为成本高 |
+| B | 先发 `#tab` text 占 IMOrigin → 后续图绑该 tab | 简单 + 复用 IMOrigin；race 多 tab 切换会绑错 |
+| **C.1 (推荐 + 拍板)** | 发图 → 在图上 reply 文字含 `#tab` → daemon 同时 route image + text 给 tab | UX 最 native；需新建 reply parsing 层 |
+| C.2 | reply 任意历史 cc 消息 + 附图 → reply 关系绑 tab | UX 不直觉，找历史消息再 reply 成本高 |
+| D | image 必带 caption text + AI router 分诊 | user 必须配字 |
 
-### B 实施 task table（拍板后启动）
+**用户拍板**: C.1 only，**不要 B 作 fallback** — 强制 reply pattern (user 发图后必须 reply 才 route)，避免 race。
+
+### Routing 流程
+
+1. user 发图 → daemon `onMessage` 收 image → `pendingImages.set(messageId, {imagePath, downloadedAt})`，**不**立即 route 给 cc
+2. user 在该图上 reply text `#multi-cc-im 看这图` → daemon `onMessage` 收 text + `parent_id`
+3. daemon 检测 text 含 `#tab` + 查 `pendingImages.get(parent_id)`
+4. 命中 → image + reply text 同 batch route 给 cc tab：wezterm send-text `请看这张图 @<imagePath> 任务: <reply text 去掉 #tab>`
+5. cc Read 读图 + 处理文字
+6. `pendingImages` TTL 30 分钟 evict，防内存泄漏
+
+### 现状 gap 需新建
+
+| 维度 | 现状 | 新加 |
+|---|---|---|
+| inbound `parent_id` 解析 | lark adapter 不读 | 加 |
+| `IncomingMessage.replyToMessageId` 字段 | 没 | shared 加 |
+| `pendingImages` Map | 没 | orchestrator 加 |
+| TTL cleanup | 没 | orchestrator 加 setInterval 或 lazy expire |
+
+## §7 实施 task table（启动后跑）
 
 | # | 改动 | 文件 |
 |---|---|---|
-| 1 | shared `IncomingMessage` 加 `imagePaths?: string[]` 字段 | shared/types.ts |
-| 2 | `tenant-token` reuse 实现 lark image download helper | im-lark/src/inbound-image.ts (new) |
-| 3 | lark `onMessage` 检测 image_key → 调 download → IncomingMessage.imagePaths | im-lark/src/adapter.ts |
-| 4 | orchestrator 收 imagePaths → wezterm send-text `@<path> 请看` | bridge/orchestrator.ts |
-| 5 | tests (download + send + e2e mock) | *.test.ts |
-| 6 | 4 维 verify + commit + PR + 真账号 smoke | Bash |
-| 7 | DD doc 写入 conventions.md 修订记录 | docs/conventions.md |
+| 1 | shared `IncomingMessage` 加 `imagePaths?: string[]` + `replyToMessageId?: string` | `packages/shared/src/types.ts` |
+| 2 | lark `downloadAttachment` helper (借鉴 lodestar `feishu.ts:324-348` pattern + TS strict 重写) | `packages/im-lark/src/inbound-image.ts` (new) |
+| 3 | lark `onMessage` 解析 `event.message.parent_id` + image `image_key` → 调 download → 填 IncomingMessage | `packages/im-lark/src/adapter.ts` |
+| 4 | orchestrator `pendingImages: Map<msgId, {path, time}>` + TTL evict | `packages/bridge/src/orchestrator.ts` |
+| 5 | orchestrator `handleInbound` 检测 image-only msg → 暂存到 pendingImages 不 route | 同上 |
+| 6 | orchestrator `handleInbound` 检测 reply-with-text → 查 pendingImages → 联合 route image + text 给 cc | 同上 |
+| 7 | wezterm send-text 内容格式：`请看 @<imagePath>\n<text content>` | 同上 |
+| 8 | tests (download mock + pendingImages + TTL + reply routing + e2e) | *.test.ts |
+| 9 | 4 维 verify + commit + PR | Bash |
+| 10 | 真账号 smoke（手机发图 + reply `#multi-cc-im` → cc 看到 image path） | post-merge |
+| 11 | conventions.md 加 milestone entry | docs/conventions.md |
+| 12 | release v0.1.4 | Bash |
