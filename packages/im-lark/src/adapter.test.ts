@@ -815,6 +815,114 @@ describe('createLarkAdapter', () => {
       expect(firstEl?.content).toContain('intro');
     });
 
+    // 2026-05-19 — sourceTag is carried as `opts.sourceTag` metadata, not
+    // baked into `content`. The adapter prepends `**[<tag>] [X/Y]**\n\n`
+    // on every chunk so the user knows both the producer and the section
+    // (the old approach baked `[<tag>]` into chunk[0] only, leaving
+    // chunk[1+] without source attribution — discovered in real-account
+    // smoke when an operations cc tab's 4-table audit summary split into
+    // 2 IM messages but only the first carried `[operations]`).
+    it('sourceTag + multi-chunk: every chunk gets `[<tag>] [X/Y]` prefix', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const fourTables = [
+        'lead',
+        '',
+        '| t1 | v1 |',
+        '|---|---|',
+        '| 1 | 2 |',
+        '',
+        '| t2 | v2 |',
+        '|---|---|',
+        '| 3 | 4 |',
+        '',
+        '| t3 | v3 |',
+        '|---|---|',
+        '| 5 | 6 |',
+        '',
+        '| t4 | v4 |',
+        '|---|---|',
+        '| 7 | 8 |',
+      ].join('\n');
+
+      await adapter.send(
+        fourTables,
+        { imType: 'lark', openId: 'ou_user', chatId: 'oc_chat' },
+        { sourceTag: 'operations' },
+      );
+
+      expect(create).toHaveBeenCalledTimes(2);
+      const first = create.mock.calls[0]![0];
+      const second = create.mock.calls[1]![0];
+      const firstCard = JSON.parse(first.data.content) as {
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+      const secondCard = JSON.parse(second.data.content) as {
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+      // Both chunks must carry the source-tag + section marker.
+      expect(firstCard.body.elements[0]?.content).toContain('**[operations] [1/2]**');
+      expect(secondCard.body.elements[0]?.content).toContain('**[operations] [2/2]**');
+    });
+
+    it('sourceTag + single chunk: only `[<tag>]` prefix, no [1/1] section marker', async () => {
+      const dispatcher = makeStubDispatcher();
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+
+      const oneTable = ['intro', '', '| a | b |', '|---|---|', '| 1 | 2 |'].join('\n');
+      await adapter.send(
+        oneTable,
+        { imType: 'lark', openId: 'ou_user', chatId: 'oc_chat' },
+        { sourceTag: 'frontend' },
+      );
+
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = create.mock.calls[0]![0];
+      const card = JSON.parse(sent.data.content) as {
+        body: { elements: Array<{ tag: string; content?: string }> };
+      };
+      const firstEl = card.body.elements[0];
+      expect(firstEl?.content).toContain('**[frontend]**');
+      expect(firstEl?.content).not.toContain('[1/1]');
+      // Original `intro` paragraph still present after the tag prefix.
+      expect(firstEl?.content).toContain('intro');
+    });
+
     it('throws on Lark non-zero code (surfaces code + msg)', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(async () => ({ code: 230020, msg: 'permission denied' }));

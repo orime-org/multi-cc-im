@@ -592,9 +592,15 @@ export function createOrchestrator(
     log(
       `[cc → IM] ${prefix} reply='${truncate(p.last_assistant_message, 80)}'`,
     );
-    const body = `[${prefix}]\n${p.last_assistant_message}`;
+    // Source-tag carried as metadata, not baked into content: when the
+    // adapter splits the reply across multiple IM messages (Lark
+    // FEISHU_CARD_TABLE_LIMIT) the tag must appear on every chunk —
+    // a single baked `[${prefix}]\n` only survived chunk[0]. Per
+    // [project_future_im_adapters] + reference_feishu_cardkit_limits.
     try {
-      await opts.imAdapter.send(body, replyCtx);
+      await opts.imAdapter.send(p.last_assistant_message, replyCtx, {
+        sourceTag: prefix,
+      });
     } catch (err) {
       onError(err, { phase: 'forwardStop', paneId });
     }
@@ -875,7 +881,7 @@ export function createOrchestrator(
         `[AskUserQuestion forward pane=${paneId} tab=${tabName}] questions=${questionCount} options=${optionCount}`,
       );
       try {
-        await opts.imAdapter.send(body, replyCtx);
+        await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
       } catch (err) {
         onError(err, { phase: 'preToolUseAskQuestionForward', paneId });
       }
@@ -884,14 +890,14 @@ export function createOrchestrator(
 
     const summary = summarizeToolInput(p.tool_name, p.tool_input);
     const body =
-      `[${tabName}] 准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
+      `准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
       `⏳ 10 秒内回复，否则默认放行:\n` +
       `  #${tabName} /1   = 允许\n` +
       `  #${tabName} /2   = 拒绝`;
 
     log(`[PreToolUse pane=${paneId}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
     try {
-      await opts.imAdapter.send(body, replyCtx);
+      await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
     } catch (err) {
       onError(err, { phase: 'preToolUseAsk', paneId });
     }
@@ -917,7 +923,7 @@ export function createOrchestrator(
     const questionsRaw = opts.toolInput.questions;
     if (!Array.isArray(questionsRaw) || questionsRaw.length === 0) {
       return {
-        body: `[${opts.tabName}] cc 想问你一个问题，但消息格式异常 — 请到 cc TUI 里直接回答。`,
+        body: `cc 想问你一个问题，但消息格式异常 — 请到 cc TUI 里直接回答。`,
         optionCount: 0,
         questionCount: 0,
       };
@@ -933,7 +939,7 @@ export function createOrchestrator(
     const options = Array.isArray(first.options) ? first.options : [];
 
     const lines: string[] = [
-      `[${opts.tabName}] cc 想问你:`,
+      `cc 想问你:`,
       '',
       questionText,
       '',
@@ -1160,7 +1166,7 @@ export function createOrchestrator(
       permissionSuggestions: p.permission_suggestions ?? [],
     });
     try {
-      await opts.imAdapter.send(body, replyCtx);
+      await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
     } catch (err) {
       onError(err, { phase: 'permissionDialogForward', paneId });
     }
@@ -1179,7 +1185,7 @@ export function createOrchestrator(
     permissionSuggestions: readonly unknown[];
   }): string {
     const lines: string[] = [
-      `[${o.tabName}] cc 想编辑敏感路径:`,
+      `cc 想编辑敏感路径:`,
       `  ${o.toolName}: ${truncate(o.toolInputSummary, 80)}`,
       '',
       '  1. 同意一次（仅本次调用）',
