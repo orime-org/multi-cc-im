@@ -428,7 +428,7 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter & IMAU
             log(
               `[lark] card.action.trigger received (no handler wired) data=${JSON.stringify(
                 data,
-              ).slice(0, 200)}`,
+              ).slice(0, 2000)}`,
             );
             return {};
           }
@@ -437,7 +437,7 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter & IMAU
             log(
               `[lark] card.action.trigger payload failed zod parse: ${parsed.error.message.slice(0, 200)}; raw=${JSON.stringify(
                 data,
-              ).slice(0, 200)}`,
+              ).slice(0, 2000)}`,
             );
             return {};
           }
