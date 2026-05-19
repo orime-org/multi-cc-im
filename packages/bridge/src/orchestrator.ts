@@ -8,6 +8,8 @@ import type {
   IMAUQQuestion,
   IMAUQRequest,
   IMAUQSender,
+  IMPermissionRequest,
+  IMPermissionSender,
   IMCardActionEvent,
   IMCardActionResponse,
   IMHandler,
@@ -549,6 +551,27 @@ export function createOrchestrator(
   >();
 
   /**
+   * Pending PreToolUse permission asks — set when the adapter sends a
+   * button card, looked up when the user clicks a button. Keyed on a
+   * daemon-side nonce (same lesson as P5 — cc-side IDs may be empty
+   * in pre-execution hooks; see [memory: feedback_dont_rely_on_upstream_pre_exec_ids]).
+   *
+   * Per [DD γ P4 A 2026-05-19]. Cleanup paths: successful click →
+   * deleted in `handleCardAction`; cc hook timeout 10s → reaper
+   * unlinks the Request file; map entry leaks until next click which
+   * sees the stale entry as `stale` (drops it).
+   */
+  const pendingPermission = new Map<
+    string,
+    {
+      paneId: PaneId;
+      replyCtx: IMReplyContext;
+      tabName: string;
+      toolName: string;
+    }
+  >();
+
+  /**
    * Dispatches a `card.action.trigger` click back to the originating
    * workflow. P5 routes `kind:'auq'` clicks through the same
    * `handlePermissionResponseFromIM` path used by AI-matched natural
@@ -615,8 +638,38 @@ export function createOrchestrator(
       }
       return { toast: { type: 'success', content: `已回答: ${opt.label}` } };
     }
-    // `kind:'permission'` lands in P4 — log + acknowledge for now.
-    log(`[card.action] kind=${value.kind} not yet wired (P4 work)`);
+    if (value.kind === 'permission') {
+      const entry = pendingPermission.get(value.requestId);
+      if (!entry) {
+        log(
+          `[card.action permission] stale click requestId=${value.requestId}`,
+        );
+        return {
+          toast: { type: 'warning', content: '该审批已超时或已处理' },
+        };
+      }
+      // P4 A (2026-05-19): only 'allow' / 'deny' are surfaced as buttons.
+      // 'allow_always' is a CardActionValueSchema enum value but not
+      // rendered (v1.12 D6-A lock — daemon doesn't fabricate
+      // PermissionUpdate). Defensive: if a customised client posts it,
+      // treat as plain 'allow' single-shot.
+      const ccDecision: 'allow' | 'deny' = value.decision === 'deny' ? 'deny' : 'allow';
+      pendingPermission.delete(value.requestId);
+      try {
+        await handlePermissionResponseFromIM(
+          entry.paneId,
+          ccDecision,
+          entry.replyCtx,
+          `IM button click: ${value.decision}`,
+        );
+      } catch (err) {
+        onError(err, { phase: 'cardActionPermissionDeliver', paneId: entry.paneId });
+        return { toast: { type: 'error', content: '审批投递失败' } };
+      }
+      const toastLabel = ccDecision === 'allow' ? '✅ 已允许' : '❌ 已拒绝';
+      return { toast: { type: 'success', content: toastLabel } };
+    }
+    // unreachable — discriminated union covers all kinds
     return {};
   }
 
@@ -1040,15 +1093,49 @@ export function createOrchestrator(
     }
 
     const summary = summarizeToolInput(p.tool_name, p.tool_input);
-    const body =
-      `准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
-      `⏳ 10 秒内回复，否则默认放行:\n` +
-      `  #${tabName} /1   = 允许\n` +
-      `  #${tabName} /2   = 拒绝`;
-
-    log(`[PreToolUse pane=${paneId}] ask IM: ${p.tool_name}(${truncate(summary, 40)})`);
+    const supportsPermissionButton =
+      'sendPermission' in opts.imAdapter &&
+      typeof (opts.imAdapter as unknown as IMPermissionSender).sendPermission ===
+        'function';
+    log(
+      `[PreToolUse pane=${paneId}] ask IM: ${p.tool_name}(${truncate(summary, 40)}) path=${supportsPermissionButton ? 'button' : 'text'}`,
+    );
     try {
-      await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
+      if (supportsPermissionButton) {
+        // Daemon-side nonce keyed pending entry (P5 lesson — cc-side
+        // tool_use_id is empty in pre-execution hooks).
+        const permRequestId = randomUUID();
+        pendingPermission.set(permRequestId, {
+          paneId,
+          replyCtx,
+          tabName,
+          toolName: p.tool_name,
+        });
+        try {
+          await (opts.imAdapter as unknown as IMPermissionSender).sendPermission(
+            {
+              requestId: permRequestId,
+              tabName,
+              toolName: p.tool_name,
+              toolInputSummary: truncate(summary, 200),
+            },
+            replyCtx,
+            { sourceTag: tabName },
+          );
+        } catch (sendErr) {
+          pendingPermission.delete(permRequestId);
+          throw sendErr;
+        }
+      } else {
+        // Legacy text fallback when adapter (e.g. future wechat) has
+        // no sendPermission capability.
+        const body =
+          `准备跑工具:\n  ${p.tool_name}(${summary})\n\n` +
+          `⏳ 10 秒内回复，否则默认放行:\n` +
+          `  #${tabName} /1   = 允许\n` +
+          `  #${tabName} /2   = 拒绝`;
+        await opts.imAdapter.send(body, replyCtx, { sourceTag: tabName });
+      }
     } catch (err) {
       onError(err, { phase: 'preToolUseAsk', paneId });
     }

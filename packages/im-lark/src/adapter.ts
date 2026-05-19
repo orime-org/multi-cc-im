@@ -6,6 +6,8 @@ import {
   type IMAdapter,
   type IMAUQRequest,
   type IMAUQSender,
+  type IMPermissionRequest,
+  type IMPermissionSender,
   type IMHandler,
   type IMReplyContext,
   type IMSendOptions,
@@ -200,7 +202,76 @@ function buildAUQCard(req: IMAUQRequest): Record<string, unknown> {
   return { schema: '2.0', body: { elements } };
 }
 
-export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter & IMAUQSender {
+/**
+ * Build a Lark Card Kit schema-2.0 card for a PreToolUse permission
+ * ask. Renders the tool name + a 1-line input preview, followed by
+ * a 2-button row (✅ allow / ❌ deny). Buttons use both top-level
+ * `value` AND `behaviors:[{callback}]` per
+ * [[reference_feishu_cardkit_limits]]: 200340 prevention — missing
+ * top-level `value` on a button fails Feishu client-side validation.
+ *
+ * Per [DD γ P4 A 2026-05-19] — "allow_always" intentionally NOT
+ * rendered (v1.12 D6-A lock: only cc-given suggestions can be
+ * `updatedPermissions` material; PreToolUse普通流没 cc-suggestion → no
+ * button for it).
+ */
+function buildPermissionCard(req: IMPermissionRequest): Record<string, unknown> {
+  function permissionButton(
+    label: string,
+    type: 'primary' | 'danger',
+    decision: 'allow' | 'deny',
+  ): Record<string, unknown> {
+    const payload = {
+      kind: 'permission' as const,
+      requestId: req.requestId,
+      decision,
+    };
+    return {
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: label },
+          type,
+          // Both `value` (top-level, Feishu client validation gate
+          // per openclaw-lark ask-user-question.ts) and
+          // `behaviors:[{callback}]` (event payload route).
+          value: payload,
+          behaviors: [{ type: 'callback', value: payload }],
+        },
+      ],
+    };
+  }
+
+  return {
+    schema: '2.0',
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: `**🔐 ${req.toolName}**\n\n\`${req.toolInputSummary}\``,
+        },
+        {
+          tag: 'column_set',
+          columns: [
+            permissionButton('✅ 允许', 'primary', 'allow'),
+            permissionButton('❌ 拒绝', 'danger', 'deny'),
+          ],
+        },
+        {
+          tag: 'markdown',
+          content: '_10 秒内回复，否则默认放行_',
+        },
+      ],
+    },
+  };
+}
+
+export function createLarkAdapter(
+  opts: CreateLarkAdapterOpts,
+): IMAdapter & IMAUQSender & IMPermissionSender {
   const log = opts.log ?? (() => {});
 
   let wsClient: LarkWSClientShape | undefined;
@@ -721,6 +792,42 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter & IMAU
       if (response.code !== 0) {
         throw new Error(
           `lark sendAUQ failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
+        );
+      }
+    },
+
+    async sendPermission(
+      req: IMPermissionRequest,
+      replyCtx: IMReplyContext,
+      sendOpts: IMSendOptions = {},
+    ): Promise<void> {
+      if (!started || !client) {
+        throw new Error('createLarkAdapter: sendPermission() called before start()');
+      }
+      if (replyCtx.imType !== 'lark') {
+        throw new Error(
+          `createLarkAdapter: sendPermission() got non-lark replyCtx (imType=${replyCtx.imType})`,
+        );
+      }
+      const card = buildPermissionCard(req);
+      if (sendOpts.sourceTag) {
+        const body = card.body as { elements: Record<string, unknown>[] };
+        body.elements.unshift({
+          tag: 'markdown',
+          content: `**[${sendOpts.sourceTag}]**`,
+        });
+      }
+      const response = await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: replyCtx.chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+      if (response.code !== 0) {
+        throw new Error(
+          `lark sendPermission failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
         );
       }
     },

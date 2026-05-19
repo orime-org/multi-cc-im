@@ -28,6 +28,8 @@ import type {
   IMAdapter,
   IMAUQRequest,
   IMAUQSender,
+  IMPermissionRequest,
+  IMPermissionSender,
   IMHandler,
   IMReplyContext,
   IncomingMessage,
@@ -1421,6 +1423,85 @@ describe('createOrchestrator — IM permission gate', () => {
       | undefined;
     expect(ui?.answers).toEqual({ 'Pick a database': 'MongoDB' });
     expect(Array.isArray(ui?.questions)).toBe(true);
+    await orch.stop();
+  });
+
+  // β.MVP P4 A (DD γ 2026-05-19): PreToolUse 普通流 2 按钮 (允许/拒绝).
+  // 「始终允许」按钮不放 — v1.12 D6-A 锁定 daemon 不许自创
+  // PermissionUpdate; 普通流没 cc-given suggestion 可附。
+  it('card.action permission click (allow) → handlePermissionResponseFromIM writes Response with allow', async () => {
+    const im = makeMockIM();
+    let capturedReq: IMPermissionRequest | null = null;
+    (im as unknown as IMPermissionSender).sendPermission =
+      async (req) => {
+        capturedReq = req;
+      };
+    const cli = makeMockCLI();
+    const orch = createOrchestrator({
+      stateDir: permStateDir,
+      imAdapter: im as IMAdapter,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('#frontend please run a tool'));
+    im.sent.length = 0;
+
+    const requestId = 'deadbeef';
+    await writePermissionRequestFile({
+      stateDir: permStateDir,
+      paneId: FRONTEND_PANE,
+      sessionId: SID_A,
+      requestId,
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      createdAt: Date.now(),
+    });
+
+    await cli.handler!.onPreToolUse(
+      makePreToolUse({
+        paneId: FRONTEND_PANE,
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        requestId,
+        sessionId: SID_A,
+      }),
+    );
+    expect(capturedReq).not.toBeNull();
+    const req = capturedReq as unknown as IMPermissionRequest;
+    expect(req.toolName).toBe('Bash');
+    expect(req.tabName).toBe('frontend');
+    // Daemon-side UUID nonce (NOT cc's tool_use_id which is 'tu_1' fixed in mock).
+    expect(req.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    const capturedNonce = req.requestId;
+    // Text path skipped:
+    expect(im.sent).toHaveLength(0);
+
+    // User clicks "允许" — value.requestId carries the daemon nonce
+    const toastResp = await im.handler!.onCardAction!({
+      action: {
+        value: { kind: 'permission', requestId: capturedNonce, decision: 'allow' },
+      },
+    });
+    expect(toastResp).toEqual({
+      toast: { type: 'success', content: '✅ 已允许' },
+    });
+
+    const resp = await readPermissionResponseFile(
+      permissionResponsePath({
+        stateDir: permStateDir,
+        paneId: FRONTEND_PANE,
+        sessionId: SID_A,
+        requestId,
+      }),
+    );
+    expect(resp?.decision).toBe('allow');
+    expect(resp?.reason).toContain('IM button click: allow');
     await orch.stop();
   });
 
