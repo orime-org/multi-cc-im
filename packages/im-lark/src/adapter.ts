@@ -5,6 +5,7 @@ import {
   type IMAdapter,
   type IMHandler,
   type IMReplyContext,
+  type IMSendOptions,
   type IncomingMessage,
 } from '@multi-cc-im/shared';
 import type { LarkCredentials } from './credentials.js';
@@ -488,7 +489,11 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       await ready;
     },
 
-    async send(content: string, replyCtx: IMReplyContext): Promise<void> {
+    async send(
+      content: string,
+      replyCtx: IMReplyContext,
+      opts: IMSendOptions = {},
+    ): Promise<void> {
       if (!started || !client) {
         throw new Error('createLarkAdapter: send() called before start()');
       }
@@ -497,6 +502,14 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
           `createLarkAdapter: send() got non-lark replyCtx (imType=${replyCtx.imType})`,
         );
       }
+
+      // `sourceTag` is the producer identity (cc tab title, system role)
+      // surfaced as a prefix on every chunk. Per
+      // [project_future_im_adapters] this is a base-interface concept;
+      // bridge passes it as metadata so the adapter can repeat / format
+      // it on every chunk (the previous baked-in `[tab]\n` approach only
+      // survived chunk[0]).
+      const sourceTag = opts.sourceTag ?? null;
 
       // Try the card path first: if cc's reply contains a GFM table,
       // `mdToCard` emits a Lark Card Kit schema-2.0 card whose tables
@@ -511,9 +524,11 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       // [[reference_feishu_cardkit_limits]]). We `splitMarkdownByTableCapacity`
       // first; if the reply contains > 3 tables it gets sent as N
       // consecutive IM messages, each ≤ 3 tables and each prefixed
-      // with a `**[X/Y]**` section marker so the user knows the reply
-      // continues. Single-chunk replies (≤ 3 tables) preserve the
-      // original PR #197 surface form — no marker, single send.
+      // with a `**[<sourceTag>] [X/Y]**` section marker so the user
+      // knows the reply continues + which cc produced it. Single-chunk
+      // replies (≤ 3 tables) prepend just `**[<sourceTag>]**` when a
+      // tag was passed; with no tag they stay marker-free to preserve
+      // PR #197 surface form.
       const chunks = splitMarkdownByTableCapacity(content);
       const totalChunks = chunks.length;
 
@@ -543,13 +558,20 @@ export function createLarkAdapter(opts: CreateLarkAdapterOpts): IMAdapter {
       // them (no msg.sequence guarantee on text/interactive msg_type).
       for (let i = 0; i < totalChunks; i++) {
         const chunk = chunks[i]!;
-        // Section marker is only prepended when there's more than one
-        // chunk — single-table-or-fewer replies stay marker-free to
-        // preserve PR #197 surface form.
-        const bodyMd =
-          totalChunks > 1
-            ? `**[${i + 1}/${totalChunks}]**\n\n${chunk}`
-            : chunk;
+        // Prefix policy:
+        //   - sourceTag + multi-chunk: `**[<tag>] [i+1/N]**\n\n<chunk>`
+        //   - sourceTag + single chunk: `**[<tag>]**\n\n<chunk>`
+        //   - no sourceTag + multi-chunk: `**[i+1/N]**\n\n<chunk>`
+        //   - no sourceTag + single chunk: `<chunk>` (PR #197 surface)
+        let prefix = '';
+        if (sourceTag !== null && totalChunks > 1) {
+          prefix = `**[${sourceTag}] [${i + 1}/${totalChunks}]**\n\n`;
+        } else if (sourceTag !== null) {
+          prefix = `**[${sourceTag}]**\n\n`;
+        } else if (totalChunks > 1) {
+          prefix = `**[${i + 1}/${totalChunks}]**\n\n`;
+        }
+        const bodyMd = `${prefix}${chunk}`;
 
         const card = mdToCard(bodyMd);
         let response: Awaited<ReturnType<LarkClientShape['im']['v1']['message']['create']>>;

@@ -90,6 +90,32 @@ export const ReplyContextSchema = z.discriminatedUnion('imType', [
 ]);
 
 /**
+ * Optional per-send metadata. Lets the bridge tell the adapter *who* produced
+ * this message so the adapter can render the source identity in an IM-native
+ * way (Lark: section-marker prefix; Telegram: reply-quote; etc.).
+ *
+ * **Why an opts param instead of stuffing `[tab]` into `content`**: when the
+ * adapter splits a long reply across multiple IM messages (Lark Card Kit
+ * ≤ 3 tables per card — see `reference_feishu_cardkit_limits` memory) the
+ * source tag must appear on every chunk, not just the first. Carrying it as
+ * metadata lets each adapter decide how to repeat / format it per chunk.
+ *
+ * **Per [project_future_im_adapters]**: this is a base-interface concept —
+ * tg / wechat will also want to disclose the source cc tab — so it lives in
+ * shared, not in lark-specific code.
+ */
+export interface SendOptions {
+  /**
+   * Human-readable identifier of the message producer (e.g. cc tab title
+   * `"operations"`, system role `"daemon"`). Adapters may render it as a
+   * card prefix, reply quote, sender alias, or ignore it entirely. Leave
+   * undefined for daemon-self echo (`/list` output, error notifications)
+   * where the source is the daemon itself and surfacing a tag would clutter.
+   */
+  sourceTag?: string;
+}
+
+/**
  * Core IMAdapter interface — every IM channel implementation (lark / telegram /
  * slack / etc.) must satisfy this. Capabilities below extend this with optional
  * features; use type guards in `../guards.ts` to narrow before calling them.
@@ -99,8 +125,13 @@ export interface Adapter {
   readonly name: string;
   /** Begin polling / connecting. Hands events to the supplied handler. */
   start(handler: Handler): Promise<void>;
-  /** Send plain text back to the conversation identified by `replyCtx`. */
-  send(content: string, replyCtx: ReplyContext): Promise<void>;
+  /**
+   * Send a message back to the conversation identified by `replyCtx`. The
+   * optional `opts.sourceTag` lets callers disclose the producer (e.g. cc
+   * tab title) so the adapter can prefix / quote it on every chunk when the
+   * message gets split across multiple IM messages. See `SendOptions`.
+   */
+  send(content: string, replyCtx: ReplyContext, opts?: SendOptions): Promise<void>;
   /** Stop polling, drain in-flight requests, release sockets. */
   stop(): Promise<void>;
 }

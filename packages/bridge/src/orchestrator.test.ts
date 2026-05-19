@@ -79,12 +79,20 @@ const FRAME_INFO: TermPaneInfo = {
 // ============================================================================
 
 interface MockIM extends IMAdapter {
-  sent: { content: string; replyCtx: IMReplyContext }[];
+  sent: {
+    content: string;
+    replyCtx: IMReplyContext;
+    sourceTag: string | undefined;
+  }[];
   handler: IMHandler | undefined;
 }
 
 function makeMockIM(): MockIM {
-  const sent: { content: string; replyCtx: IMReplyContext }[] = [];
+  const sent: {
+    content: string;
+    replyCtx: IMReplyContext;
+    sourceTag: string | undefined;
+  }[] = [];
   let handler: IMHandler | undefined;
   return {
     name: 'lark-mock',
@@ -95,8 +103,8 @@ function makeMockIM(): MockIM {
     async start(h) {
       handler = h;
     },
-    async send(content, replyCtx) {
-      sent.push({ content, replyCtx });
+    async send(content, replyCtx, opts) {
+      sent.push({ content, replyCtx, sourceTag: opts?.sourceTag });
     },
     async stop() {
       handler = undefined;
@@ -599,7 +607,10 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
     );
 
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('[frontend]\ndone');
+    // Source tag carried as metadata, not baked into content (per
+    // `IMSendOptions.sourceTag` 2026-05-19 redesign).
+    expect(im.sent[0]?.content).toBe('done');
+    expect(im.sent[0]?.sourceTag).toBe('frontend');
     expect(im.sent[0]?.replyCtx).toEqual({
       imType: 'lark',
       openId: 'ou_owner',
@@ -727,7 +738,8 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
         }),
       );
       expect(im.sent).toHaveLength(1);
-      expect(im.sent[0]?.content).toBe(`[frontend]\nreply ${turn}`);
+      expect(im.sent[0]?.content).toBe(`reply ${turn}`);
+      expect(im.sent[0]?.sourceTag).toBe('frontend');
       im.sent.length = 0;
     }
     await orch.stop();
@@ -757,7 +769,8 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
       }),
     );
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('[frontend]\nawakened');
+    expect(im.sent[0]?.content).toBe('awakened');
+    expect(im.sent[0]?.sourceTag).toBe('frontend');
     await orch.stop();
   });
 
@@ -799,8 +812,10 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
       }),
     );
     expect(im.sent).toHaveLength(2);
-    const replies = im.sent.map((s) => s.content).sort();
-    expect(replies).toEqual(['[api]\napi reply', '[frontend]\nfrontend reply']);
+    const replies = im.sent
+      .map((s) => `[${s.sourceTag ?? '?'}] ${s.content}`)
+      .sort();
+    expect(replies).toEqual(['[api] api reply', '[frontend] frontend reply']);
     await orch.stop();
   });
 
@@ -826,7 +841,8 @@ describe('createOrchestrator — outbound (cc Stop → IM)', () => {
 
     await cli.handler!.onStop(makeStop({ paneId: 99 as PaneId, message: 'lone' }));
     expect(im.sent).toHaveLength(1);
-    expect(im.sent[0]?.content).toBe('[(pane 99)]\nlone');
+    expect(im.sent[0]?.content).toBe('lone');
+    expect(im.sent[0]?.sourceTag).toBe('(pane 99)');
     await orch.stop();
   });
 });
@@ -1220,8 +1236,8 @@ describe('createOrchestrator — IM permission gate', () => {
     expect(body).toContain('你的考虑');
     // Question text visible:
     expect(body).toContain('Pick a database');
-    // Tab visible:
-    expect(body).toContain('frontend');
+    // Tab carried as metadata, not baked into body (2026-05-19 redesign).
+    expect(im.sent[0]?.sourceTag).toBe('frontend');
     // NOT the regular "准备跑工具" format:
     expect(body).not.toContain('准备跑工具');
     // NOT the /1 /2 allow/deny prompt:

@@ -38,6 +38,7 @@ export type {
   FileSender as IMFileSender,
   VoiceSender as IMVoiceSender,
   TypingIndicator as IMTypingIndicator,
+  SendOptions as IMSendOptions,
 } from './adapter/im.js';
 export { ReplyContextSchema as IMReplyContextSchema } from './adapter/im.js';
 
