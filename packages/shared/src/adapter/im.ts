@@ -281,6 +281,46 @@ export interface AUQRequest {
 }
 
 /**
+ * PreToolUse permission request payload — what the bridge hands to an
+ * adapter capable of native button rendering (2-button: allow / deny).
+ *
+ * **2-button only** (DD γ P4 A pick 2026-05-19): "allow_always" is NOT
+ * surfaced for normal PreToolUse because there's no cc-given
+ * permission_suggestion to attach to it — per v1.12 D6-A lock,
+ * daemon doesn't fabricate `updatedPermissions`. To permanently allow
+ * a tool, use `/start auto`.
+ */
+export interface PermissionRequest {
+  /** Daemon-controlled id, passed back through `card.action.trigger`
+   * `value.requestId` on click. Independent of cc-side `tool_use_id`
+   * which is empty in PreToolUse for pre-execution hooks. */
+  requestId: string;
+  /** Cc tab title surfaced as `sourceTag` in the card prefix. */
+  tabName: string;
+  /** The tool cc is about to invoke (rendered in card header). */
+  toolName: string;
+  /** Truncated single-line preview of `tool_input` for card body. */
+  toolInputSummary: string;
+}
+
+/**
+ * Capability: render a PreToolUse permission ask as a native
+ * 2-button card (allow / deny). Click callbacks come back through
+ * `card.action.trigger` with `value.kind = 'permission'`.
+ *
+ * Per [DD γ P4 A 2026-05-19](../../../docs/superpowers/specs/2026-05-19-auq-pretooluse-card-buttons-dd.md):
+ * implementing adapters (Lark) render 2 buttons; non-implementing
+ * adapters fall through to bridge's text-path fallback.
+ */
+export interface PermissionSender extends Adapter {
+  sendPermission(
+    req: PermissionRequest,
+    replyCtx: ReplyContext,
+    opts?: SendOptions,
+  ): Promise<void>;
+}
+
+/**
  * Capability: render an AskUserQuestion forward as a native button
  * card. Adapter is responsible for emitting click callbacks under
  * `behaviors:[{type:'callback', value:{kind:'auq', ...}}]` so the

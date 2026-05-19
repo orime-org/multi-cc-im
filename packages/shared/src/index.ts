@@ -45,6 +45,8 @@ export type {
   AUQQuestion as IMAUQQuestion,
   AUQRequest as IMAUQRequest,
   AUQSender as IMAUQSender,
+  PermissionRequest as IMPermissionRequest,
+  PermissionSender as IMPermissionSender,
 } from './adapter/im.js';
 export {
   ReplyContextSchema as IMReplyContextSchema,
