@@ -97,6 +97,15 @@ export const IncomingMessageSchema = z.object({
   attachments: z.array(AttachmentSchema).default([]),
   timestamp: z.number(),
   /**
+   * IM-native id of the message this one is a *reply* to (if any). Distinct
+   * from {@link IncomingMessageSchema.replyCtx} (which is *outbound* threading
+   * context for daemon→IM responses). Per [DD: IM image to cc §6 C.1](../../docs/superpowers/specs/2026-05-19-im-image-to-cc-dd.md)
+   * the orchestrator uses this id to look up the parent image in `pendingImages`
+   * and joint-route image+text to the cc tab. Adapters that don't surface a
+   * native reply concept simply leave it `undefined`.
+   */
+  replyToMessageId: z.string().min(1).optional(),
+  /**
    * Adapter-specific reply context, discriminated by `imType`. Bridge stores
    * it per-pane (`<paneId>.IMOrigin`) so that when cc Stop hook fires for
    * that pane, the reply can be routed back via `IMAdapter.send(content,

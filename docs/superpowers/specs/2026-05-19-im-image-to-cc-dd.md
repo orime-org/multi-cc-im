@@ -1,6 +1,6 @@
 # DD: 飞书 IM 入站图片 → cc tab forward
 
-> 状态: ⏳ 候选 + 尽调完，等用户拍板修法路径
+> 状态: ✅ IMPLEMENTED in PR #209（2026-05-19）— 主路径 B + routing C.1 双拍板 + §7 12-step task table 1-9 + 11-12 完成；task 10 (真账号 smoke) 标 post-merge follow-up
 > 日期: 2026-05-19
 > 触发: 用户 — 「研究一下怎么在飞书上发图片」 → 入站 image msg forward 给 cc
 
