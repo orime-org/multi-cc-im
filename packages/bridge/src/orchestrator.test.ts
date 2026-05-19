@@ -2335,13 +2335,13 @@ describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
     const cli = makeMockCLI();
     const errSeen: Array<{ phase: string }> = [];
     let sendCallCount = 0;
-    im.send = async (content, replyCtx) => {
+    im.send = async (content, replyCtx, opts) => {
       sendCallCount++;
       if (sendCallCount === 1) {
         // First call is pre-ack — fail it.
         throw new Error('lark API down');
       }
-      im.sent.push({ content, replyCtx });
+      im.sent.push({ content, replyCtx, sourceTag: opts?.sourceTag });
     };
     const orch = createOrchestrator({
       stateDir: preAckStateDir,
