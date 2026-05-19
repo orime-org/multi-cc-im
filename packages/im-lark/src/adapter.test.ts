@@ -613,7 +613,12 @@ describe('createLarkAdapter', () => {
 
     it('text path preserved: cc reply WITHOUT table still goes msg_type=text + stripMarkdown', async () => {
       const dispatcher = makeStubDispatcher();
-      const create = vi.fn(async () => ({ code: 0 }));
+      const create = vi.fn(
+        async (_opts: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
         buildClient: () => ({ im: { v1: { message: { create } } } }),
