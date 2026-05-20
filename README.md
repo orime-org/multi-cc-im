@@ -32,11 +32,7 @@ Bridge multiple Claude Code (cc) sessions running in **WezTerm or iTerm2** tabs 
 | 步 | 做什么 | 做完得到 |
 |---|---|---|
 | 1 | 浏览器开 https://open.feishu.cn/app 登录 → 「创建应用」→「自建应用」→ 填名称 + 描述 | 一个空 app |
-| 2 | 左侧「权限管理」→ 勾下面 4 个 scope | bot 能收发文字 + 拉图 |
-| 2a | `im:message`（或 `im:message:readonly` 任一）| 收 IM 入站事件 + 发出站 |
-| 2b | `im:message.history:readonly`（推荐勾上 — 图片下载也用这个）| 拉 `/im/v1/messages/{id}/resources/{key}` 图 |
-| 2c | `im:resource`（lodestar 历史要求，留作兜底）| — |
-| 2d | `im:chat`（自建群可选）| — |
+| 2 | 左侧「权限管理」→ 勾 `im:message` 「获取与发送单聊、群组消息」 | bot 能收 IM 事件 + 发出站文字 + 拉 `/im/v1/messages/{id}/resources/{key}` 图（图片下载共用此 scope，不另设 `im:resource`）|
 | 3 | 左侧「事件与回调」→「事件订阅」→ 添加 `im.message.receive_v1` | 用户消息进 daemon |
 | 3b | 同页加 `card.action.trigger`（卡片按钮回调）| AskUserQuestion / 权限审批按钮起效 |
 | 4 | 左侧「应用功能」→「机器人」→ 启用 | app 在飞书里以 bot 身份能被加好友 / 拉群 |
