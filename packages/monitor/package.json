@@ -1,6 +1,6 @@
 {
   "name": "@multi-cc-im/monitor",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "private": true,
   "type": "module",
