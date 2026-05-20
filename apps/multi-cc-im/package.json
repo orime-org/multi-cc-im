@@ -27,7 +27,7 @@
   "author": "orime-org and contributors",
   "type": "module",
   "bin": {
-    "multi-cc-im": "./dist/cli.js"
+    "multi-cc-im": "dist/cli.js"
   },
   "files": [
     "dist",
