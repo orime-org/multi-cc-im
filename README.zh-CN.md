@@ -1,10 +1,10 @@
 # multi-cc-im
 
-[English](README.md) | **中文**
+[English](https://github.com/orime-org/multi-cc-im/blob/main/README.md) | **中文**
 
 把跑在 **WezTerm 或 iTerm2 tabs 里**的多个 Claude Code (cc) session 桥接到飞书 (Lark) bot。手机 IM 端能远程驱动各 cc tab；回复和工具审批反向到 IM。
 
-> **v0.1.4**（2026-05-20）— 入站图片 + reply-thread 路由。详见 [`docs/conventions.md`](docs/conventions.md) 修订日志 或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.4)。
+> **v0.1.5**（2026-05-20）— README 相对链接全改 absolute github URL，npm 包页正确渲染。详见 [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) 修订日志 或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.5)。
 
 **两类受众**：
 - **[Part 1 — 用户使用](#part-1--用户使用)** — 安装 / 飞书 app 配置 / IM 命令 / 故障排查。只想用 multi-cc-im 看这部分。
@@ -212,7 +212,7 @@ multi-cc-im/
 
 ## 2.4 TDD 节奏
 
-红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`CLAUDE.md`](CLAUDE.md) + [`docs/dev.md`](docs/dev.md)。
+红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) + [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md)。
 
 ## 2.5 加一个 IM adapter（Telegram / Slack / 等）
 
@@ -228,7 +228,7 @@ multi-cc-im/
 
 ## 2.6 加一个终端 adapter（tmux / kitty / Ghostty / 等）
 
-参考 [`docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md`](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) + `packages/term-iterm2/` 实测代码。
+参考 [`docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) + `packages/term-iterm2/` 实测代码。
 
 | # | 做什么 |
 |---|---|
@@ -244,24 +244,24 @@ multi-cc-im/
 
 ## 2.7 加一个 CLI adapter（codex / aider / 等）
 
-cc adapter 耦合 cc-specific hook（`PreToolUse` / `Stop` / `PermissionRequest`）+ jsonl transcript。新 CLI 需等价扩展点；若无 → 提 DD 先不动 — 见 [`CLAUDE.md`](CLAUDE.md)「不破坏现有 cc 进程」。
+cc adapter 耦合 cc-specific hook（`PreToolUse` / `Stop` / `PermissionRequest`）+ jsonl transcript。新 CLI 需等价扩展点；若无 → 提 DD 先不动 — 见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「不破坏现有 cc 进程」。
 
 ## 2.8 重大决策（DD）流程
 
-凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`CLAUDE.md`](CLAUDE.md)「重大决策 DD 流程」。
+凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「重大决策 DD 流程」。
 
 ## 2.9 文档导航
 
 | 文档 | 何时读 |
 |---|---|
-| [`CLAUDE.md`](CLAUDE.md) | AI 干活纪律（根因 / DD / 编码准则）|
-| [`docs/conventions.md`](docs/conventions.md) | 状态总表 + 修订日志 + 项目特定规范 |
-| [`docs/architecture.md`](docs/architecture.md) | 架构图 + 状态 schema + 文件 IPC |
-| [`docs/dev.md`](docs/dev.md) | dev 命令 + TDD 节奏 + 调试 |
-| [`docs/setup-feishu.md`](docs/setup-feishu.md) | 飞书 app 详细 step-by-step（1.2 是摘要版）|
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD 报告（一锁一份）|
-| [`docs/competitors.md`](docs/competitors.md) | 同类工具对比 |
+| [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) | AI 干活纪律（根因 / DD / 编码准则）|
+| [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) | 状态总表 + 修订日志 + 项目特定规范 |
+| [`docs/architecture.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/architecture.md) | 架构图 + 状态 schema + 文件 IPC |
+| [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md) | dev 命令 + TDD 节奏 + 调试 |
+| [`docs/setup-feishu.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/setup-feishu.md) | 飞书 app 详细 step-by-step（1.2 是摘要版）|
+| [`docs/superpowers/specs/`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/) | DD 报告（一锁一份）|
+| [`docs/competitors.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/competitors.md) | 同类工具对比 |
 
 ## 2.10 License
 
-参 [`LICENSE`](LICENSE)（MIT）。
+参 [`LICENSE`](https://github.com/orime-org/multi-cc-im/blob/main/LICENSE)（MIT）。
