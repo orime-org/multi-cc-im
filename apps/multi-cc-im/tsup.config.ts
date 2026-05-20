@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, chmod } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +64,10 @@ export default defineConfig({
   // shims: __filename / __dirname / require ESM-CJS interop helpers (still
   // needed by a handful of deps, e.g. some-cjs using module.createRequire).
   shims: true,
+  // Shebang flows through from src/cli.ts line 1 — tsup preserves it.
+  // Do NOT add `banner: { js: '#!/usr/bin/env node' }` here: that would
+  // emit a SECOND shebang on line 2, which Node's ESM loader rejects with
+  // "SyntaxError: Invalid or unexpected token" (only line 1 is honored).
   // Copy the iTerm2 Python helper script next to the bundled cli.js so
   // the daemon can resolve it at runtime via `import.meta.url`. Per
   // [DD: iTerm2 adapter](../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
@@ -84,5 +88,10 @@ export default defineConfig({
     const dest = resolve(here, 'dist/iterm2-helper.py');
     await mkdir(dirname(dest), { recursive: true });
     await copyFile(src, dest);
+    // Mark dist/cli.js executable (mode 0755) so `npm install -g` bin
+    // symlink resolves to an executable target. tsup doesn't set the
+    // executable bit on its output; without this, `multi-cc-im` runs but
+    // direct execution of dist/cli.js fails with EACCES.
+    await chmod(resolve(here, 'dist/cli.js'), 0o755);
   },
 });

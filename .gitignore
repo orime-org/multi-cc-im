@@ -12,6 +12,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# npm publish prepack copies (LICENSE + README cp'd from repo root) + tarballs
+apps/multi-cc-im/LICENSE
+apps/multi-cc-im/README.md
+apps/multi-cc-im/*.tgz
+
 # Test coverage
 coverage/
 

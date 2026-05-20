@@ -1,14 +1,45 @@
 {
   "name": "multi-cc-im",
   "version": "0.1.4",
+  "description": "Bridge multiple Claude Code (cc) sessions in WezTerm or iTerm2 tabs to a Lark/Feishu bot — reach your cc tabs from mobile IM.",
+  "keywords": [
+    "claude-code",
+    "cc",
+    "lark",
+    "feishu",
+    "im",
+    "bridge",
+    "wezterm",
+    "iterm2",
+    "cli",
+    "agent"
+  ],
+  "homepage": "https://github.com/orime-org/multi-cc-im#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orime-org/multi-cc-im.git",
+    "directory": "apps/multi-cc-im"
+  },
+  "bugs": {
+    "url": "https://github.com/orime-org/multi-cc-im/issues"
+  },
   "license": "MIT",
-  "private": true,
+  "author": "orime-org and contributors",
   "type": "module",
+  "bin": {
+    "multi-cc-im": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
     "build": "tsup",
-    "smoke": "node dist/cli.js"
+    "smoke": "node dist/cli.js",
+    "prepack": "cp ../../LICENSE ../../README.md ."
   },
   "engines": {
     "node": ">=22"
@@ -16,6 +47,12 @@
   "dependencies": {
     "@clack/prompts": "^1.3.0",
     "@larksuiteoapi/node-sdk": "^1.63.1",
+    "open": "^11.0.0",
+    "proper-lockfile": "^4.1.2",
+    "terminal-link": "^5.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
     "@multi-cc-im/bridge": "workspace:*",
     "@multi-cc-im/cli-cc": "workspace:*",
     "@multi-cc-im/im-lark": "workspace:*",
@@ -24,12 +61,6 @@
     "@multi-cc-im/storage-files": "workspace:*",
     "@multi-cc-im/term-iterm2": "workspace:*",
     "@multi-cc-im/term-wezterm": "workspace:*",
-    "open": "^11.0.0",
-    "proper-lockfile": "^4.1.2",
-    "terminal-link": "^5.0.0",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
     "tsup": "^8.5.0"
   }
 }

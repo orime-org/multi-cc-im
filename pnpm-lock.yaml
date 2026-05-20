@@ -32,6 +32,19 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.63.1
         version: 1.63.1
+      open:
+        specifier: ^11.0.0
+        version: 11.0.0
+      proper-lockfile:
+        specifier: ^4.1.2
+        version: 4.1.2
+      terminal-link:
+        specifier: ^5.0.0
+        version: 5.0.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
       '@multi-cc-im/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
@@ -56,19 +69,6 @@ importers:
       '@multi-cc-im/term-wezterm':
         specifier: workspace:*
         version: link:../../packages/term-wezterm
-      open:
-        specifier: ^11.0.0
-        version: 11.0.0
-      proper-lockfile:
-        specifier: ^4.1.2
-        version: 4.1.2
-      terminal-link:
-        specifier: ^5.0.0
-        version: 5.0.0
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.12)(tsx@4.21.0)(typescript@5.9.3)
