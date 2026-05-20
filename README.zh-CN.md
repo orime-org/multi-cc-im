@@ -46,13 +46,17 @@
 
 ## 1.3 安装 + 启动
 
+**推荐**：全局装 npm 包（一行装完）—
+
 ```bash
-git clone https://github.com/orime-org/multi-cc-im.git
-cd multi-cc-im
-pnpm install
-pnpm --filter multi-cc-im build
-./bin/multi-cc-im start
+pnpm install -g multi-cc-im
+# 或 npm install -g multi-cc-im
+multi-cc-im start
 ```
+
+> 没用过 pnpm 的话先 `npm install -g pnpm`。
+
+**Alternative**（想 hack 源码 / 跑测试 / 二次开发）— 见 [Part 2](#part-2--二次开发)。
 
 首次启动跑 wizard：
 
