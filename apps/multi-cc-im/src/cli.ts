@@ -1,8 +1,12 @@
-// Entry point invoked by the `bin/multi-cc-im` bash wrapper via tsx. Node
-// 22-24 default can't resolve `import './hook.js'` → `./hook.ts` for the
+#!/usr/bin/env node
+// Entry point invoked by the `bin/multi-cc-im` bash wrapper via tsx in dev
+// mode, OR directly via the shebang on the bundled `dist/cli.js` after
+// `npm install -g multi-cc-im` (per v0.1.4 npm publish).
+//
+// Node 22-24 default can't resolve `import './hook.js'` → `./hook.ts` for the
 // source-as-bin pattern (verified ERR_MODULE_NOT_FOUND on v24.10); tsx
-// handles the extension rewrite. v2 will tsup-bundle to .js, at which point
-// this file could regain a `#!/usr/bin/env node` shebang directly.
+// handles the extension rewrite at dev time. After tsup bundles to .js, the
+// shebang here lets the bundled file act as a standalone executable.
 
 import { adapters, findAdapter } from './adapters.js';
 import { runCleanupCommand } from './cleanup.js';
