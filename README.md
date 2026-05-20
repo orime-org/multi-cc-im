@@ -2,29 +2,51 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Bridge multiple Claude Code (cc) sessions running in **WezTerm or iTerm2** tabs to a Lark/Feishu app. Type anything in IM — `give the frontend one a login page` — and the daemon asks cc itself to triage and route the task to the matching tab. Use `#<tab>` only when you want to be explicit.
+Bridge multiple Claude Code (cc) sessions running in **WezTerm or iTerm2** tabs to a Lark/Feishu bot. Reach your cc tabs from mobile IM; replies and tool prompts come back to IM.
 
-> **v0.1.0** (2026-05-14) — iTerm2 adapter complete + root-cause fixes from real-account smoke. See [`docs/conventions.md`](docs/conventions.md) revision log or [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.0).
+> **v0.1.4** (2026-05-20) — inbound images via reply-thread routing. See [`docs/conventions.md`](docs/conventions.md) revision log or [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.4).
 
 **Two audiences below**:
-- **[Part 1 — Direct use](#part-1--direct-use)** — install, start, IM commands, troubleshooting. Read this if you just want to use multi-cc-im.
-- **[Part 2 — Secondary development](#part-2--secondary-development)** — repo layout, adapter contracts (IM / Terminal / CLI), DD flow, doc pointers. Read this if you want to add a new IM (Telegram / Slack / WeChat...) or terminal (tmux / kitty / Ghostty...) adapter, fix bugs, or just understand internals.
+- **[Part 1 — Direct use](#part-1--direct-use)** — install, Feishu app setup, IM commands, troubleshooting. Read if you just want to use multi-cc-im.
+- **[Part 2 — Secondary development](#part-2--secondary-development)** — repo layout, adapter contracts, DD flow, doc pointers. Read if you want to add an IM / terminal / CLI adapter or fix bugs.
 
 ---
 
 # Part 1 — Direct use
 
-## Prerequisites
+## 1.1 Prerequisites
 
-- macOS / Linux (Windows via WSL untested)
-- Node.js ≥ 22, pnpm ≥ 9
-- One of:
-  - **WezTerm ≥ 20240203** (lowest friction — single binary, native CLI)
-  - **iTerm2 ≥ 3.3** (macOS only — uses iTerm2's Python API; requires Python 3 + one-time pref toggle + Automation permission)
-- Claude Code CLI logged in (`claude` resolvable on `PATH`; Pro / Max subscription required for AI routing)
-- A Lark account dedicated as bot
+| 需要 | 要求 |
+|---|---|
+| OS | macOS / Linux（Windows via WSL untested）|
+| Node.js | ≥ 22 |
+| pnpm | ≥ 9 |
+| 终端 | WezTerm ≥ 20240203 **或** iTerm2 ≥ 3.3 (macOS only) |
+| Claude Code | `claude` 在 `PATH` + 已登录（Pro / Max 订阅 — AI 路由要调）|
+| Lark 账号 | 一个用作 bot 的飞书账号 |
 
-## First-time start
+## 1.2 Create the Feishu app (do this FIRST)
+
+按顺序跑完这 7 步。**没跑完不要去 1.3** — daemon 会因为 scope / event 缺连不上飞书。
+
+| 步 | 做什么 | 做完得到 |
+|---|---|---|
+| 1 | 浏览器开 https://open.feishu.cn/app 登录 → 「创建应用」→「自建应用」→ 填名称 + 描述 | 一个空 app |
+| 2 | 左侧「权限管理」→ 勾下面 4 个 scope | bot 能收发文字 + 拉图 |
+| 2a | `im:message`（或 `im:message:readonly` 任一）| 收 IM 入站事件 + 发出站 |
+| 2b | `im:message.history:readonly`（推荐勾上 — 图片下载也用这个）| 拉 `/im/v1/messages/{id}/resources/{key}` 图 |
+| 2c | `im:resource`（lodestar 历史要求，留作兜底）| — |
+| 2d | `im:chat`（自建群可选）| — |
+| 3 | 左侧「事件与回调」→「事件订阅」→ 添加 `im.message.receive_v1` | 用户消息进 daemon |
+| 3b | 同页加 `card.action.trigger`（卡片按钮回调）| AskUserQuestion / 权限审批按钮起效 |
+| 4 | 左侧「应用功能」→「机器人」→ 启用 | app 在飞书里以 bot 身份能被加好友 / 拉群 |
+| 5 | 左侧「版本管理与发布」→「创建版本」→ 填版本号 + changelog →「保存并申请发布」| 版本进审批 |
+| 6 | 自建 app 你即 admin → 在「我的待审批」点同意 | scope 和 event 真正生效 |
+| 7 | 左侧「凭证与基础信息」→ 复制 `App ID` + `App Secret` | 1.3 wizard 要填这两个字段 |
+
+> 后续改 scope（如缺权限）从 step 2 重跑 + step 5+6 重新发版；token rotate（≤ 2h）或重启 daemon 强刷生效。
+
+## 1.3 Install & start
 
 ```bash
 git clone https://github.com/orime-org/multi-cc-im.git
@@ -34,446 +56,210 @@ pnpm --filter multi-cc-im build
 ./bin/multi-cc-im start
 ```
 
-That's it. On first run a setup wizard pops up:
+首次启动跑 wizard：
 
-1. **Pick a terminal**: `wezterm` or `iterm2`. iTerm2 branch walks you through enabling its Python API preference + installing the `iterm2` PyPI package + accepting the macOS Automation permission (one time each). WezTerm has no extra setup.
-2. **Pick an IM adapter**: pick `lark`, follow the inline guide to create a self-built Feishu app, paste in `App ID` + `App Secret`, the daemon validates them against Feishu and continues into normal run mode.
+| 步 | 做什么 | 做完得到 |
+|---|---|---|
+| W1 | 选终端 `wezterm` 或 `iterm2` | `~/.multi-cc-im/config.toml` 写 `[terminal] type` |
+| W2 | (iTerm2 路径) 启 Python API preference + 装 `iterm2` PyPI 包 + 同意 macOS Automation 权限 | iTerm2 adapter 能列 pane / send-text |
+| W3 | 选 IM 走 `lark` | 进飞书 setup |
+| W4 | 粘贴 1.2 拿到的 `App ID` + `App Secret` | daemon 拿凭据用 SDK 跟飞书 handshake |
+| W5 | wizard 验证凭据有效 | 凭据写 `~/.multi-cc-im/credentials/lark.json` (mode 0600) |
 
-The choices persist in `~/.multi-cc-im/config.toml` (`[terminal].type` + `[external_paths]`); subsequent `start` runs pre-select them and let you press Enter to keep, or arrow-key to switch.
+完成 = daemon 前台跑 + WS 连飞书 ready + 监控 dashboard 在 `http://127.0.0.1:40719`。
 
-To re-configure later, or for non-interactive / headless setup:
+> Ctrl+C 停 daemon。一台机器只能一个 daemon。
+> 非交互式：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
+> 重新配：再跑 `./bin/multi-cc-im start`，wizard 用旧值预填，回车保留 / 方向键改。
 
-```bash
-./bin/multi-cc-im login lark --app-id cli_xxxxxxxxxxxx --app-secret xxxxxxxxxxxxxxxx
-```
+## 1.4 IM commands cheat sheet
 
-The daemon runs in the foreground. Ctrl+C stops it. Only one daemon per machine — re-running `start` while one is alive prints the existing PID and exits.
+> daemon 启后 IM mode 默认 OFF。先 IM 端发 `/start` 或 `/start off` 开。然后在每个 cc TUI 跑 `/rename <name>` 给 tab 起名（纯数字名会撞 pane id，wizard 会警告）。
 
-## Name your cc tabs
-
-Inside any cc TUI, run `/rename frontend`. The wezterm tab title becomes `frontend`, and IM can address it as `#frontend`. Tabs with no `/rename` show up in `/list` but are **not addressable**.
-
-> Avoid pure-numeric tab titles (they collide with wezterm pane IDs). `/start` echoes a warning if any are present.
-
-## What to send in IM
-
-### Just talk — AI picks the tab
-
-```
-give the frontend one a login page
-```
-
-No `#` needed. The daemon asks cc itself to triage: cc picks the most relevant tab, strips routing cue words (`give the frontend one` / `给前端` / etc.), and forwards the cleaned task. You'll see an echo:
-
-```
-target: frontend
-content: a login page
-```
-
-Tolerates speech-to-text typos, case / hyphen / whitespace variants, and mixed-language input. If cc's pick misses, the daemon falls back to a deterministic substring match against tab names.
-
-> Each plain message costs one short cc API call — counts against your cc subscription / Pro / Max usage.
-
-### Name the tab explicitly with `#`
-
-```
-#frontend hello              # send to the frontend tab; becomes the sticky default
-#frontend #api sync          # multi-target dispatch (doesn't change the default)
-#all stop everything         # broadcast to every named cc
-```
-
-Fuzzy matching is supported (`#front` → `frontend` if unique). Ambiguous prefixes list candidates and ask you to disambiguate.
-
-### Control a cc from IM
-
-```
-#frontend /clear             # forwards /clear as cc's own slash command
-#frontend /1                 # allow a pending tool call (ask mode only)
-#frontend /2                 # deny it
-```
-
-### Control the daemon
-
-| Command | Effect |
+| 你做 | daemon 做 |
 |---|---|
-| `/start` | Enable IM mode, **auto-approve** — cc tool calls proceed without asking you |
-| `/start off` | Enable IM mode, **ask** — every tool call asks in IM first (`/1` / `/2`) |
-| `/stop` | Disable IM mode (cc replies stay in TUI; tool prompts use cc's native menu) |
-| `/list` | Which terminal tabs are addressable from IM |
-| `/current` | Current sticky default + IM-mode status |
-| `/help` | Routing examples |
+| `<text>`（无 `#`）| AI 分诊到匹配 tab + 剥前缀 + 发任务 |
+| `#<tab> <text>` | 精确发到该 tab + 该 tab 成 sticky 默认 |
+| `#<a> #<b> <text>` | 多 tab 同发（不动 sticky 默认）|
+| `#all <text>` | 广播到所有 named tab |
+| `#<tab> /clear`（或 cc 任何 `/` slash）| 转发为 cc 自己的 slash command |
+| `#<tab> /1` | ask 模式下允许 pending tool 调用 |
+| `#<tab> /2` | ask 模式下拒绝 pending tool 调用 |
+| 发图（不带文字）| daemon 暂存图 30 min + 回 `🖼️ 图已收到` |
+| 在图上 reply `#<tab> <text>` | image path + 文字一起投给该 cc tab；cc Read 读图 |
+| `/start` | 开 IM mode auto-approve（cc 工具调用不打扰）|
+| `/start off` | 开 IM mode ask（每个工具调用先转 IM 等 `/1` `/2`）|
+| `/stop` | 关 IM mode（cc 回复留 TUI、工具走 cc 原生菜单）|
+| `/list` | 列当前可寻址 tab |
+| `/current` | 当前 sticky 默认 + IM mode 状态 |
+| `/help` | 路由示例 |
 
-> IM mode resets to OFF every time the daemon starts. Send `/start` from IM once per session.
+> 模糊匹配支持（`#front` → `frontend` 若唯一）。`/start` echo 里有 `✓ terminal: <id>` 行告诉你 daemon 启动时选了哪个终端。
 
-> The `/start` echo includes a `✓ terminal: <id>` line so you can verify from the IM side which terminal adapter the daemon picked at startup (wezterm vs iterm2).
+## 1.5 cc → IM (反向通知)
 
-### Send an image to a cc tab
+cc 端三种事件自动转发到 IM，不需要你做配置：
 
-1. Send the image to the bot — daemon downloads it to `~/.multi-cc-im/inbound/lark/images/` and acks `🖼️ 图已收到`.
-2. **Reply to that image** in IM with `#<tab> <text>` (e.g. `#frontend 看这张图的报错`). The daemon joins the on-disk path + your text and dispatches `请看 @<path>\n<text>` to the cc tab, which uses its `Read` tool to ingest the image.
+| 触发 | IM 端看到 | 你做 |
+|---|---|---|
+| cc 回合结束（Stop hook）| `[<tab>] <last_assistant_message>` | 看回复，需要继续就接着发文字 |
+| cc 调 AskUserQuestion 选择题（计划 / 设计选项）| 题目 + 编号选项 + 「你的考虑」 | 回编号 / 选项 label / 自然语言 / 自由文本（5 min 超时，逾时 cc 自己继续）|
+| cc 编辑 `.claude/* / .git/* / .env*` 等敏感路径 | auto 模式 → 审计行 `🛡️ daemon auto-allowed`；ask 模式 → 编号选项「同意一次 / 始终允许 / 拒绝」| auto 模式不用回；ask 模式回编号 / 自然语言（2 min 超时，逾时 plain allow）|
 
-The stash expires 30 minutes after the image arrives. Each image is keyed by IM message id, so a second reply to the same image routes as plain text (the first reply consumed the stash). The image flow is **reply-only** — sending text *without* replying to the image won't pick up the image even if the text contains `#<tab>`.
+## 1.6 Monitor dashboard
 
-## Tool permission flow (ask mode only)
+浏览器开 `http://127.0.0.1:40719`（只 bind loopback，不可远程）。SSR 静态 HTML 无 JS：
 
-When `/start off` is active, every cc tool call asks you first:
-
-```
-[frontend] About to run:
-  Bash(rm -rf node_modules)
-
-⏳ Reply within 10s, else auto-allow:
-  #frontend /1   = allow
-  #frontend /2   = deny
-```
-
-You can also reply in natural language and cc decides which pending prompt you meant:
-
-```
-multi-cc-im 那个 rm 同意
-api 的拒绝
-deny the bash one
-```
-
-The daemon echoes back which pending it matched + the decision. Allow is safe-by-default — if your reply doesn't mention the tool name / a key argument / a clear paraphrase of the operation, the AI downgrades it to deny and you can re-issue with content. Deny always goes through.
-
-Read-only tools (`Read` / `Grep` / `Glob` / `NotebookRead`) auto-allow without bothering IM.
-
-## cc widget questions (AskUserQuestion) → IM (works in any mode)
-
-When cc asks you a multiple-choice question (its `AskUserQuestion` widget — usually plan reviews / design choices / library picks), the question + options are forwarded to IM **regardless of whether you're in `/start` auto-approve or `/start off` ask mode**:
-
-```
-[multi-cc-im] cc 想问你:
-
-Pick a database
-
-  1. Postgres
-     mature relational
-  2. MongoDB
-     doc store
-  3. 你的考虑（自由文本）
-
-请回复你的选择（编号或自然语言都行）
-```
-
-Reply with anything that makes sense:
-- A number — `1`
-- The option's label — `Postgres`
-- Natural language — `我选第二个` / `the mongo one` / `do option 2 with a side of fries`
-- Free text not matching any option — your reply goes through verbatim
-
-The daemon hands your answer back to cc as a normal `AskUserQuestion` tool result (per cc's official agent-sdk channel: `permissionDecision: 'allow'` + `updatedInput: {questions, answers}`), so cc records the tool as completed successfully with your answers. If you don't reply within ~5 minutes the hook self-injects empty answers so cc unblocks and decides what to do next; if you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的回复` in IM. (Timeout was bumped from 2 min to 5 min on 2026-05-15 after mobile usage showed 2 min runs out — phone notification delay + reading + thumb-typing while on the go easily exceeds 2 min. See [DD §10](docs/superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md).)
-
-**Multi-question** AskUserQuestion (rare — cc asks 2+ questions in one call): each question gets one entry in the injected `answers` map.
-
-## cc sensitive-path dialogs (.claude/* / .git/* / .env / etc.) → IM
-
-cc has a hard-coded ask gate that forces a TUI permission prompt every time it tries to edit a "sensitive" path: anything under `.claude/`, `.git/`, `.vscode/`, `.idea/`, or files like `.bashrc`, `.zshrc`, `.env*`, `.gitconfig`, `.mcp.json`, `.claude.json`, etc. This gate runs **before** any user-level allow rule — even `permissions.allow` in your `~/.claude/settings.json` cannot bypass it (cc designed it this way to prevent accidental over-grants).
-
-Without this bridge feature, IM users would silently get stuck: cc fires the TUI prompt and waits for keystrokes that never arrive. The daemon now intercepts cc's `PermissionRequest` hook and handles both modes:
-
-### `/start` (auto mode)
-
-Daemon emits a single-yes allow for the current call + sends an IM audit notification:
-
-```
-🛡️ daemon auto-allowed cc 编辑敏感路径
-  <tab>: <path>
-```
-
-The audit line is informational — no reply needed. Same-session subsequent edits to the same path will trigger another dialog (single-yes only — daemon never silently grants a session-wide allow rule, preserving per-operation visibility).
-
-### `/start off` (ask mode)
-
-Daemon forwards numbered options to IM:
-
-```
-[<tab>] cc 想编辑敏感路径:
-  <toolName>: <path>
-
-  1. 同意一次（仅本次调用）
-  2. 始终允许: Edit(./.claude/**)    ← cc's permission_suggestions[0]
-  3. 拒绝
-
-请回复（数字 / 自然语言均可）
-```
-
-Reply with:
-- `1` / `好` / `yes` — allow this one call
-- `2` / `总是允许` / `always` — allow + apply cc's session rule so subsequent same-path edits skip the gate (until cc session exits)
-- `3` / `拒绝` / `no` — deny + cc gets a clear "user denied" message
-
-The daemon resolves your choice into the actual `PermissionUpdate` cc proposed (it does **not** synthesize a new always-allow that wasn't in cc's suggestion list — preserves cc's safety semantic).
-
-### Caveats
-
-- **Timeout**: if you don't reply within 2 minutes, the hook self-emits a plain allow (no session rule) so cc proceeds. If you reply after the timeout you'll see `⏱ cc 已超时，本轮不再等待你的 PermissionDialog 回复` in IM.
-- **Session-scoped only**: cc's safety gate only honors `destination: 'session'` rules (in-memory). Project-level / user-level `permissions.allow` settings in JSON files still get vetoed by the gate. The daemon respects this by always writing `destination: 'session'` from cc's suggestion.
-- **Multi-hook**: if you have other tools registered as `PermissionRequest` hooks in `~/.claude/settings.json`, cc's "first-non-null wins" rule applies — whichever hook returns a decision first wins. multi-cc-im assumes it's the only PermissionRequest hook.
-
-## cc replies → IM rendering
-
-Feishu doesn't render markdown, so cc replies are simplified before sending — you see clean text instead of raw `**` / backticks:
-
-| cc output | IM displays |
+| Tab | 内容 |
 |---|---|
-| `# Heading` | `▌ Heading` |
-| `**bold**` | `bold` |
-| `` `code` `` | `「code」` |
-| `- item` | `• item` |
-| ```` ```ts\nconst x = 1;\n``` ```` | `[ts]` annotation + content unchanged |
-| `[text](url)` | `text (url)` |
+| sessions (default) | live pane 列表 + addressable 标志 |
+| cost | 近期 cc session token + USD 估算（LiteLLM 价表 vendored）|
+| errors | orchestrator `onError` ring buffer（last 200）|
 
-## Monitor dashboard
+顶部 sticky header 一直显示：pid · uptime · 终端 · IM 连接状态。无自动刷新，点 `↻ refresh` 或 F5 / Cmd+R。
 
-`multi-cc-im start` boots a local-only web dashboard at **`http://127.0.0.1:40719`** alongside the IM bridge. The daemon prints the URL on stderr at startup — click it (or paste in your browser) any time.
+JSON 路由：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 
-**Layout**:
+## 1.7 Where things live
 
-- **Sticky daemon-state header** — pid · uptime · active terminal (wezterm / iterm2) · IM adapter + connection pill (always visible)
-- **Three tabs** below the header:
-  - **sessions** (default) — live `termAdapter.listPanes()` pane list (matches what `/list` returns over IM), with addressable flag so you can spot un-named tabs
-  - **cost** — recent cc sessions tailed from `~/.claude/projects/<slug>/<sid>.jsonl`, with model + token totals + USD estimate (LiteLLM Claude 4.x price table, vendored)
-  - **errors** — in-process ring buffer (last 200, FIFO) of anything orchestrator emitted via `onError`
-
-**No auto-refresh, no client JS**. Page is SSR-only HTML. Tabs switch via a CSS `<input type="radio">` + sibling-selector hack — zero network cost, instant. To pull fresh data, click the `↻ refresh` button at the top (or hit F5 / Cmd+R). Reloading resets the active tab to `sessions`.
-
-JSON routes for scripting / curl: `/api/state`, `/api/sessions`, `/api/errors`, `/api/cost`.
-
-Bind-only-to-loopback (`127.0.0.1`) — never reachable over the network. If port `40719` is already in use, the bridge starts anyway; daemon stderr will say so and you'll just be missing the dashboard.
-
-## Where things live
-
-- `~/.multi-cc-im/credentials/lark.json` — your Feishu credentials (mode 0600)
-- `~/.multi-cc-im/config.toml` — terminal choice + cached binary paths
-  - `[terminal] type = "wezterm" | "iterm2"` — your wizard pick
-  - `[external_paths] wezterm = "..."` — cached WezTerm CLI path (wezterm users)
-  - `[external_paths] python3 = "..."` — cached Python 3 path (iTerm2 users)
-- `~/.multi-cc-im/state/` — runtime state, daemon self-manages
-- `~/.multi-cc-im/daemon.log` — daemon stderr mirror (lark connect / orchestrator events / iterm2-helper traces); always written. `tail -f` to watch live.
-- `~/.multi-cc-im/hook-trace.log` — cc-hook subprocess invocation trace. **Only written when `MULTI_CC_IM_DEBUG=<non-empty>` env is set**; silent by default. Useful for diagnosing "cc replied but IM never got it" — set the flag in the shell that launches both the daemon AND the relevant cc instances, reproduce the issue, then read the log.
-- `apps/multi-cc-im/dist/iterm2-helper.py` — bundled Python script the iTerm2 adapter spawns per call (copied from `packages/term-iterm2/bin/iterm2-helper.py` by `pnpm build`)
-
-Override the root with the `MULTI_CC_IM_HOME` env var.
-
-## CLI reference
-
-| Command | Description |
+| 路径 | 用途 |
 |---|---|
-| `multi-cc-im start [adapter]` | Start the daemon (foreground). No arg → adapter-selection menu. First run auto-registers cc hooks after writing a `.bak.<iso>` of `~/.claude/settings.json`. |
-| `multi-cc-im login <adapter> [--<field> <value>...]` | Non-interactive credential setup. Same validate + persist path as the wizard. Env vars like `LARK_APP_ID` are also recognized. |
-| `multi-cc-im cleanup [--dry-run]` | Sweep stale state files. Safe while the daemon is running. |
-| `multi-cc-im --help` / `-h` | Print help. |
-| `multi-cc-im --version` / `-v` | Print version. |
+| `~/.multi-cc-im/credentials/lark.json` | 飞书凭据（mode 0600）|
+| `~/.multi-cc-im/config.toml` | 终端选择 + cached binary paths |
+| `~/.multi-cc-im/state/` | runtime state, daemon 自管 |
+| `~/.multi-cc-im/inbound/lark/images/` | 入站图缓存（mode 0600）|
+| `~/.multi-cc-im/daemon.log` | daemon stderr 镜像 — 总写，`tail -f` 看 |
+| `~/.multi-cc-im/hook-trace.log` | cc-hook 子进程 trace — **仅 `MULTI_CC_IM_DEBUG=1` 才写** |
 
-Exit codes: `0` success, `1` runtime failure, `2` usage error.
+`MULTI_CC_IM_HOME` env 覆盖根目录。
 
-## Troubleshooting
+## 1.8 Troubleshooting
 
-### `multi-cc-im start` says "wezterm CLI not found"
+| 现象 | 修法 |
+|---|---|
+| start 报 `wezterm CLI not found` | `which wezterm` 验证；或写 `[external_paths] wezterm = "..."` 到 `~/.multi-cc-im/config.toml` |
+| start 报 `python3 not found` (iTerm2) | `brew install python3` 或 `xcode-select --install` |
+| start 报 `cannot connect to iTerm2 Python API` | iTerm2 → Settings → General → Magic → 勾「Enable Python API」+ 启 iTerm2 后重跑 |
+| `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
+| start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
+| daemon 起了 IM 收不到消息 | 重跑 `login lark` 验证凭据；确认 1.2 step 5+6 发版本 + 同意 |
+| 图入站报 `HTTP 400 code=99991672 Access denied` | 1.2 step 2b/2c scope 漏了 — 补 + 发版 + 重启 daemon |
+| `#frontend` 报 not found | cc TUI 里 `/rename frontend`；IM 发 `/list` 验证 |
+| IM 收不到工具审批 | 必须 `/start off`；至少先用 IM 寻址过该 cc 一次 |
+| hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
+| Ctrl+C 后 IM 收僵尸消息 | `rm -f ~/.multi-cc-im/state/{IMWork,IMOrigin,daemon.pid}` |
+| `state/` 堆积 | `./bin/multi-cc-im cleanup --dry-run` 预览 / 去掉 `--dry-run` 真扫 |
 
-```bash
-which wezterm   # must resolve
-# or write the path manually:
-echo '[external_paths]' >> ~/.multi-cc-im/config.toml
-echo 'wezterm = "/Applications/WezTerm.app/Contents/MacOS/wezterm"' >> ~/.multi-cc-im/config.toml
-```
+## 1.9 CLI reference
 
-### `multi-cc-im start` says "python3 not found" (iTerm2)
+| 命令 | 描述 |
+|---|---|
+| `multi-cc-im start [adapter]` | 启 daemon（前台）。无 arg → 跑 wizard。首次跑会备份 `~/.claude/settings.json` 后注册 cc hook |
+| `multi-cc-im login <adapter> [--<field> <value>...]` | 非交互式凭据配置（env vars 如 `LARK_APP_ID` 也认）|
+| `multi-cc-im cleanup [--dry-run]` | 扫陈旧 state 文件，daemon 跑着也安全 |
+| `multi-cc-im --help` / `-h` | help |
+| `multi-cc-im --version` / `-v` | version |
 
-```bash
-which python3   # must resolve
-# macOS: install via brew or Xcode CLT
-brew install python3
-# OR
-xcode-select --install
-```
-
-### `multi-cc-im start` says "cannot connect to iTerm2 Python API" (iTerm2)
-
-The wizard tried to open a real connection (`iterm2.run_until_complete`) and got `There was a problem connecting to iTerm2`. Two common causes:
-
-1. **Preference is off** — by far the most common. Fix:
-
-   ```text
-   iTerm2 → Settings → General → Magic → ☑ Enable Python API
-   ```
-
-   Then re-run `./bin/multi-cc-im start`. The wizard re-runs the connect smoke and shows `Smoke check: iTerm2 Python API is reachable.` if it worked.
-
-2. **iTerm2 not running** — launch any installed copy (they share preferences via `com.googlecode.iterm2`) and retry.
-
-If the connect smoke passes but the package itself is missing (`ModuleNotFoundError: No module named iterm2`), the wizard's pip install step probably failed silently. Re-install manually:
-
-```bash
-python3 -m pip install --user --break-system-packages iterm2
-```
-
-### iTerm2: tab title from `/rename` not appearing in `/list`
-
-- The wizard's empirical connect smoke (above) already verified the Python API preference. If `/list` still misses tab titles, a later macOS update may have revoked the Automation permission silently — re-run `./bin/multi-cc-im start` so the connect smoke re-triggers the system permission dialog.
-- The iTerm2 adapter reads `session.autoName` (set by cc's `/rename`). If the title still shows the default cc title `Claude Code [...]`, retry `/rename` inside the cc TUI.
-
-### `multi-cc-im start` says "another daemon already running"
-
-```bash
-cat ~/.multi-cc-im/state/daemon.pid
-# Real running daemon → Ctrl+C in its terminal, or `kill <pid>`.
-# Stale PID (process was SIGKILL'd) → remove the lock:
-rm ~/.multi-cc-im/state/daemon.pid
-```
-
-### Daemon runs but IM doesn't receive my messages
-
-Check, in order:
-
-1. Re-run setup so credentials are validated live: `./bin/multi-cc-im login lark --app-id <id> --app-secret <secret>`.
-2. Did you publish the Feishu app? Permissions + event subscription only take effect after 飞书开放平台 → 版本管理与发布 → 创建版本 → 提交发布. See [`docs/setup-feishu.md`](docs/setup-feishu.md).
-
-### `#frontend` says "not found"
-
-- Inside the cc TUI, run `/rename frontend`.
-- Send `/list` from IM to see which tabs are addressable.
-
-### IM doesn't get tool permission prompts
-
-1. Are you in `/start off`? (default `/start` is auto-approve — no prompts forward.)
-2. Did you address that cc from IM at least once first? (no IM thread → nowhere to forward to.)
-3. Is the daemon alive? (`cat ~/.multi-cc-im/state/daemon.pid`.)
-
-### Hook registration complains about existing hooks
-
-Restore the backup `start` wrote before merging:
-
-```bash
-ls -la ~/.claude/settings.json.bak.*
-cp ~/.claude/settings.json.bak.<timestamp> ~/.claude/settings.json
-```
-
-### After Ctrl+C, IM still gets stale forwards
-
-```bash
-ls ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/daemon.pid
-# Both should be absent. If present, remove manually:
-rm -f ~/.multi-cc-im/state/IMWork ~/.multi-cc-im/state/IMOrigin ~/.multi-cc-im/state/daemon.pid
-```
-
-### `state/` accumulating files
-
-```bash
-./bin/multi-cc-im cleanup --dry-run   # preview
-./bin/multi-cc-im cleanup             # actually sweep
-```
+退出码：`0` 成功 / `1` runtime fail / `2` usage error。
 
 ---
 
 # Part 2 — Secondary development
 
-## Stack
+## 2.1 Stack
 
-- TypeScript strict, ESM-only (`"type": "module"`)
-- Node ≥ 22
-- pnpm workspaces (monorepo)
-- Vitest (unit + integration tests)
-- tsup (CLI bundling)
+| 维度 | 选择 |
+|---|---|
+| 语言 | TypeScript strict, ESM-only (`"type": "module"`) |
+| 运行时 | Node ≥ 22 |
+| 包管理 | pnpm workspaces (monorepo) |
+| 测试 | Vitest (unit + integration) |
+| 打包 | tsup (CLI bundling) |
 
-## Repo layout
+## 2.2 Repo layout
 
 ```
 multi-cc-im/
-├── apps/multi-cc-im/        — CLI binary (bundled by tsup → dist/cli.js)
+├── apps/multi-cc-im/        — CLI binary (tsup → dist/cli.js)
 ├── packages/
 │   ├── shared/              — Cross-package types + zod schemas
-│   ├── storage-files/       — TOML + JSON file stores (config, credentials, cursor, queues)
-│   ├── im-lark/             — Lark/Feishu adapter (npm depend `@larksuiteoapi/node-sdk`)
+│   ├── storage-files/       — TOML + JSON file stores
+│   ├── im-lark/             — Lark/Feishu adapter (@larksuiteoapi/node-sdk)
 │   ├── term-wezterm/        — WezTerm CLI adapter
-│   ├── term-iterm2/         — iTerm2 Python API adapter (ephemeral helper subprocess; see DD 2026-05-13)
+│   ├── term-iterm2/         — iTerm2 Python API adapter (ephemeral helper)
 │   ├── cli-cc/              — Claude Code hook adapter
+│   ├── monitor/             — local dashboard (hono SSR)
 │   └── bridge/              — Router + orchestrator + AI-routed dispatch
-├── bin/multi-cc-im          — Bash wrapper (resolves dist or tsx)
-├── docs/
-│   ├── architecture.md      — Full architecture + state schema + IPC
-│   ├── dev.md               — Dev commands + TDD rhythm + debugging tips
-│   ├── competitors.md       — Comparison with related tools
-│   └── superpowers/specs/   — DD reports (one per major decision)
-└── CLAUDE.md                — Project rules (mandatory before any contribution)
+├── bin/multi-cc-im          — bash wrapper
+├── docs/                    — architecture, dev, conventions, DD specs
+└── CLAUDE.md                — project rules (mandatory before contributing)
 ```
 
-## Dev commands
+## 2.3 Dev commands
 
-| Command | Description |
+| 命令 | 用途 |
 |---|---|
-| `pnpm install` | Install all workspace deps |
-| `pnpm --filter multi-cc-im dev <args>` | Run CLI from source via tsx |
-| `pnpm typecheck` | `tsc --noEmit` across all packages |
-| `pnpm test` | Run all vitest suites |
-| `pnpm test:watch` | Vitest watch mode |
-| `pnpm test:coverage` | Vitest with V8 coverage report |
-| `pnpm --filter @multi-cc-im/bridge exec vitest run src/router.test.ts` | Run a single test file |
-| `pnpm --filter multi-cc-im build` | Bundle CLI to `apps/multi-cc-im/dist/cli.js` |
-| `pnpm --filter multi-cc-im smoke` | Run the bundled CLI (`node dist/cli.js`) |
+| `pnpm install` | 装所有 workspace deps |
+| `pnpm --filter multi-cc-im dev <args>` | tsx 直跑 CLI 源码 |
+| `pnpm typecheck` | `tsc --noEmit` 跑 9 包 |
+| `pnpm test` | 跑所有 vitest |
+| `pnpm test:watch` | watch 模式 |
+| `pnpm test:coverage` | V8 coverage（阈值 ≥ 80% line）|
+| `pnpm --filter <pkg> exec vitest run <file>` | 跑单测文件 |
+| `pnpm --filter multi-cc-im build` | tsup 打包 → `apps/multi-cc-im/dist/cli.js` |
 
-Coverage threshold: ≥ 80% line coverage workspace-wide. CI enforces.
+## 2.4 TDD rhythm
 
-## Internal CLI commands (used by hooks, not for direct invocation)
+红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`CLAUDE.md`](CLAUDE.md) + [`docs/dev.md`](docs/dev.md)。
 
-- `multi-cc-im hook <event>` — invoked by `~/.claude/settings.json` PreToolUse / Stop hooks. Auto-registered by `start`; not for manual use.
+## 2.5 Adding an IM adapter (Telegram / Slack / etc.)
 
-## TDD rhythm
-
-Per `CLAUDE.md` and [`docs/dev.md`](docs/dev.md): write a failing test that codifies the target behavior → minimal implementation to pass → refactor + verify ≥ 80% coverage. If the test cannot pass under the current design, stop and re-do the DD — don't patch the wrong assumption.
-
-## Adding a new IM adapter (Telegram / Slack / etc.)
-
-1. Create `packages/im-<name>/` mirroring `packages/im-lark/` layout.
-2. Implement the `IMAdapter` interface from `@multi-cc-im/shared`:
-   - `start(handler: IMHandler): Promise<void>`
-   - `send(text: string, replyCtx: IMReplyContext): Promise<void>`
-   - `stop(): Promise<void>`
-3. Define an `IMReplyContext` discriminated-union variant with `imType: 'telegram' | 'lark' | ...`.
-4. Export a `setupSchema: AdapterSetupSchema` (per-field `{ key, label, hint, secret, schema }` + optional `validate(values)`) so the W4 wizard can drive setup without adapter-specific code. See `larkSetupSchema` for the reference shape.
-5. Add a new entry to `adapters` in `apps/multi-cc-im/src/adapters.ts` with `id` / `setupSchema` / `persist(values, paths)` / `buildAdapterRuntime({paths, log})`. The CLI inherits `multi-cc-im start <id>` + `multi-cc-im login <id> --<field> <value>` + the wizard's adapter menu for free.
-6. Add credential storage under `~/.multi-cc-im/credentials/<im>.json` (mode 0600). **Do not** call OS keychain — see [DD: credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md).
-7. Optional: ship a `docs/setup-<im>.md` walkthrough and point `guideDocPath` at it in the registry entry. The wizard renders it with clickable OSC 8 hyperlinks on supporting terminals (W6).
-
-## Adding a new terminal adapter (tmux / kitty / Ghostty / etc.)
-
-Refs: [DD: iTerm2 adapter](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) (reference second-adapter implementation) and the resulting code in `packages/term-iterm2/`.
-
-1. Create `packages/term-<name>/`.
-2. Add `<name>` to `TerminalIdSchema` (`packages/shared/src/adapter/storage.ts`) — `z.enum(['wezterm', 'iterm2', '<name>'])`.
-3. Implement `TermAdapter & TermListPanes` from `@multi-cc-im/shared`:
-   - `name: '<name>'` literal (used by orchestrator to compute `activeTerminalId`)
-   - `start(handler): Promise<void>` (no-op unless terminal pushes lifecycle events)
-   - `listPanes(): Promise<TermPaneInfo[]>` — return `{paneId, title, cwd}` for every tab/pane
-   - `sendText(paneId, content): Promise<void>` — paste-only (no submit)
-   - `sendKeystroke(paneId, key): Promise<void>` — submit key (e.g. `\r`)
-   - `stop(): Promise<void>`
-4. **Two-step send** mandatory: `sendText(content)` → orchestrator sleeps ~300ms → `sendKeystroke('\r')`. Single-step send-with-newline is forbidden — see `CLAUDE.md`「send-text 注入两步法」.
-5. **Pane-id detector**: if the terminal exports an env var that identifies the current pane (e.g. `KITTY_WINDOW_ID`, `TMUX_PANE`), add a `TaggedDetector` to `packages/cli-cc/src/pane-id-detectors.ts` `DEFAULT_DETECTORS`. The detector returns `PaneId` (branded `number | string`) given `process.env`. Issue 378 root-cause framing: the detector's `termId` flows end-to-end through `Stop` state-file payloads and `IM<TermType>` per-terminal IMWork files — DO NOT infer terminal from `typeof paneId`.
-6. **start.ts wiring**: branch the wizard's `selectTerminal` to surface the new option; conditional-create the adapter in `start.ts` based on `config.terminal.type`.
-7. Add tests covering listPanes / sendText / sendKeystroke / detector (mirror `packages/term-iterm2/src/*.test.ts`).
-
-## Adding a new CLI adapter (codex / aider / etc.)
-
-The cc adapter (`packages/cli-cc/`) couples to cc-specific hooks (`PreToolUse`, `Stop`) + jsonl transcripts. A new CLI needs equivalent extension points; if none exist, raise a DD before implementing — see `CLAUDE.md`「不破坏现有 cc 进程」.
-
-## Major decision (DD) flow
-
-Any change that affects the security model, long-term maintenance, cross-package interfaces, or "use existing SDKs" principle requires a DD report under `docs/superpowers/specs/<date>-<topic>-dd.md`. The DD must enumerate candidates (including "do not do X"), evidence-based comparison matrix, and a recommendation traceable to matrix cells. See `CLAUDE.md`「重大决策 DD 流程」.
-
-## Documentation pointers
-
-| Document | Use when |
+| # | 做什么 |
 |---|---|
-| [`CLAUDE.md`](CLAUDE.md) | AI working discipline (root-cause / DD flow / coding-behavior / general engineering rules) |
-| [`docs/conventions.md`](docs/conventions.md) | Project-specific tech conventions (status table, hook timeout / send-text two-step / routing keys / project-specific prohibitions) |
-| [`docs/architecture.md`](docs/architecture.md) | Architecture diagram, state schema, file IPC |
-| [`docs/dev.md`](docs/dev.md) | Dev commands + TDD rhythm + debugging tips |
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD reports (one per locked decision) — recent: [iTerm2 adapter](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md), [IMWork+IMOrigin](docs/superpowers/specs/2026-05-08-imwork-imorigin-dd.md), [PermissionRequest IM bridge](docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md), [credentials persistence](docs/superpowers/specs/2026-05-03-keychain-library-dd.md) |
-| [`docs/competitors.md`](docs/competitors.md) | Why not adopt project X |
+| 1 | `packages/im-<name>/` 镜像 `packages/im-lark/` 布局 |
+| 2 | 实现 `IMAdapter` 接口：`start(handler)` / `send(text, replyCtx)` / `stop()` |
+| 3 | `IMReplyContext` 加 `imType: '<name>'` 变体（discriminated union）|
+| 4 | export `setupSchema: AdapterSetupSchema`（per-field `{key, label, hint, secret, schema}` + 可选 `validate(values)`）|
+| 5 | `apps/multi-cc-im/src/adapters.ts` 加 registry entry：`id` / `setupSchema` / `persist` / `buildAdapterRuntime` |
+| 6 | 凭据写 `~/.multi-cc-im/credentials/<im>.json`（mode 0600）— **不**调 OS keychain (DD: credentials persistence) |
+| 7 | 可选：`docs/setup-<im>.md` 走读 + registry 设 `guideDocPath` |
 
-## License
+## 2.6 Adding a terminal adapter (tmux / kitty / Ghostty / etc.)
 
-See [`LICENSE`](LICENSE).
+参考 [`docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md`](docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) + `packages/term-iterm2/` 实测代码。
+
+| # | 做什么 |
+|---|---|
+| 1 | `packages/term-<name>/` 建包 |
+| 2 | `TerminalIdSchema`（`packages/shared/src/adapter/storage.ts`）加 `<name>` literal |
+| 3 | 实现 `TermAdapter & TermListPanes`：`name='<name>'` / `start` / `listPanes` / `sendText` / `sendKeystroke` / `stop` |
+| 4 | **两步发送**强制：`sendText(content)` → orchestrator sleep ~300ms → `sendKeystroke('\r')`。单步 send-with-newline 禁 |
+| 5 | pane-id detector：终端有 env var 标识 pane（如 `TMUX_PANE`）→ 加 `TaggedDetector` 到 `packages/cli-cc/src/pane-id-detectors.ts` `DEFAULT_DETECTORS` |
+| 6 | `start.ts` wizard 加 selectTerminal 选项 + adapter 条件创建 |
+| 7 | 测试覆盖 listPanes / sendText / sendKeystroke / detector（mirror term-iterm2 tests）|
+
+> `termId` 必须随 Stop payload 端到端传，不许下游 `typeof paneId` 反推（参 [memory: feedback_carry_facts_dont_infer]）。
+
+## 2.7 Adding a CLI adapter (codex / aider / etc.)
+
+cc adapter 耦合 cc-specific hook（`PreToolUse` / `Stop` / `PermissionRequest`）+ jsonl transcript。新 CLI 需等价扩展点；若无 → 提 DD 先不动 — 见 [`CLAUDE.md`](CLAUDE.md)「不破坏现有 cc 进程」。
+
+## 2.8 Major decision (DD) flow
+
+凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`CLAUDE.md`](CLAUDE.md)「重大决策 DD 流程」。
+
+## 2.9 Documentation pointers
+
+| 文档 | 何时读 |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) | AI 干活纪律（根因 / DD / 编码准则）|
+| [`docs/conventions.md`](docs/conventions.md) | 状态总表 + 修订日志 + 项目特定规范 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构图 + 状态 schema + 文件 IPC |
+| [`docs/dev.md`](docs/dev.md) | dev 命令 + TDD 节奏 + 调试 |
+| [`docs/setup-feishu.md`](docs/setup-feishu.md) | 飞书 app 详细 step-by-step（1.2 是摘要版）|
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | DD 报告（一锁一份）|
+| [`docs/competitors.md`](docs/competitors.md) | 同类工具对比 |
+
+## 2.10 License
+
+See [`LICENSE`](LICENSE) (MIT).
