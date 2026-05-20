@@ -75,10 +75,13 @@ describe('downloadAttachment', () => {
     ).rejects.toThrow(/exceeds cap 5/);
   });
 
-  it('HTTP non-2xx → throws with status, no file written', async () => {
+  it('HTTP non-2xx with non-JSON body → throws with status + raw body excerpt', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'inbox-img-'));
     const fetchImpl: typeof fetch = async () =>
-      new Response('forbidden', { status: 403, statusText: 'Forbidden' });
+      new Response('forbidden — not your app', {
+        status: 403,
+        statusText: 'Forbidden',
+      });
     await expect(
       downloadAttachment('om_403', 'img_403', 'image', undefined, {
         appId: 'cli_app',
@@ -87,7 +90,44 @@ describe('downloadAttachment', () => {
         outDir,
         fetchImpl,
       }),
-    ).rejects.toThrow(/HTTP 403/);
+    ).rejects.toThrow(/HTTP 403.*body=forbidden — not your app/);
+  });
+
+  it('HTTP 400 with Feishu JSON body → throws with parsed code + msg (diagnoses 234XXX subcode)', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'inbox-img-'));
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ code: 234004, msg: 'app not in chat', data: {} }),
+        {
+          status: 400,
+          statusText: 'Bad Request',
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    await expect(
+      downloadAttachment('om_400', 'img_400', 'image', undefined, {
+        appId: 'cli_app',
+        appSecret: 'sec',
+        tenantTokenStore: fakeStore('t'),
+        outDir,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/HTTP 400.*code=234004 msg="app not in chat"/);
+  });
+
+  it('HTTP non-2xx with empty body → throws with just status (no trailing junk)', async () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'inbox-img-'));
+    const fetchImpl: typeof fetch = async () =>
+      new Response('', { status: 500, statusText: 'Internal Server Error' });
+    await expect(
+      downloadAttachment('om_500', 'img_500', 'image', undefined, {
+        appId: 'cli_app',
+        appSecret: 'sec',
+        tenantTokenStore: fakeStore('t'),
+        outDir,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/^downloadAttachment om_500 image: HTTP 500 Internal Server Error$/);
   });
 
   it('name with unsafe chars → replaced with _, runs collapsed', async () => {

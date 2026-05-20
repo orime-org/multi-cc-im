@@ -87,8 +87,29 @@ export async function downloadAttachment(
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
+    // Surface Feishu's response body in the thrown error — the actual root
+    // cause lives in the JSON `code` (e.g. 234003/234004/234037/234043 — see
+    // [[reference_feishu_im_resource_endpoint]]) which `res.status` alone
+    // doesn't disambiguate. Fall back to a truncated raw body for non-JSON
+    // responses so we never lose the only diagnostic signal we'll get.
+    const bodyText = await res.text().catch(() => '');
+    let bodyInfo = '';
+    if (bodyText.length > 0) {
+      try {
+        const parsed = JSON.parse(bodyText) as { code?: unknown; msg?: unknown };
+        const codeRaw = typeof parsed.code === 'number' ? parsed.code : undefined;
+        const msgRaw = typeof parsed.msg === 'string' ? parsed.msg : undefined;
+        if (codeRaw !== undefined || msgRaw !== undefined) {
+          bodyInfo = ` code=${codeRaw ?? '?'} msg="${msgRaw ?? '?'}"`;
+        } else {
+          bodyInfo = ` body=${bodyText.slice(0, 200)}`;
+        }
+      } catch {
+        bodyInfo = ` body=${bodyText.slice(0, 200)}`;
+      }
+    }
     throw new Error(
-      `downloadAttachment ${messageId} ${type}: HTTP ${res.status} ${res.statusText || '?'}`,
+      `downloadAttachment ${messageId} ${type}: HTTP ${res.status} ${res.statusText || '?'}${bodyInfo}`,
     );
   }
   const buf = Buffer.from(await res.arrayBuffer());
