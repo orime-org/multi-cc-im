@@ -468,6 +468,261 @@ describe('createLarkAdapter', () => {
       expect(handler.received[0]!.text).toBe('#frontend 看这图');
     });
 
+    // ----- quotedMessage on-demand fetch (text reply quoted context) -----
+    // Nested under `inbound im.message.receive_v1` so setupAndFire stays in
+    // scope; each test below crafts its own buildClient when it needs to
+    // assert message.get behaviour, but lighter-weight stubs reuse the
+    // outer setupAndFire when only the no-parent path matters.
+    async function setupWithGet(
+      messageOverride: Partial<typeof baseInboundEvent['message']>,
+      getImpl: NonNullable<
+        Parameters<typeof createLarkAdapter>[0]['buildClient']
+      > extends (creds: infer _C) => infer R
+        ? R extends { im: { v1: { message: infer M } } }
+          ? M extends { get?: infer G }
+            ? G
+            : never
+          : never
+        : never,
+    ): Promise<{
+      handler: ReturnType<typeof makeHandler>;
+      getCalls: string[];
+    }> {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const getCalls: string[] = [];
+      const wrappedGet = async (payload: { path: { message_id: string } }) => {
+        getCalls.push(payload.path.message_id);
+        return (getImpl as (p: unknown) => Promise<unknown>)(payload) as ReturnType<
+          NonNullable<LarkClientShape['im']['v1']['message']['get']>
+        >;
+      };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: {
+            v1: {
+              message: {
+                create: vi.fn(async () => ({ code: 0 })),
+                get: wrappedGet as NonNullable<
+                  LarkClientShape['im']['v1']['message']['get']
+                >,
+              },
+            },
+          },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: { ...baseInboundEvent.message, ...messageOverride },
+      });
+      return { handler, getCalls };
+    }
+
+    it('text reply with parent + successful message.get → quotedMessage populated with parent text body + sender role=user', async () => {
+      const { handler, getCalls } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '帮我看看' }),
+          parent_id: 'om_parent_abc',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                message_id: 'om_parent_abc',
+                msg_type: 'text',
+                body: { content: JSON.stringify({ text: '前端那个 PR 怎么样了？' }) },
+                sender: { id: 'ou_other', sender_type: 'user' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(getCalls).toEqual(['om_parent_abc']);
+      expect(handler.received).toHaveLength(1);
+      const msg = handler.received[0]!;
+      expect(msg.replyToMessageId).toBe('om_parent_abc');
+      expect(msg.quotedMessage).toEqual({
+        content: '前端那个 PR 怎么样了？',
+        sender: { id: 'ou_other', role: 'user' },
+      });
+    });
+
+    it('text reply with parent → sender_type=app maps to role=bot (cc Stop reply scenario)', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '继续' }),
+          parent_id: 'om_parent_cc',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'text',
+                body: { content: JSON.stringify({ text: 'cc done.' }) },
+                sender: { id: 'ou_bot', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.quotedMessage).toEqual({
+        content: 'cc done.',
+        sender: { id: 'ou_bot', role: 'bot' },
+      });
+    });
+
+    it('text reply with parent of non-text msg_type → quotedMessage.content is [msg_type] placeholder', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '关于这张图' }),
+          parent_id: 'om_parent_img',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'image',
+                body: { content: JSON.stringify({ image_key: 'img_v3' }) },
+                sender: { id: 'ou_other', sender_type: 'user' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.quotedMessage).toEqual({
+        content: '[image]',
+        sender: { id: 'ou_other', role: 'user' },
+      });
+    });
+
+    it('text reply with parent → message.get returns deleted item → quotedMessage undefined', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_del',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'text',
+                deleted: true,
+                body: { content: JSON.stringify({ text: 'was here' }) },
+                sender: { id: 'ou_other', sender_type: 'user' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.replyToMessageId).toBe('om_parent_del');
+      expect(handler.received[0]!.quotedMessage).toBeUndefined();
+    });
+
+    it('text reply with parent → message.get returns non-zero Feishu code (230110 deleted) → quotedMessage undefined + no throw', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_gone',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 230110,
+          msg: 'Action unavailable as the message has been deleted',
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received).toHaveLength(1);
+      expect(handler.received[0]!.quotedMessage).toBeUndefined();
+    });
+
+    it('text reply with parent → message.get throws (network) → quotedMessage undefined + adapter still emits', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_net',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => {
+          throw new Error('ECONNRESET');
+        }) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received).toHaveLength(1);
+      expect(handler.received[0]!.quotedMessage).toBeUndefined();
+    });
+
+    it('text message WITHOUT parent_id → no message.get call + quotedMessage undefined', async () => {
+      const getCalls: string[] = [];
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: {
+            v1: {
+              message: {
+                create: vi.fn(async () => ({ code: 0 })),
+                get: vi.fn(async (p: { path: { message_id: string } }) => {
+                  getCalls.push(p.path.message_id);
+                  return { code: 0 };
+                }) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+              },
+            },
+          },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', baseInboundEvent);
+      expect(getCalls).toEqual([]);
+      expect(handler.received).toHaveLength(1);
+      expect(handler.received[0]!.quotedMessage).toBeUndefined();
+    });
+
+    it('client lacks message.get (legacy stub) → reply still emits, quotedMessage undefined (no crash)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: {
+          ...baseInboundEvent.message,
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_xyz',
+        } as unknown as typeof baseInboundEvent['message'],
+      });
+      expect(handler.received).toHaveLength(1);
+      expect(handler.received[0]!.quotedMessage).toBeUndefined();
+    });
+
     it('audio message → echoes keyboard-mic hint via client.im.v1.message.create + does NOT route (DD 2026-05-12 §5)', async () => {
       const dispatcher = makeStubDispatcher();
       const handler = makeHandler();

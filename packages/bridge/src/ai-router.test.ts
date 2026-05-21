@@ -78,6 +78,70 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toContain('"reason"');
   });
 
+  it('quotedMessage absent → no QUOTED PARENT section (current-flow shape unchanged)', () => {
+    const out = renderRoutingPrompt({
+      userMsg: 'hi',
+      tabs: ['t'],
+      currentTab: null,
+    });
+    expect(out).not.toContain('QUOTED PARENT');
+    expect(out).not.toContain('sender_role=');
+  });
+
+  it('quotedMessage present → renders QUOTED PARENT section with content + sender role + routing-only-from-reply rule', () => {
+    const out = renderRoutingPrompt({
+      userMsg: '继续吧',
+      quotedMessage: {
+        content: '前端那个 PR 怎么样了？',
+        sender: { id: 'ou_user42', role: 'user' },
+      },
+      tabs: ['frontend', 'api'],
+      currentTab: null,
+    });
+    expect(out).toContain('QUOTED PARENT MESSAGE (CONTEXT ONLY — NOT FOR ROUTING)');
+    expect(out).toContain('前端那个 PR 怎么样了？');
+    expect(out).toContain('sender_role=user');
+    expect(out).toContain('sender_id=ou_user42');
+    // Hard rule must be present so the model never extracts paneId from quoted body.
+    expect(out).toMatch(/NOT.*routing/i);
+    expect(out).toMatch(/only[\s\S]*the user's current reply/i);
+    // The user's actual reply is still shown in the standard location.
+    expect(out).toContain('继续吧');
+  });
+
+  it('quotedMessage with sender_role=bot (cc Stop reply scenario) → rendered as bot in the prompt', () => {
+    const out = renderRoutingPrompt({
+      userMsg: '?',
+      quotedMessage: {
+        content: 'Done. Anything else?',
+        sender: { id: 'ou_bot1', role: 'bot' },
+      },
+      tabs: ['t'],
+      currentTab: null,
+    });
+    expect(out).toContain('sender_role=bot');
+    expect(out).toContain('Done. Anything else?');
+  });
+
+  it('quotedMessage with very long content → truncated to ~800 chars in the prompt to avoid signal dilution', () => {
+    const long = 'A'.repeat(2000);
+    const out = renderRoutingPrompt({
+      userMsg: '?',
+      quotedMessage: {
+        content: long,
+        sender: { id: 'ou_x', role: 'unknown' },
+      },
+      tabs: ['t'],
+      currentTab: null,
+    });
+    expect(out).toContain('... (truncated)');
+    // The quoted block should NOT carry the full 2000-char body.
+    const aRuns = out.match(/A{800,}/g);
+    expect(aRuns).not.toBeNull();
+    // And no full 1500-char run survives — proves the 800 cap (with margin).
+    expect(out).not.toContain('A'.repeat(1500));
+  });
+
   it('routing rules tell the model to be LENIENT on tab-name matching (case / whitespace / hyphens / voice-typo)', async () => {
     // Real-account smoke 2026-05-11: user said "跟multi-ccCRM说..." (voice
     // input transcribed "IM" as "CRM") and "就是跟 multi-cc-IM说..." (case
