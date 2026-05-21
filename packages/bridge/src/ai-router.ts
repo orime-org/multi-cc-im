@@ -169,6 +169,25 @@ export interface AIPermissionResponse {
 export interface AIRoutingOpts {
   /** The IM message body (already with `#<tab>` prefix stripped if any — but caller should only invoke this for plain no-mention messages). */
   userMsg: string;
+  /**
+   * Body of the message the user is *replying to* in the IM (best-effort
+   * context for the AI to disambiguate intent). When present, the router
+   * prompt surfaces it as a clearly-labeled quoted block separate from
+   * the user's current reply, so the AI can use the parent for context
+   * without confusing it with the routing payload. Absent → prompt
+   * omits the quoted block entirely (current-flow shape unchanged).
+   *
+   * **Routing rule the AI is told (in the prompt)**: the parent may
+   * be ANY prior message (cc Stop reply, the user's own earlier
+   * message, a third party in a group chat). The AI must extract
+   * paneId / tab cues ONLY from the user's current reply (`userMsg`),
+   * NEVER from `quotedMessage.content` — quoting is context, not a
+   * routing signal. Per [DD: text reply quoted context].
+   */
+  quotedMessage?: {
+    content: string;
+    sender: { id: string; role: 'user' | 'bot' | 'unknown' };
+  };
   /** Currently visible cc tab titles (filter out empty / un-/rename'd tabs before passing). */
   tabs: readonly string[];
   /** The last-explicitly-mentioned tab title, used as a context signal for pronoun resolution. */
@@ -262,6 +281,10 @@ const DEFAULT_CLAUDE_BINARY = 'claude';
  */
 export function renderRoutingPrompt(opts: {
   userMsg: string;
+  quotedMessage?: {
+    content: string;
+    sender: { id: string; role: 'user' | 'bot' | 'unknown' };
+  };
   tabs: readonly string[];
   currentTab: string | null;
   pendingRequests?: readonly PendingRequestForPrompt[];
@@ -281,6 +304,8 @@ export function renderRoutingPrompt(opts: {
   const outputSpec = pendingBlock === ''
     ? OUTPUT_SPEC_ROUTING_ONLY
     : OUTPUT_SPEC_WITH_PERMISSION;
+
+  const quotedBlock = renderQuotedBlock(opts.quotedMessage);
 
   return `You are the IM dispatcher for multi-cc-im.
 
@@ -310,7 +335,7 @@ ${tabList}
 current (the last tab the user explicitly #-mentioned; may or may not
 be related to the current message):
 ${currentLine}
-
+${quotedBlock}
 The user's current IM message:
 "${opts.userMsg}"
 
@@ -714,6 +739,61 @@ If no pending entry plausibly matches the user's message, still emit
 \`decision: "deny"\` + \`reason: "<user's verbatim message>"\` — the user
 can re-issue if mismatched, never silently drop.`;
 
+/**
+ * Render the quoted-parent context block. Surfaced in the prompt as a
+ * clearly-labeled section between `current` and `userMsg` so the AI
+ * sees the quoted body as *background* — not as part of the routing
+ * payload. The block is omitted entirely (`''`) when no quotedMessage
+ * was resolved, leaving the prompt shape identical to the no-reply
+ * path (current-flow superset).
+ *
+ * Hard rule embedded in the prompt: extract paneId / tab cues ONLY
+ * from the user's current reply (`userMsg`), NEVER from
+ * `quotedMessage.content`. The parent can be ANY prior IM message
+ * (cc Stop reply, the user's own earlier message, a third party in
+ * a group chat) — so it must NOT contribute routing signal.
+ *
+ * Sender role hint is rendered verbatim so the AI can use it for
+ * context disambiguation (e.g. user replied to their own earlier
+ * task message means the reply is likely follow-up to that task).
+ */
+function renderQuotedBlock(
+  quotedMessage:
+    | { content: string; sender: { id: string; role: 'user' | 'bot' | 'unknown' } }
+    | undefined,
+): string {
+  if (!quotedMessage) return '';
+  // Truncate aggressively — the quoted parent is context, not the
+  // payload; an unbounded body would flood the prompt and confuse the
+  // routing signal. 800 chars matches the typical Feishu card body
+  // size we already truncate elsewhere.
+  const MAX = 800;
+  const truncated =
+    quotedMessage.content.length > MAX
+      ? `${quotedMessage.content.slice(0, MAX)}... (truncated)`
+      : quotedMessage.content;
+  return `
+==================================================================
+QUOTED PARENT MESSAGE (CONTEXT ONLY — NOT FOR ROUTING)
+==================================================================
+
+The user's current IM message is a REPLY to the message below. Use
+this as context to understand intent, NOT as a routing signal. Do
+NOT extract a tab name or routing cue from the quoted text — only
+the user's current reply (shown below as "The user's current IM
+message") may contribute routing signal.
+
+The quoted parent may be ANY prior message: cc's own Stop reply,
+the user's earlier message, or a third party in a group chat. The
+sender role hint below tells you which.
+
+Quoted parent (sender_role=${quotedMessage.sender.role}, sender_id=${quotedMessage.sender.id}):
+"""
+${truncated}
+"""
+`;
+}
+
 function renderPendingBlock(
   pendingRequests: readonly PendingRequestForPrompt[] | undefined,
 ): string {
@@ -942,6 +1022,7 @@ export async function routeViaAI(
 
   const prompt = renderRoutingPrompt({
     userMsg: opts.userMsg,
+    quotedMessage: opts.quotedMessage,
     tabs: opts.tabs,
     currentTab: opts.currentTab,
     pendingRequests: opts.pendingRequests,

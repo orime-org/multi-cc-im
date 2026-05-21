@@ -106,6 +106,30 @@ export const IncomingMessageSchema = z.object({
    */
   replyToMessageId: z.string().min(1).optional(),
   /**
+   * Resolved body of the quoted parent message (best-effort context for the
+   * AI router to disambiguate intent on text replies). Populated by the IM
+   * adapter when `replyToMessageId` is present *and* an on-demand fetch of
+   * that parent message succeeds. Left `undefined` when the parent cannot
+   * be resolved (deleted / out of scope / network failure) — orchestrator
+   * sends a user-facing IM notice in that case and continues routing on the
+   * reply text alone.
+   *
+   * `content` is a human-readable rendering of the parent (text body for
+   * `msg_type=text`, `[image]`/`[file]`/`[<msg_type>]` placeholder otherwise).
+   * `sender` is the IM-native id of the parent's author plus a coarse role
+   * tag — daemon does not assume the parent was sent by cc; it may equally
+   * be the user's own earlier message, or a third party in a group chat.
+   */
+  quotedMessage: z
+    .object({
+      content: z.string(),
+      sender: z.object({
+        id: z.string().min(1),
+        role: z.enum(['user', 'bot', 'unknown']),
+      }),
+    })
+    .optional(),
+  /**
    * Adapter-specific reply context, discriminated by `imType`. Bridge stores
    * it per-pane (`<paneId>.IMOrigin`) so that when cc Stop hook fires for
    * that pane, the reply can be routed back via `IMAdapter.send(content,

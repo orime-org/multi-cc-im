@@ -445,6 +445,42 @@ export function createOrchestrator(
       return;
     }
 
+    // Quoted-parent notify: when the user replied to a message but the
+    // adapter could not resolve the parent body (deleted / out of scope
+    // / network), tell them once before routing proceeds. The router
+    // then runs without quoted context — equivalent to the no-reply
+    // path. Skipped when the reply targets a stashed image (the
+    // image-join below uses replyToMessageId as a pointer, not as a
+    // request for quoted context). Skipped on bridge cmd / mention
+    // prefixes too — those have deterministic routing that does not
+    // need parent context. Per [DD: text reply quoted context §5].
+    if (
+      msg.replyToMessageId !== undefined &&
+      msg.quotedMessage === undefined &&
+      !pendingImages.has(msg.replyToMessageId)
+    ) {
+      // Skip only bare bridge commands (`/start`, `/stop`, etc.) — those
+      // don't consult quoted context at all so a notify would be noise.
+      // `#<tab>` mentions DO benefit from quoted context (it goes into
+      // the prompt forwarded to cc as background), so we DO notify on
+      // those even though they bypass the AI router.
+      const trimmedForNotify = (msg.text ?? '').trim();
+      const isBridgeCmd = trimmedForNotify.startsWith('/');
+      if (!isBridgeCmd) {
+        log(
+          `[quotedMessage] notify-degrade msgId=${msg.msgId} replyTo=${msg.replyToMessageId}`,
+        );
+        try {
+          await opts.imAdapter.send(
+            '⚠️ 无法获取被引消息内容，仅用你的回复处理',
+            msg.replyCtx as IMReplyContext,
+          );
+        } catch (err) {
+          onError(err, { phase: 'quotedMessageMissingNotify' });
+        }
+      }
+    }
+
     // Pre-ack for plain messages (v1.10, 2026-05-12): plain msgs trigger
     // an AI subprocess (cc cold-start ~2-5 s + Haiku inference ~1-2 s),
     // total 3-7 s wait. Without a visible signal users assume the IM

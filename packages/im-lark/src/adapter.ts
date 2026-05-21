@@ -49,6 +49,45 @@ export interface LarkClientShape {
             content: string;
           };
         }) => Promise<{ code?: number; msg?: string; data?: unknown }>;
+        /**
+         * GET `/open-apis/im/v1/messages/:message_id`. Used by the inbound
+         * reply pipeline to fetch the body of a quoted parent message
+         * referenced by `parent_id` — Feishu does not embed parent content
+         * in the `im.message.receive_v1` event, so on-demand fetch is the
+         * only stateless path. Response shape per SDK
+         * `types/index.d.ts` L252219-L252260: `data.items[]` with each item
+         * carrying `body.content` (JSON-serialized; text → `{"text":"..."}`)
+         * + `sender.{id,sender_type}` + `msg_type` + `deleted`.
+         *
+         * Required scope (any one): `im:message:readonly` / `im:message` /
+         * `im:message.history:readonly`. Known per-call error codes:
+         * `230110` (parent deleted), `230050` (invisible to bot),
+         * `230002` (bot not in group).
+         *
+         * **Optional** so existing test stubs that only mock `create` still
+         * satisfy the shape — adapter call sites null-check (`?.get?.(...)`)
+         * and degrade to "no quoted context" when absent, which matches the
+         * orchestrator's missing-`quotedMessage` IM-notify branch.
+         */
+        get?: (payload: {
+          path: { message_id: string };
+        }) => Promise<{
+          code?: number;
+          msg?: string;
+          data?: {
+            items?: Array<{
+              message_id?: string;
+              msg_type?: string;
+              deleted?: boolean;
+              body?: { content?: string };
+              sender?: {
+                id?: string;
+                id_type?: string;
+                sender_type?: string;
+              };
+            }>;
+          };
+        }>;
       };
     };
   };
@@ -176,6 +215,126 @@ export interface CreateLarkAdapterOpts {
  * it arrives; larger caps cost memory without benefit.
  */
 const SEEN_MSGID_MAX = 200;
+
+/**
+ * Render a Feishu message item — fetched via `im.v1.message.get` — into the
+ * shared `IncomingMessage.quotedMessage` shape. Returns `null` when the
+ * item itself signals "no useful body": deleted, missing body, or empty
+ * content. Caller (adapter) maps `null` to "leave `quotedMessage`
+ * undefined", which orchestrator then surfaces as an IM notice + degrade
+ * per [DD: text reply quoted context §5].
+ *
+ * Content rendering rule: `msg_type=text` → JSON-decoded `.text`. Any
+ * other type (image / file / sticker / interactive card) → `[<msg_type>]`
+ * placeholder, so the AI router prompt stays small and unambiguous. The
+ * full content is intentionally not surfaced for non-text types — feeding
+ * raw image_key / card JSON into the router would dilute the user
+ * intent signal without adding context the router can act on.
+ *
+ * Sender role classification: `sender_type` values per Feishu docs are
+ * `user` (real person) or `app` (bot/integration); we map `app` → `'bot'`,
+ * `user` → `'user'`, anything else (incl. missing) → `'unknown'`. The
+ * orchestrator does NOT branch on this — it's purely a hint passed to
+ * the AI router so the prompt can stay accurate when the quoted parent
+ * is the user's own prior message (vs cc's Stop reply).
+ */
+function renderQuotedItem(item: {
+  msg_type?: string;
+  deleted?: boolean;
+  body?: { content?: string };
+  sender?: { id?: string; sender_type?: string };
+}): { content: string; sender: { id: string; role: 'user' | 'bot' | 'unknown' } } | null {
+  if (item.deleted) return null;
+  const rawContent = item.body?.content;
+  if (typeof rawContent !== 'string' || rawContent.length === 0) return null;
+  const senderId = item.sender?.id;
+  if (typeof senderId !== 'string' || senderId.length === 0) return null;
+  let content: string;
+  if (item.msg_type === 'text') {
+    try {
+      const parsed = JSON.parse(rawContent) as { text?: unknown };
+      if (typeof parsed.text !== 'string' || parsed.text.length === 0) {
+        return null;
+      }
+      content = parsed.text;
+    } catch {
+      return null;
+    }
+  } else {
+    content = `[${item.msg_type ?? 'unknown'}]`;
+  }
+  const senderType = item.sender?.sender_type;
+  const role: 'user' | 'bot' | 'unknown' =
+    senderType === 'user' ? 'user' : senderType === 'app' ? 'bot' : 'unknown';
+  return {
+    content,
+    sender: { id: senderId, role },
+  };
+}
+
+/**
+ * On-demand fetch of a quoted parent message via SDK
+ * `client.im.v1.message.get`. Returns the rendered quotedMessage on
+ * success; `undefined` on any failure path (network error, SDK throw,
+ * Feishu error code, parent deleted, empty body). Failures are logged
+ * via `log` but never raised — orchestrator handles the undefined case
+ * by sending a user-facing IM notice and degrading to reply-text-only
+ * routing per [DD: text reply quoted context §5].
+ *
+ * Known Feishu error codes the caller may see in `code`:
+ * - `230110`: message deleted
+ * - `230050`: invisible to operator (bot can't see it)
+ * - `230002`: bot not in the group containing the message
+ * Treated uniformly as "no quoted context" — orchestrator's IM notice is
+ * the same regardless of which sub-cause, since the user-actionable
+ * answer is the same ("daemon couldn't read the message you quoted").
+ */
+async function fetchQuotedMessage(
+  client: LarkClientShape,
+  parentMessageId: string,
+  log: (line: string) => void,
+): Promise<IncomingMessage['quotedMessage']> {
+  const getFn = client.im.v1.message.get;
+  if (typeof getFn !== 'function') {
+    log(
+      `[lark] quoted parent fetch skipped — client lacks im.v1.message.get (test stub or pre-1.63 SDK?)`,
+    );
+    return undefined;
+  }
+  type GetResp = Awaited<
+    ReturnType<NonNullable<LarkClientShape['im']['v1']['message']['get']>>
+  >;
+  let resp: GetResp;
+  try {
+    resp = await getFn({ path: { message_id: parentMessageId } });
+  } catch (err) {
+    log(
+      `[lark] quoted parent fetch threw for ${parentMessageId}: ${formatErrorWithCause(err)}`,
+    );
+    return undefined;
+  }
+  if (typeof resp.code === 'number' && resp.code !== 0) {
+    log(
+      `[lark] quoted parent fetch returned non-zero code=${resp.code} msg=${resp.msg ?? ''} for ${parentMessageId}`,
+    );
+    return undefined;
+  }
+  const item = resp.data?.items?.[0];
+  if (!item) {
+    log(
+      `[lark] quoted parent fetch returned empty items for ${parentMessageId}`,
+    );
+    return undefined;
+  }
+  const rendered = renderQuotedItem(item);
+  if (rendered === null) {
+    log(
+      `[lark] quoted parent ${parentMessageId} renders to null (deleted / empty / un-parseable)`,
+    );
+    return undefined;
+  }
+  return rendered;
+}
 
 /**
  * Build a Lark Card Kit schema-2.0 card from an `AUQRequest`. Each
@@ -526,6 +685,10 @@ export function createLarkAdapter(
             const parentRaw = (data.message as { parent_id?: unknown }).parent_id;
             const replyToMessageId =
               typeof parentRaw === 'string' && parentRaw.length > 0 ? parentRaw : undefined;
+            const quotedMessage =
+              replyToMessageId && client
+                ? await fetchQuotedMessage(client, replyToMessageId, log)
+                : undefined;
             const msg: IncomingMessage = {
               msgId: data.message.message_id,
               from: openId,
@@ -539,6 +702,7 @@ export function createLarkAdapter(
               ],
               timestamp: Number(data.message.create_time),
               replyToMessageId,
+              quotedMessage,
               replyCtx,
             };
             try {
@@ -598,6 +762,10 @@ export function createLarkAdapter(
           const parentRaw = (data.message as { parent_id?: unknown }).parent_id;
           const replyToMessageId =
             typeof parentRaw === 'string' && parentRaw.length > 0 ? parentRaw : undefined;
+          const quotedMessage =
+            replyToMessageId && client
+              ? await fetchQuotedMessage(client, replyToMessageId, log)
+              : undefined;
           const msg: IncomingMessage = {
             msgId: data.message.message_id,
             from: openId,
@@ -605,6 +773,7 @@ export function createLarkAdapter(
             attachments: [],
             timestamp: Number(data.message.create_time),
             replyToMessageId,
+            quotedMessage,
             replyCtx,
           };
 

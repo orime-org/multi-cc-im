@@ -695,6 +695,132 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
     await orch.stop();
   });
 
+  it('text reply with parent_id but quotedMessage undefined + no stash → IM notify "无法获取被引消息内容" + route still proceeds', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    await writeIMWorkFile(testStateDir, 'wezterm'); // IMWork on so router engages plain/mention path
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_orphan',
+        text: '#frontend 帮我看看',
+        replyToMessageId: 'm_unfetchable_parent',
+      }),
+    );
+    // Notice fired exactly once (#frontend skips pre-ack since it starts
+    // with `#`, so the only IM send is the notify).
+    const notices = im.sent.filter((s) =>
+      s.content.includes('无法获取被引消息内容'),
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.content).toMatch(/⚠️/);
+    // Routing did NOT short-circuit — message was dispatched to cc.
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.paneId).toBe(FRONTEND_PANE);
+    await orch.stop();
+  });
+
+  it('text reply with parent_id and quotedMessage populated → NO notify (router gets the quoted context)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    await writeIMWorkFile(testStateDir, 'wezterm');
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    const msgWithQuote: IncomingMessage = {
+      ...textReply({
+        msgId: 'm_text_with_quote',
+        text: '#frontend 继续',
+        replyToMessageId: 'm_parent_resolved',
+      }),
+      quotedMessage: {
+        content: '前端 PR 状态？',
+        sender: { id: 'ou_user', role: 'user' },
+      },
+    };
+    await im.handler!.onMessage(msgWithQuote);
+    const notices = im.sent.filter((s) =>
+      s.content.includes('无法获取被引消息内容'),
+    );
+    expect(notices).toHaveLength(0);
+    expect(term.sendTextCalls).toHaveLength(1);
+    await orch.stop();
+  });
+
+  it('text reply with parent_id matching stashed image (image-join) + quotedMessage undefined → NO notify (image-join path is intentional)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_join', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    im.sent.length = 0;
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_text_join',
+        text: '#frontend 看这张',
+        replyToMessageId: 'm_img_join',
+      }),
+    );
+    const notices = im.sent.filter((s) =>
+      s.content.includes('无法获取被引消息内容'),
+    );
+    expect(notices).toHaveLength(0);
+    await orch.stop();
+  });
+
+  it('bridge cmd (/start) with parent_id + quotedMessage undefined → NO notify (deterministic routing skips quoted-context need)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_cmd',
+        text: '/start',
+        replyToMessageId: 'm_unfetchable',
+      }),
+    );
+    const notices = im.sent.filter((s) =>
+      s.content.includes('无法获取被引消息内容'),
+    );
+    expect(notices).toHaveLength(0);
+    await orch.stop();
+  });
+
   it('joining a stash deletes it — a second reply to the same image does not re-fuse', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);
