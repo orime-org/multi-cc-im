@@ -152,6 +152,128 @@ describe('createLarkAdapter', () => {
     });
   });
 
+  describe('WS close-detector (zombie recovery)', () => {
+    /**
+     * Per [DD 2026-05-21 ws-zombie-detection]: adapter must attach a close
+     * listener on the SDK's underlying ws so socket-half-open / sleep-wake
+     * disconnects trigger our retry loop (SDK swallows close events
+     * silently when autoReconnect:false). Tests below lock in:
+     *
+     *  1. SDK shape `wsClient.wsConfig.getWSInstance()` returning a node-
+     *     style EventEmitter with `on('close', ...)`. If a future SDK
+     *     release changes this shape, the first test goes red so we know
+     *     to re-validate before publishing.
+     *  2. Defensive fallback: if the shape disappears, adapter logs but
+     *     does not crash and start() still resolves.
+     */
+
+    it('attaches a close listener that triggers retry on disconnect (Lark SDK ≥ 1.63.1 shape)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      let closeHandler: (() => void) | undefined;
+      const wsInstanceMock = {
+        on: vi.fn((event: string, cb: () => void) => {
+          if (event === 'close') closeHandler = cb;
+        }),
+      };
+      let cbs!: { onReady: () => void; onError: (err: Error) => void };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, captured) => {
+          cbs = captured;
+          const ws: LarkWSClientShape & {
+            wsConfig: { getWSInstance: () => typeof wsInstanceMock };
+          } = {
+            start: vi.fn(async () => {
+              cbs.onReady();
+            }),
+            close: vi.fn(() => {}),
+            wsConfig: { getWSInstance: () => wsInstanceMock },
+          };
+          return ws;
+        },
+        buildDispatcher: () => dispatcher,
+        retryIntervalMs: 5,
+        cooldownMs: 5,
+        log: (l) => logs.push(l),
+      });
+      await adapter.start(makeHandler());
+
+      // After successful connect, adapter should have attached close listener.
+      expect(wsInstanceMock.on).toHaveBeenCalledWith('close', expect.any(Function));
+      expect(closeHandler).toBeTypeOf('function');
+
+      // Fire close — adapter should log + start retrying.
+      closeHandler!();
+      expect(logs.some((l) => l.includes('WS close detected'))).toBe(true);
+    });
+
+    it('does not crash when SDK shape changes (wsConfig / getWSInstance missing)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: vi.fn(async () => {
+            cbs.onReady();
+          }),
+          close: vi.fn(() => {}),
+          // No wsConfig — simulates future SDK release with renamed/private field.
+        }),
+        buildDispatcher: () => dispatcher,
+        retryIntervalMs: 5,
+        cooldownMs: 5,
+        log: (l) => logs.push(l),
+      });
+      await expect(adapter.start(makeHandler())).resolves.toBeUndefined();
+      expect(logs.some((l) => l.includes('close-detector NOT attached'))).toBe(true);
+    });
+
+    it('close fired after stop() is a no-op (stopRequested guard prevents stale retry)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const logs: string[] = [];
+      let closeHandler: (() => void) | undefined;
+      const wsInstanceMock = {
+        on: vi.fn((event: string, cb: () => void) => {
+          if (event === 'close') closeHandler = cb;
+        }),
+      };
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: { v1: { message: { create: vi.fn(async () => ({ code: 0 })) } } },
+        }),
+        buildWSClient: (_creds, captured) => {
+          const ws: LarkWSClientShape & {
+            wsConfig: { getWSInstance: () => typeof wsInstanceMock };
+          } = {
+            start: vi.fn(async () => {
+              captured.onReady();
+            }),
+            close: vi.fn(() => {}),
+            wsConfig: { getWSInstance: () => wsInstanceMock },
+          };
+          return ws;
+        },
+        buildDispatcher: () => dispatcher,
+        retryIntervalMs: 5,
+        cooldownMs: 5,
+        log: (l) => logs.push(l),
+      });
+      await adapter.start(makeHandler());
+      await adapter.stop();
+      logs.length = 0;
+      closeHandler!();
+      expect(logs.some((l) => l.includes('WS close detected'))).toBe(false);
+    });
+  });
+
   describe('inbound im.message.receive_v1', () => {
     async function setupAndFire(eventOverride: Partial<typeof baseInboundEvent['message']> = {}) {
       const dispatcher = makeStubDispatcher();
