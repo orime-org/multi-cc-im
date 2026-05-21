@@ -696,6 +696,14 @@ export function createLarkAdapter(
             log('[lark] WS reconnected — bridge ready');
           }
           attempt = 0;
+          // After every successful (re)connect, attach our OWN close
+          // listener on the underlying ws so we detect zombie disconnects
+          // (TCP half-open, laptop sleep/wake, transient network loss).
+          // SDK's internal `wsInstance.on('close') → this.reConnect()` is
+          // a no-op because `autoReconnect:false` + `hasEverConnected=true`
+          // makes `reConnect()` silent-return (SDK lib/index.js L85525-
+          // 85533). Per [DD 2026-05-21 ws-zombie-detection](../../../docs/superpowers/specs/2026-05-21-ws-zombie-detection-dd.md).
+          attachCloseDetector();
         },
         onError: (err: Error) => {
           // Surface to handler before we decide to retry — orchestrator
@@ -710,6 +718,44 @@ export function createLarkAdapter(
         // for interface compatibility with the WSClient ctor.
         onReconnecting: () => {},
         onReconnected: () => {},
+      };
+
+      /**
+       * Attach a close listener on the SDK's underlying ws so any TCP
+       * disconnect (clean close or zombie half-open detected by OS) kicks
+       * our retry loop. SDK exposes `wsConfig.getWSInstance()` as a public
+       * runtime method, but `.d.ts` marks `wsConfig` as `private` —
+       * cast through `unknown` to bypass the type-only restriction.
+       *
+       * Defensive: if SDK shape changes in a future release and we can't
+       * reach `wsInstance.on`, log + skip (don't crash). Without this
+       * detector the daemon still works during normal operation; it just
+       * goes back to needing a manual restart after laptop sleep/wake.
+       */
+      const attachCloseDetector = (): void => {
+        if (stopRequested) return;
+        const internal = (
+          wsClient as unknown as {
+            wsConfig?: {
+              getWSInstance?: () =>
+                | { on?: (ev: string, cb: () => void) => void }
+                | null;
+            };
+          }
+        )?.wsConfig?.getWSInstance?.();
+        if (!internal || typeof internal.on !== 'function') {
+          log(
+            '[lark] WS close-detector NOT attached (SDK shape changed?) — daemon will need manual restart on socket zombie',
+          );
+          return;
+        }
+        internal.on('close', () => {
+          if (stopRequested) return;
+          log(
+            '[lark] WS close detected on underlying socket — triggering retry loop',
+          );
+          scheduleRetry();
+        });
       };
 
       const scheduleRetry = (): void => {
