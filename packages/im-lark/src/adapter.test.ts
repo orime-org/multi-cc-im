@@ -814,6 +814,102 @@ describe('createLarkAdapter', () => {
       });
     });
 
+    it('fetchQuotedMessage MUST pass `card_msg_content_type=user_card_content` so interactive parents return original schema-2.0 (not Feishu condensed shape)', async () => {
+      const dispatcher = makeStubDispatcher();
+      const handler = makeHandler();
+      type GetPayload = Parameters<
+        NonNullable<LarkClientShape['im']['v1']['message']['get']>
+      >[0];
+      const recordedPayloads: GetPayload[] = [];
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () => ({
+          im: {
+            v1: {
+              message: {
+                create: vi.fn(async () => ({ code: 0 })),
+                get: (async (payload: GetPayload) => {
+                  recordedPayloads.push(payload);
+                  return {
+                    code: 0,
+                    data: {
+                      items: [
+                        {
+                          msg_type: 'text',
+                          body: { content: JSON.stringify({ text: 'hi' }) },
+                          sender: { id: 'ou_other', sender_type: 'user' },
+                        },
+                      ],
+                    },
+                  };
+                }) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+              },
+            },
+          },
+        }),
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(handler);
+      await dispatcher.fire('im.message.receive_v1', {
+        ...baseInboundEvent,
+        message: {
+          ...baseInboundEvent.message,
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_param_check',
+        } as unknown as typeof baseInboundEvent['message'],
+      });
+      expect(recordedPayloads).toHaveLength(1);
+      expect(recordedPayloads[0]!.path.message_id).toBe('om_parent_param_check');
+      expect(recordedPayloads[0]!.params).toEqual({
+        card_msg_content_type: 'user_card_content',
+      });
+    });
+
+    it('interactive parent — Feishu condensed shape (no body.elements) → fallback [interactive] placeholder (regression for missing user_card_content param)', async () => {
+      // Simulates what Feishu returns when the request OMITS
+      // card_msg_content_type=user_card_content: a condensed
+      // server-side representation that lacks body.elements[]. The
+      // adapter MUST tolerate this shape and fall back to placeholder
+      // rather than crash — defensive against both server-side schema
+      // drift and pre-PR-fix daemon builds.
+      const condensedShape = {
+        schema: '2.0',
+        body: {
+          // No .elements field at all (or could be present but empty / wrong key)
+          template: 'condensed_v1',
+          title: { content: 'Card title shown in IM list' },
+        },
+      };
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_condensed',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: { content: JSON.stringify(condensedShape) },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.quotedMessage).toEqual({
+        content: '[interactive]',
+        sender: { id: 'ou_bot1', role: 'bot' },
+      });
+    });
+
     it('text reply with parent → message.get returns deleted item → quotedMessage undefined', async () => {
       const { handler } = await setupWithGet(
         {
