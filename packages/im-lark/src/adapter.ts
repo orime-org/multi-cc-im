@@ -71,6 +71,18 @@ export interface LarkClientShape {
          */
         get?: (payload: {
           path: { message_id: string };
+          /**
+           * Query params for shape-modifiers. `card_msg_content_type` is
+           * **critical** for `msg_type=interactive` (cardkit): default
+           * response is a **condensed server-side card structure** that
+           * does NOT include `body.elements[]` (per Feishu docs
+           * 2026-05-22). Pass `'user_card_content'` to receive the
+           * original schema-2.0 card JSON with full `body.elements[]`,
+           * so cardkit parsers can extract markdown / plain_text /
+           * button text. Has no effect on non-interactive types.
+           * See [[reference_feishu_message_get_interactive_user_card_content]].
+           */
+          params?: { card_msg_content_type?: 'user_card_content' };
         }) => Promise<{
           code?: number;
           msg?: string;
@@ -387,7 +399,17 @@ async function fetchQuotedMessage(
   >;
   let resp: GetResp;
   try {
-    resp = await getFn({ path: { message_id: parentMessageId } });
+    // Pass `card_msg_content_type=user_card_content` so msg_type=interactive
+    // parents return their original schema-2.0 card JSON (with
+    // `body.elements[]`) rather than Feishu's default condensed shape.
+    // Without this, renderInteractiveCardContent / extractCardText would
+    // find no elements and fall back to `[interactive]` placeholder even
+    // for our own cards. Has no effect on text/image/file etc. Per
+    // [[reference_feishu_message_get_interactive_user_card_content]].
+    resp = await getFn({
+      path: { message_id: parentMessageId },
+      params: { card_msg_content_type: 'user_card_content' },
+    });
   } catch (err) {
     log(
       `[lark] quoted parent fetch threw for ${parentMessageId}: ${formatErrorWithCause(err)}`,

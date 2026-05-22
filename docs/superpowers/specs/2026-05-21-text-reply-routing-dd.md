@@ -83,6 +83,26 @@
 
 ---
 
+## §6 Post-merge fix（2026-05-22）— `card_msg_content_type=user_card_content` query param 缺失
+
+实施完毕后真账号 smoke 撞 bug：reply 一张飞书卡片，cc tab 仍收 `[interactive]` 占位，而非 parsed 内容。
+
+**真根因**（WebFetch 飞书官方 docs 2026-05-22 实证）：`im.v1.message.get` 默认对 `msg_type=interactive` 返「condensed server-side card structure」，不含 `body.elements[]`。要拿原始 schema 2.0 完整结构必须传 query param `card_msg_content_type=user_card_content`。
+
+PR #221 的 `fetchQuotedMessage` 漏传该 param → 拿到 condensed shape → PR #223 的 `extractCardText` 找不到 `body.elements` → fallback 占位。
+
+**修复**：`fetchQuotedMessage` 调 `client.im.v1.message.get` 时加 `params: { card_msg_content_type: 'user_card_content' }`。
+
+**单测加 2 个**：
+- 验证 fetchQuotedMessage 真传了该 param（assertion on recorded payload）
+- mock condensed shape（无 `body.elements`）→ 仍 fallback `[interactive]` 不崩
+
+跟 [[reference_feishu_message_get_interactive_user_card_content]] 联动（飞书 API 实测 fact）+ [[feedback_upstream_schema_real_smoke]]（schema 单测 fixture 通过 ≠ 真账号通过）复发 — 真账号 smoke 是 schema 信仰的破局点。
+
+4 维 verify：typecheck 9/9 ✅；tests 1139/1139 ✅；bundle 535.64 KB ✅；bin smoke 0.1.5 ✅。
+
+---
+
 ## §6 后续
 
 | 项 | 状态 |
