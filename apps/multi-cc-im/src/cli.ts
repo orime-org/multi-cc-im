@@ -230,17 +230,38 @@ async function dispatchCodexHook(_args: string[]): Promise<number> {
 }
 
 async function dispatchStart(args: string[]): Promise<number> {
-  // Parse `multi-cc-im start [<adapter>]` — single optional positional arg.
-  // Per [DD §4](docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command).
-  if (args.length > 1) {
+  // Parse `multi-cc-im start [<adapter>] [--cli=cc|codex]` — single
+  // optional positional arg + optional `--cli=` flag. Per
+  // [DD §4](docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command)
+  // for the positional; codex CLI adapter DD §7.1 for `--cli=`.
+  let cliKind: 'cc' | 'codex' | undefined;
+  const positional: string[] = [];
+  for (const arg of args) {
+    if (arg.startsWith('--cli=')) {
+      const v = arg.slice('--cli='.length);
+      if (v !== 'cc' && v !== 'codex') {
+        process.stderr.write(
+          `multi-cc-im start: --cli must be 'cc' or 'codex' (got '${v}')\n`,
+        );
+        return 2;
+      }
+      cliKind = v;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length > 1) {
     process.stderr.write(
-      `multi-cc-im start: too many arguments (got ${args.length}, expected 0 or 1)\n` +
-        `Usage: multi-cc-im start [<adapter>]\n`,
+      `multi-cc-im start: too many positional arguments (got ${positional.length}, expected 0 or 1)\n` +
+        `Usage: multi-cc-im start [<adapter>] [--cli=cc|codex]\n`,
     );
     return 2;
   }
-  const adapterArg = args[0];
-  const result = await runStartCommand({ adapterArg });
+  const adapterArg = positional[0];
+  const result = await runStartCommand({
+    adapterArg,
+    ...(cliKind !== undefined ? { cliKind } : {}),
+  });
   if (result.stderr.length > 0) {
     process.stderr.write(`${result.stderr}\n`);
     return result.exitCode;

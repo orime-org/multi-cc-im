@@ -13,6 +13,7 @@ import {
   readDaemonPidFile,
   writeDaemonPidFile,
 } from '@multi-cc-im/cli-cc';
+import { createCodexCliAdapter } from '@multi-cc-im/cli-codex';
 import { createConfigStore } from '@multi-cc-im/storage-files';
 import {
   createWezTermAdapter,
@@ -97,6 +98,15 @@ export interface RunStartCommandOpts {
    * [DD §4](../../../docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command).
    */
   adapterArg?: string;
+  /**
+   * Which CLI adapter to attach (`'cc'` = Claude Code, default; `'codex'`
+   * = OpenAI Codex). Set via `multi-cc-im start --cli=codex`. Switches
+   * which factory creates the daemon-side CLI adapter — both share the
+   * same state-file protocol so the orchestrator + chokidar watcher
+   * downstream is CLI-agnostic. Per
+   * [DD: codex CLI adapter §7.1](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
+   */
+  cliKind?: 'cc' | 'codex';
 
   /**
    * Override the adapter registry consulted by the default selector.
@@ -546,9 +556,14 @@ export async function runStartCommand(
           // Per user feedback 2026-05-14 after PR #175 smoke.
           log: fileOnlyLog,
         });
-  const cliAdapter = createCcCliAdapter({
-    stateDir: paths.stateDir,
-  });
+  // CLI adapter — cc (default) or codex (per `start --cli=codex`).
+  // Both share the same state-file protocol; downstream orchestrator +
+  // chokidar watcher are CLI-agnostic. Per DD §7.1 codex CLI adapter.
+  const cliKind = opts.cliKind ?? 'cc';
+  const cliAdapter =
+    cliKind === 'codex'
+      ? createCodexCliAdapter({ stateDir: paths.stateDir })
+      : createCcCliAdapter({ stateDir: paths.stateDir });
 
   // Shared error ring buffer for the monitor dashboard. Orchestrator's
   // onError pushes here; monitor reads at render time. N=200 per
