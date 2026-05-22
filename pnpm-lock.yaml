@@ -105,6 +105,9 @@ importers:
 
   packages/cli-codex:
     dependencies:
+      '@multi-cc-im/cli-cc':
+        specifier: workspace:*
+        version: link:../cli-cc
       '@multi-cc-im/shared':
         specifier: workspace:*
         version: link:../shared
