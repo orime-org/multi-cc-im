@@ -75,8 +75,11 @@
 | 4 | `packages/bridge/src/ai-router.ts` | **NO quotedMessage** — AI 分诊跟 quoted 完全解耦。撤掉原设计的 `AIRoutingOpts.quotedMessage` / `renderQuotedBlock` / prompt 注入 |
 | 5 | `packages/bridge/src/router.ts` | **NO quotedMessage 透传** — `handlePlainWithAI` 不接 `quotedMessage` 参数；router 只关心 target + intent |
 | 6 | tests | 8 adapter（成功 / 删 / 230110 / 网络 / 非 text msg_type / sender_role / 无 parent_id / legacy stub）+ 1 ai-router（prompt **不**含 QUOTED PARENT 段）+ 7 orchestrator（缺 quoted 通知 / 有 quoted 不通知 / pendingImage 不通知 / bridge cmd 不通知 / dispatch append / 无 quoted 不变 / sender role=bot / image-join 不 append） |
+| 7 | interactive (cardkit) 真 parse — `extractCardText` 递归遍历 `body.elements[]` 抽 markdown / plain_text / button.text.content + 兜底 `[interactive]` 占位（解析失败 / 无文本元素时）| `packages/im-lark/src/adapter.ts` |
+| 8 | image / file / sticker 仍保留 `[<msg_type>]` 占位 — cc 没本地资源 + raw image_key/file_key JSON 是噪音；只 interactive 走真 parse 因为卡片本质就是结构化文本 | 同上 + 设计文档注释 |
+| 9 | cardkit parse 单测 — AUQ 卡 / PermissionRequest 卡 / Stop forward markdown table 卡 / 解析失败 fallback / empty elements fallback | `adapter.test.ts` (+5) |
 
-4 维 verify：typecheck 9/9 ✅；tests 1132/1132 ✅；bundle 534.06 KB ✅；bin smoke 0.1.5 ✅。
+4 维 verify：typecheck 9/9 ✅；tests 1137/1137 ✅；bundle 535.57 KB ✅；bin smoke 0.1.5 ✅。
 
 ---
 

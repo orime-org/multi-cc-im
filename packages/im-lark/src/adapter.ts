@@ -217,6 +217,82 @@ export interface CreateLarkAdapterOpts {
 const SEEN_MSGID_MAX = 200;
 
 /**
+ * Recursively traverse a Lark Card Kit schema-2.0 element tree and
+ * extract human-readable text from `markdown` / `plain_text` content
+ * fields and `button.text.content` labels. Containers
+ * (`interactive_container.elements[]`, `column_set.columns[].elements[]`,
+ * `column.elements[]`) are walked depth-first. Unknown tags are silently
+ * skipped — the walker only surfaces text that exists; it does not
+ * invent fallbacks or include structural noise (button `value` payloads,
+ * `behaviors` callbacks, etc.).
+ *
+ * Returns a flat list of strings, ready to be joined by the caller.
+ * Order is the DOM-traversal order of the input tree, preserving the
+ * card's visual reading order.
+ */
+function extractCardText(elements: unknown): string[] {
+  if (!Array.isArray(elements)) return [];
+  const out: string[] = [];
+  for (const el of elements) {
+    if (el === null || typeof el !== 'object') continue;
+    const node = el as Record<string, unknown>;
+    const tag = typeof node.tag === 'string' ? node.tag : '';
+
+    if (tag === 'markdown' || tag === 'plain_text') {
+      if (typeof node.content === 'string' && node.content.length > 0) {
+        out.push(node.content);
+      }
+    }
+    if (tag === 'button') {
+      const textNode = node.text;
+      if (
+        textNode !== null &&
+        typeof textNode === 'object' &&
+        typeof (textNode as Record<string, unknown>).content === 'string'
+      ) {
+        const buttonText = (textNode as { content: string }).content;
+        if (buttonText.length > 0) out.push(`[Button] ${buttonText}`);
+      }
+    }
+    if (Array.isArray(node.elements)) {
+      out.push(...extractCardText(node.elements));
+    }
+    if (Array.isArray(node.columns)) {
+      out.push(...extractCardText(node.columns));
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse a Lark Card Kit schema-2.0 card content JSON (as embedded in
+ * `body.content` of an `msg_type=interactive` message) and return its
+ * human-readable rendering. Used for quoted-reply context when the user
+ * replies to a bot card (AskUserQuestion / PermissionRequest / Stop
+ * forward with markdown table → cardkit).
+ *
+ * Returns the joined text on success; `null` when the content is not a
+ * valid card JSON, lacks a `body.elements[]`, or yields zero extracted
+ * strings. Caller (renderQuotedItem) falls back to `[interactive]`
+ * placeholder on null.
+ */
+function renderInteractiveCardContent(rawContent: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const body = (parsed as { body?: unknown }).body;
+  if (body === null || typeof body !== 'object') return null;
+  const elements = (body as { elements?: unknown }).elements;
+  const texts = extractCardText(elements);
+  if (texts.length === 0) return null;
+  return texts.join('\n');
+}
+
+/**
  * Render a Feishu message item — fetched via `im.v1.message.get` — into the
  * shared `IncomingMessage.quotedMessage` shape. Returns `null` when the
  * item itself signals "no useful body": deleted, missing body, or empty
@@ -224,19 +300,21 @@ const SEEN_MSGID_MAX = 200;
  * undefined", which orchestrator then surfaces as an IM notice + degrade
  * per [DD: text reply quoted context §5].
  *
- * Content rendering rule: `msg_type=text` → JSON-decoded `.text`. Any
- * other type (image / file / sticker / interactive card) → `[<msg_type>]`
- * placeholder, so the AI router prompt stays small and unambiguous. The
- * full content is intentionally not surfaced for non-text types — feeding
- * raw image_key / card JSON into the router would dilute the user
- * intent signal without adding context the router can act on.
+ * Content rendering rules (consumer is cc tab, not AI router — quoted
+ * is programmatically appended to cc dispatch.content per PR #222):
+ *
+ * | msg_type | Rendering |
+ * |---|---|
+ * | `text` | JSON-decoded `.text` (verbatim user message body) |
+ * | `interactive` (cardkit) | Recursive parse of `body.elements[]` — extract markdown / plain_text / button text per `renderInteractiveCardContent`; falls back to `[interactive]` if parse yields no text |
+ * | `image` / `file` / `sticker` / others | `[<msg_type>]` placeholder — cc has no local resource for these, surfacing raw `image_key` / `file_key` JSON would be noise |
  *
  * Sender role classification: `sender_type` values per Feishu docs are
  * `user` (real person) or `app` (bot/integration); we map `app` → `'bot'`,
  * `user` → `'user'`, anything else (incl. missing) → `'unknown'`. The
- * orchestrator does NOT branch on this — it's purely a hint passed to
- * the AI router so the prompt can stay accurate when the quoted parent
- * is the user's own prior message (vs cc's Stop reply).
+ * orchestrator does NOT branch on this — it's a hint passed verbatim
+ * to cc so the prompt stays accurate when the quoted parent is the
+ * user's own prior message (vs cc's Stop reply).
  */
 function renderQuotedItem(item: {
   msg_type?: string;
@@ -260,6 +338,9 @@ function renderQuotedItem(item: {
     } catch {
       return null;
     }
+  } else if (item.msg_type === 'interactive') {
+    const cardText = renderInteractiveCardContent(rawContent);
+    content = cardText ?? '[interactive]';
   } else {
     content = `[${item.msg_type ?? 'unknown'}]`;
   }
