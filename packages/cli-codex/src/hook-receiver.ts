@@ -1,9 +1,10 @@
+import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   DEFAULT_DETECTORS,
   runDetectors,
   type PaneOrigin,
-} from '@multi-cc-im/cli-cc';
-import {
   existsIMOriginFile,
   existsIMWorkFile,
   formatStopTimestamp,
@@ -11,7 +12,30 @@ import {
   listStopFiles,
   deleteStopFile,
   writeStopFile,
+  readIMWorkFile,
+  listPermissionRequestFiles,
+  listPermissionResponseFiles,
+  deletePermissionFileByPath,
+  writePermissionRequestFile,
+  readPermissionResponseFile,
+  deletePermissionRequestFile,
+  deletePermissionResponseFile,
+  permissionResponsePath,
+  listPermissionDialogRequestFiles,
+  listPermissionDialogResponseFiles,
+  writePermissionDialogRequestFile,
+  readPermissionDialogResponseFile,
+  deletePermissionDialogRequestFile,
+  deletePermissionDialogResponseFile,
+  permissionDialogResponsePath,
 } from '@multi-cc-im/cli-cc';
+
+/** Poll interval for Permission Request/Dialog Response files (ms). */
+const PERMISSION_POLL_INTERVAL_MS = 200;
+/** PreToolUse poll deadline (ms) before falling back to default-allow. */
+const PERMISSION_TIMEOUT_MS = 10_000;
+/** PermissionRequest poll deadline (ms) — matches cli-cc DD §3 D8. */
+const PERMISSION_DIALOG_TIMEOUT_MS = 110_000;
 import {
   parseHookPayload,
   type ParsedHookPayload,
@@ -131,6 +155,12 @@ export interface RunHookReceiverOpts {
    * transparently).
    */
   resolvePaneOrigin?: () => PaneOrigin | undefined;
+  /** Override PreToolUse poll interval (ms). Tests inject a small value. */
+  permissionPollIntervalMs?: number;
+  /** Override PreToolUse total wait budget (ms). Tests inject a small value. */
+  permissionTimeoutMs?: number;
+  /** Override PermissionRequest total wait budget (ms). Tests inject a small value. */
+  permissionDialogTimeoutMs?: number;
   /** Diagnostic trace callback; same swallowing semantics as cli-cc's. */
   trace?: (line: string) => void;
 }
@@ -178,9 +208,25 @@ export async function runHookReceiver(
     case 'SessionStart':
       return handleSessionStart(payload, trace);
     case 'PreToolUse':
-      return handlePreToolUse(payload, trace);
+      return handlePreToolUse({
+        stateDir,
+        payload,
+        paneId,
+        termId,
+        pollIntervalMs: opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS,
+        timeoutMs: opts.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS,
+        trace,
+      });
     case 'PermissionRequest':
-      return handlePermissionRequest(payload, trace);
+      return handlePermissionRequest({
+        stateDir,
+        payload,
+        paneId,
+        termId,
+        pollIntervalMs: opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS,
+        timeoutMs: opts.permissionDialogTimeoutMs ?? PERMISSION_DIALOG_TIMEOUT_MS,
+        trace,
+      });
     case 'Stop':
       return handleStop({
         stateDir,
@@ -212,40 +258,276 @@ function handleSessionStart(
   return;
 }
 
-/**
- * PreToolUse — silent-exit in this commit (see file header note). Codex
- * falls through to its native TUI approval flow. The next commit on
- * this same branch will land the full gate sequence cli-cc uses
- * (read-only allowlist / IMWork lookup / IMOrigin check / daemon-alive
- * probe / write PermissionRequest file / poll PermissionResponse) so
- * permissions forward to IM cards instead of TUI.
- */
-function handlePreToolUse(
-  payload: PreToolUsePayload,
-  trace: (line: string) => void,
-): void {
-  trace(
-    `PreToolUse tool=${payload.tool_name} turn_id=${payload.turn_id} ` +
-      `tool_use_id=${payload.tool_use_id}: silent-exit (IM forward TBD next commit)`,
-  );
-  return;
+interface HandlePreToolUseOpts {
+  stateDir: string;
+  payload: PreToolUsePayload;
+  paneId: PaneOrigin['paneId'];
+  termId: PaneOrigin['termId'];
+  pollIntervalMs: number;
+  timeoutMs: number;
+  trace: (line: string) => void;
 }
 
 /**
- * PermissionRequest — silent-exit in this commit (see file header
- * note). Codex falls through to its native TUI approval. Next commit
- * adds the IM card forward + poll PermissionDialogResponse using the
- * same state file protocol cli-cc established.
+ * PreToolUse — full IM forward + poll. Mirrors cli-cc PreToolUse
+ * gate cascade (IMWork null → silent / auto → allow / no IMOrigin →
+ * silent / daemon dead → silent), writes a PermissionRequest file
+ * keyed by `<paneId>_<sid>.PermissionRequest.<requestId>.json`,
+ * polls the matching `<paneId>_<sid>.PermissionResponse.<requestId>`
+ * file written by the daemon after IM user replies, returns the
+ * decision back to codex via the `PreToolUseHookOutput` shape.
+ *
+ * Codex-vs-cc differences embedded:
+ * - No `AskUserQuestion` special-case (codex routes those through
+ *   PermissionRequest event instead, see handlePermissionRequest).
+ * - No read-only tool allowlist (codex tool set differs — Bash /
+ *   apply_patch / MCP — and the user-facing tool name regex matchers
+ *   in setup-hooks already pre-filter; downstream auto-allow logic
+ *   is moot for the codex tool surface).
+ * - `tool_use_id` is non-empty here, so we use it verbatim in the
+ *   trace line (cli-cc emits its own short hex id since cc's
+ *   `tool_use_id` is empty pre-execution).
+ *
+ * Delete-always: PermissionRequest + Response files are removed in
+ * `finally` regardless of success / timeout / throw, so a crashed
+ * hook subprocess never leaves stale files. Daemon-side reaper is
+ * the safety net for the crash case where this `finally` doesn't run.
  */
-function handlePermissionRequest(
-  payload: PermissionRequestPayload,
-  trace: (line: string) => void,
-): void {
+async function handlePreToolUse(
+  opts: HandlePreToolUseOpts,
+): Promise<PreToolUseHookOutput | void> {
+  const { stateDir, payload, paneId, termId, pollIntervalMs, timeoutMs, trace } = opts;
+  const sessionId = payload.session_id;
+
+  const imWork = await readIMWorkFile(stateDir, termId);
+  if (imWork === null) {
+    trace(`PreToolUse gate: !IMWork(${termId}), silent-exit (defer to codex native)`);
+    return;
+  }
+  if (imWork.auto) {
+    trace(`PreToolUse auto-mode: allow without IM prompt`);
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason:
+          '[multi-cc-im] IMWork auto-approve, allow without IM prompt',
+      },
+    };
+  }
+  if (!(await existsIMOriginFile(stateDir))) {
+    trace(`PreToolUse gate: !IMOrigin, silent-exit`);
+    return;
+  }
+  if (!(await isDaemonAlive(stateDir))) {
+    trace(`PreToolUse gate: !daemon-alive, silent-exit`);
+    return;
+  }
+
+  // Clean stale Request/Response files for this pane+sid before writing fresh.
+  const staleReq = await listPermissionRequestFiles({ stateDir, paneId, sessionId });
+  for (const f of staleReq) await deletePermissionFileByPath(f);
+  const staleResp = await listPermissionResponseFiles({ stateDir, paneId, sessionId });
+  for (const f of staleResp) await deletePermissionFileByPath(f);
+
+  const requestId = randomBytes(4).toString('hex');
   trace(
-    `PermissionRequest tool=${payload.tool_name} turn_id=${payload.turn_id}: ` +
-      `silent-exit (IM forward TBD next commit)`,
+    `PreToolUse forward: tool=${payload.tool_name} turn_id=${payload.turn_id} ` +
+      `tool_use_id=${payload.tool_use_id} requestId=${requestId}`,
   );
-  return;
+  // Coerce tool_input (unknown per codex schema — `tool_input: true` allows
+  // arbitrary JSON) to a Record for our writer signature. zod parsed it as
+  // `unknown` so we narrow defensively before passing along.
+  const toolInputRecord =
+    payload.tool_input !== null && typeof payload.tool_input === 'object'
+      ? (payload.tool_input as Record<string, unknown>)
+      : {};
+  await writePermissionRequestFile({
+    stateDir,
+    paneId,
+    sessionId,
+    requestId,
+    toolName: payload.tool_name,
+    toolInput: toolInputRecord,
+    createdAt: Date.now(),
+  });
+
+  const respPath = permissionResponsePath({ stateDir, paneId, sessionId, requestId });
+  const deadline = Date.now() + timeoutMs;
+  let hookOutput: PreToolUseHookOutput | undefined;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        await stat(respPath);
+        const resp = await readPermissionResponseFile(respPath);
+        if (resp && resp.requestId === requestId) {
+          if (resp.decision === 'allow') {
+            hookOutput = {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+                ...(resp.updatedInput !== undefined
+                  ? { updatedInput: resp.updatedInput }
+                  : {}),
+                ...(resp.reason !== undefined
+                  ? { permissionDecisionReason: resp.reason }
+                  : {}),
+              },
+            };
+          } else {
+            hookOutput = {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: resp.reason,
+              },
+            };
+          }
+          break;
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      await sleep(pollIntervalMs);
+    }
+  } finally {
+    await deletePermissionRequestFile({ stateDir, paneId, sessionId, requestId });
+    await deletePermissionResponseFile({ stateDir, paneId, sessionId, requestId });
+  }
+
+  if (hookOutput) return hookOutput;
+
+  // Timeout default-allow — same convention cli-cc uses for generic
+  // (non-AskUserQuestion) tools. Codex sees an allow rather than
+  // being blocked indefinitely if the user never answers IM.
+  trace(`PreToolUse timeout (${timeoutMs}ms): default-allow`);
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: `${Math.round(timeoutMs / 1000)}s timeout, default allow`,
+    },
+  };
+}
+
+interface HandlePermissionRequestOpts {
+  stateDir: string;
+  payload: PermissionRequestPayload;
+  paneId: PaneOrigin['paneId'];
+  termId: PaneOrigin['termId'];
+  pollIntervalMs: number;
+  timeoutMs: number;
+  trace: (line: string) => void;
+}
+
+/**
+ * PermissionRequest — codex-native escalation dialog. Mirrors cli-cc
+ * PermissionRequest dispatch but emits codex's stdout shape:
+ * `{decision: {behavior: 'allow'|'deny', message?}}` (cc uses
+ * `hookSpecificOutput: {decision: ...}` — extra wrapper level).
+ *
+ * Gate sequence identical to PreToolUse (IMWork / IMOrigin /
+ * daemon-alive). Forwards via the `PermissionDialogRequest` /
+ * `PermissionDialogResponse` file pair (distinct from PreToolUse's
+ * `PermissionRequest` files — cc DD §6 C.1 keeps them separate so
+ * concurrent PreToolUse + PermissionRequest fires don't race on
+ * the same response file).
+ *
+ * `permission_suggestions` is omitted — codex doesn't surface a
+ * "Yes always X" suggestion array the way cc does, so the IM card
+ * shown to the user is simpler (just allow/deny, no quick-rules).
+ * Daemon-side rendering already handles `permission_suggestions: []`
+ * fine (empty array → no quick-rule buttons in the IM card).
+ */
+async function handlePermissionRequest(
+  opts: HandlePermissionRequestOpts,
+): Promise<PermissionRequestHookOutput | void> {
+  const { stateDir, payload, paneId, termId, pollIntervalMs, timeoutMs, trace } = opts;
+  const sessionId = payload.session_id;
+
+  if ((await readIMWorkFile(stateDir, termId)) === null) {
+    trace(`PermissionRequest gate: !IMWork, silent-exit`);
+    return;
+  }
+  if (!(await existsIMOriginFile(stateDir))) {
+    trace(`PermissionRequest gate: !IMOrigin, silent-exit`);
+    return;
+  }
+  if (!(await isDaemonAlive(stateDir))) {
+    trace(`PermissionRequest gate: !daemon-alive, silent-exit`);
+    return;
+  }
+
+  const staleReq = await listPermissionDialogRequestFiles({ stateDir, paneId, sessionId });
+  for (const f of staleReq) await deletePermissionFileByPath(f);
+  const staleResp = await listPermissionDialogResponseFiles({ stateDir, paneId, sessionId });
+  for (const f of staleResp) await deletePermissionFileByPath(f);
+
+  const requestId = randomBytes(4).toString('hex');
+  trace(
+    `PermissionRequest forward: tool=${payload.tool_name} turn_id=${payload.turn_id} ` +
+      `requestId=${requestId}`,
+  );
+  const toolInputRecord =
+    payload.tool_input !== null && typeof payload.tool_input === 'object'
+      ? (payload.tool_input as Record<string, unknown>)
+      : {};
+  await writePermissionDialogRequestFile({
+    stateDir,
+    paneId,
+    sessionId,
+    requestId,
+    toolName: payload.tool_name,
+    toolInput: toolInputRecord,
+    permissionSuggestions: [],
+    createdAt: Date.now(),
+  });
+
+  const respPath = permissionDialogResponsePath({ stateDir, paneId, sessionId, requestId });
+  const deadline = Date.now() + timeoutMs;
+  let hookOutput: PermissionRequestHookOutput | undefined;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        await stat(respPath);
+        const resp = await readPermissionDialogResponseFile(respPath);
+        if (resp && resp.requestId === requestId) {
+          if (resp.decision.behavior === 'allow') {
+            hookOutput = {
+              decision: { behavior: 'allow' },
+            };
+          } else {
+            hookOutput = {
+              decision: {
+                behavior: 'deny',
+                ...(resp.decision.message !== undefined
+                  ? { message: resp.decision.message }
+                  : {}),
+              },
+            };
+          }
+          break;
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      await sleep(pollIntervalMs);
+    }
+  } finally {
+    await deletePermissionDialogRequestFile({ stateDir, paneId, sessionId, requestId });
+    await deletePermissionDialogResponseFile({ stateDir, paneId, sessionId, requestId });
+  }
+
+  if (hookOutput) return hookOutput;
+
+  // Timeout default-allow — same convention as cli-cc PermissionRequest
+  // (D2-A "single-yes, don't silently grant session-wide bypass" applies
+  // to the answered case; timeout falls through to plain allow without
+  // suggestions so codex proceeds with the tool but no session rule).
+  trace(`PermissionRequest timeout (${timeoutMs}ms): default-allow`);
+  return {
+    decision: { behavior: 'allow' },
+  };
 }
 
 interface HandleStopOpts {
