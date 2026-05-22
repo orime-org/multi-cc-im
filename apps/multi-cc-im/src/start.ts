@@ -1,6 +1,7 @@
 import { formatErrorWithCause, type PaneId } from '@multi-cc-im/shared';
 import {
   createOrchestrator,
+  routeViaCodex,
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
 import type { RouterState } from '@multi-cc-im/bridge';
@@ -570,6 +571,16 @@ export async function runStartCommand(
   // [DD 2026-05-15](../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md) §4.
   const errorBuffer = new ErrorRingBuffer({ capacity: 200 });
 
+  // AI router selection — when running with codex as the cc-equivalent
+  // CLI, the daemon's IM triage subprocess must also run codex (so
+  // users don't need cc installed alongside codex). Per DD §7.1.
+  // `undefined` → orchestrator falls back to its built-in `routeViaAI`
+  // (which spawns `claude --print`).
+  const aiRouter =
+    cliKind === 'codex'
+      ? async (o: Parameters<typeof routeViaCodex>[0]) => routeViaCodex(o)
+      : undefined;
+
   // ===== 3. Build + start orchestrator =====
   const orchestrator = opts.buildOrchestrator
     ? opts.buildOrchestrator()
@@ -577,6 +588,7 @@ export async function runStartCommand(
         imAdapter,
         termAdapter,
         cliAdapter,
+        ...(aiRouter !== undefined ? { aiRouter } : {}),
         stateDir: paths.stateDir,
         state: routerState,
         log,

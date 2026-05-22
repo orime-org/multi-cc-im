@@ -31,3 +31,8 @@ export {
   parseRoutingOutput,
 } from './ai-router.js';
 export type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
+
+// Codex-flavored AI router (`codex exec --output-schema`) — used when
+// daemon starts with `--cli=codex` per DD §7.1.
+export { routeViaCodex } from './ai-router-codex.js';
+export type { CodexRoutingOpts } from './ai-router-codex.js';
