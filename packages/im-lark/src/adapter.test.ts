@@ -607,6 +607,213 @@ describe('createLarkAdapter', () => {
       });
     });
 
+    it('text reply to AskUserQuestion card (interactive) → quotedMessage.content is parsed cardkit markdown + interactive_container option labels', async () => {
+      const auqCard = {
+        schema: '2.0',
+        body: {
+          elements: [
+            { tag: 'markdown', content: '**[选择测试模式]** 想跑哪个？' },
+            {
+              tag: 'interactive_container',
+              elements: [{ tag: 'markdown', content: '**单元测试**\n快速验证' }],
+              behaviors: [
+                { type: 'callback', value: { kind: 'auq', optionIdx: 0 } },
+              ],
+            },
+            {
+              tag: 'interactive_container',
+              elements: [{ tag: 'markdown', content: '**集成测试**\n端到端' }],
+              behaviors: [
+                { type: 'callback', value: { kind: 'auq', optionIdx: 1 } },
+              ],
+            },
+            { tag: 'markdown', content: '_或直接回复消息作自由文本回答_' },
+          ],
+        },
+      };
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '我选单元测试' }),
+          parent_id: 'om_parent_auq',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: { content: JSON.stringify(auqCard) },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      const quoted = handler.received[0]!.quotedMessage!;
+      expect(quoted.sender.role).toBe('bot');
+      expect(quoted.content).toContain('选择测试模式');
+      expect(quoted.content).toContain('想跑哪个');
+      expect(quoted.content).toContain('单元测试');
+      expect(quoted.content).toContain('集成测试');
+      expect(quoted.content).toContain('或直接回复消息作自由文本回答');
+      // Top-level markdown comes before container-nested options.
+      expect(quoted.content.indexOf('想跑哪个')).toBeLessThan(
+        quoted.content.indexOf('单元测试'),
+      );
+    });
+
+    it('text reply to PermissionRequest card (interactive) → quotedMessage.content includes tool name + buttons', async () => {
+      const permCard = {
+        schema: '2.0',
+        body: {
+          elements: [
+            {
+              tag: 'markdown',
+              content: '**🔐 Bash**\n\n`rm -rf /tmp/foo`',
+            },
+            {
+              tag: 'column_set',
+              columns: [
+                {
+                  tag: 'column',
+                  elements: [
+                    {
+                      tag: 'button',
+                      text: { tag: 'plain_text', content: '✅ 允许' },
+                      value: { kind: 'permission', decision: 'allow' },
+                    },
+                  ],
+                },
+                {
+                  tag: 'column',
+                  elements: [
+                    {
+                      tag: 'button',
+                      text: { tag: 'plain_text', content: '❌ 拒绝' },
+                      value: { kind: 'permission', decision: 'deny' },
+                    },
+                  ],
+                },
+              ],
+            },
+            { tag: 'markdown', content: '_10 秒内回复，否则默认放行_' },
+          ],
+        },
+      };
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '同意' }),
+          parent_id: 'om_parent_perm',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: { content: JSON.stringify(permCard) },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      const quoted = handler.received[0]!.quotedMessage!;
+      expect(quoted.content).toContain('🔐 Bash');
+      expect(quoted.content).toContain('rm -rf /tmp/foo');
+      expect(quoted.content).toContain('[Button] ✅ 允许');
+      expect(quoted.content).toContain('[Button] ❌ 拒绝');
+      expect(quoted.content).toContain('10 秒内回复');
+    });
+
+    it('text reply to Stop-forward cardkit (markdown table) → quotedMessage.content preserves markdown body', async () => {
+      const stopCard = {
+        schema: '2.0',
+        body: {
+          elements: [
+            {
+              tag: 'markdown',
+              content:
+                'PR status:\n\n| PR | state |\n|---|---|\n| #220 | merged |\n| #221 | merged |',
+            },
+          ],
+        },
+      };
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '看到了' }),
+          parent_id: 'om_parent_stop',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: { content: JSON.stringify(stopCard) },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      const quoted = handler.received[0]!.quotedMessage!;
+      expect(quoted.content).toContain('PR status');
+      expect(quoted.content).toContain('| #220 | merged |');
+    });
+
+    it('interactive parent with un-parseable JSON → falls back to [interactive] placeholder (not undefined)', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_bad',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: { content: 'not json {{' },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.quotedMessage).toEqual({
+        content: '[interactive]',
+        sender: { id: 'ou_bot1', role: 'bot' },
+      });
+    });
+
+    it('interactive parent with empty body.elements → falls back to [interactive] placeholder', async () => {
+      const { handler } = await setupWithGet(
+        {
+          content: JSON.stringify({ text: '?' }),
+          parent_id: 'om_parent_empty',
+        } as unknown as Partial<typeof baseInboundEvent['message']>,
+        (async () => ({
+          code: 0,
+          data: {
+            items: [
+              {
+                msg_type: 'interactive',
+                body: {
+                  content: JSON.stringify({ schema: '2.0', body: { elements: [] } }),
+                },
+                sender: { id: 'ou_bot1', sender_type: 'app' },
+              },
+            ],
+          },
+        })) as NonNullable<LarkClientShape['im']['v1']['message']['get']>,
+      );
+      expect(handler.received[0]!.quotedMessage).toEqual({
+        content: '[interactive]',
+        sender: { id: 'ou_bot1', role: 'bot' },
+      });
+    });
+
     it('text reply with parent → message.get returns deleted item → quotedMessage undefined', async () => {
       const { handler } = await setupWithGet(
         {
