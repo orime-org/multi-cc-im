@@ -78,7 +78,14 @@ describe('ai-router — renderRoutingPrompt', () => {
     expect(out).toContain('"reason"');
   });
 
-  it('quotedMessage absent → no QUOTED PARENT section (current-flow shape unchanged)', () => {
+  it('prompt NEVER contains a QUOTED PARENT section — quoted reply context is appended by orchestrator dispatch path, not by AI triage prompt (2026-05-22 design revision)', () => {
+    // The router prompt is intentionally agnostic to whether the inbound
+    // message was a reply: quoted-parent transparency is owned by the
+    // orchestrator dispatch layer, which appends a 「以下是被引用的消息」
+    // block to dispatch.content after routing decides target/intent. AI
+    // triage only needs to see the user's current reply (the routing /
+    // intent signal), never the quoted parent (context only). Per
+    // [DD: text reply quoted context (revision)] feedback_wire_data_from_source_to_every_sink.
     const out = renderRoutingPrompt({
       userMsg: 'hi',
       tabs: ['t'],
@@ -86,60 +93,7 @@ describe('ai-router — renderRoutingPrompt', () => {
     });
     expect(out).not.toContain('QUOTED PARENT');
     expect(out).not.toContain('sender_role=');
-  });
-
-  it('quotedMessage present → renders QUOTED PARENT section with content + sender role + routing-only-from-reply rule', () => {
-    const out = renderRoutingPrompt({
-      userMsg: '继续吧',
-      quotedMessage: {
-        content: '前端那个 PR 怎么样了？',
-        sender: { id: 'ou_user42', role: 'user' },
-      },
-      tabs: ['frontend', 'api'],
-      currentTab: null,
-    });
-    expect(out).toContain('QUOTED PARENT MESSAGE (CONTEXT ONLY — NOT FOR ROUTING)');
-    expect(out).toContain('前端那个 PR 怎么样了？');
-    expect(out).toContain('sender_role=user');
-    expect(out).toContain('sender_id=ou_user42');
-    // Hard rule must be present so the model never extracts paneId from quoted body.
-    expect(out).toMatch(/NOT.*routing/i);
-    expect(out).toMatch(/only[\s\S]*the user's current reply/i);
-    // The user's actual reply is still shown in the standard location.
-    expect(out).toContain('继续吧');
-  });
-
-  it('quotedMessage with sender_role=bot (cc Stop reply scenario) → rendered as bot in the prompt', () => {
-    const out = renderRoutingPrompt({
-      userMsg: '?',
-      quotedMessage: {
-        content: 'Done. Anything else?',
-        sender: { id: 'ou_bot1', role: 'bot' },
-      },
-      tabs: ['t'],
-      currentTab: null,
-    });
-    expect(out).toContain('sender_role=bot');
-    expect(out).toContain('Done. Anything else?');
-  });
-
-  it('quotedMessage with very long content → truncated to ~800 chars in the prompt to avoid signal dilution', () => {
-    const long = 'A'.repeat(2000);
-    const out = renderRoutingPrompt({
-      userMsg: '?',
-      quotedMessage: {
-        content: long,
-        sender: { id: 'ou_x', role: 'unknown' },
-      },
-      tabs: ['t'],
-      currentTab: null,
-    });
-    expect(out).toContain('... (truncated)');
-    // The quoted block should NOT carry the full 2000-char body.
-    const aRuns = out.match(/A{800,}/g);
-    expect(aRuns).not.toBeNull();
-    // And no full 1500-char run survives — proves the 800 cap (with margin).
-    expect(out).not.toContain('A'.repeat(1500));
+    expect(out).not.toContain('被引用');
   });
 
   it('routing rules tell the model to be LENIENT on tab-name matching (case / whitespace / hyphens / voice-typo)', async () => {

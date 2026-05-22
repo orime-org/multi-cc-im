@@ -763,6 +763,142 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
     await orch.stop();
   });
 
+  it('text reply with quotedMessage → dispatch.content appends "以下是被引用的消息" block (programmatic, not AI router)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    await writeIMWorkFile(testStateDir, 'wezterm');
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    const msgWithQuote: IncomingMessage = {
+      ...textReply({
+        msgId: 'm_with_quote',
+        text: '#frontend 帮我看看',
+        replyToMessageId: 'm_parent_x',
+      }),
+      quotedMessage: {
+        content: '前端那个 PR 怎么样了？',
+        sender: { id: 'ou_user42', role: 'user' },
+      },
+    };
+    await im.handler!.onMessage(msgWithQuote);
+    expect(term.sendTextCalls).toHaveLength(1);
+    const dispatched = term.sendTextCalls[0]!.content;
+    expect(dispatched).toContain('帮我看看');
+    expect(dispatched).toContain('---');
+    expect(dispatched).toContain('以下是被引用的消息');
+    expect(dispatched).toContain('（来自 user）');
+    expect(dispatched).toContain('前端那个 PR 怎么样了？');
+    // Append order: user reply first, quoted block after.
+    expect(dispatched.indexOf('帮我看看')).toBeLessThan(
+      dispatched.indexOf('以下是被引用的消息'),
+    );
+    await orch.stop();
+  });
+
+  it('text reply WITHOUT quotedMessage → dispatch.content unchanged (current-flow shape)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    await writeIMWorkFile(testStateDir, 'wezterm');
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      textReply({
+        msgId: 'm_plain',
+        text: '#frontend hello',
+      }),
+    );
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.content).not.toContain('以下是被引用的消息');
+    expect(term.sendTextCalls[0]!.content).not.toContain('---');
+    await orch.stop();
+  });
+
+  it('quotedMessage sender_role=bot (cc Stop reply scenario) → rendered as "（来自 bot）" in append', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    await writeIMWorkFile(testStateDir, 'wezterm');
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    const msgWithQuote: IncomingMessage = {
+      ...textReply({
+        msgId: 'm_quote_bot',
+        text: '#frontend 继续',
+        replyToMessageId: 'm_parent_cc_stop',
+      }),
+      quotedMessage: {
+        content: 'Done. Anything else?',
+        sender: { id: 'ou_bot1', role: 'bot' },
+      },
+    };
+    await im.handler!.onMessage(msgWithQuote);
+    const dispatched = term.sendTextCalls[0]!.content;
+    expect(dispatched).toContain('（来自 bot）');
+    expect(dispatched).toContain('Done. Anything else?');
+    await orch.stop();
+  });
+
+  it('image-join + quotedMessage both present → quoted append SKIPPED (image-join consumes the reply, quoted would be redundant)', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    await im.handler!.onMessage(
+      imageMsg({ msgId: 'm_img_join_q', imagePath: '/tmp/inbox/cat.png' }),
+    );
+    im.sent.length = 0;
+    const replyWithBothImgAndQuote: IncomingMessage = {
+      ...textReply({
+        msgId: 'm_text_join_q',
+        text: '#frontend 看这张',
+        replyToMessageId: 'm_img_join_q',
+      }),
+      quotedMessage: {
+        content: '🖼️ 图已收到。在该图上回复并附 #<tab>',
+        sender: { id: 'ou_bot', role: 'bot' },
+      },
+    };
+    await im.handler!.onMessage(replyWithBothImgAndQuote);
+    expect(term.sendTextCalls).toHaveLength(1);
+    const dispatched = term.sendTextCalls[0]!.content;
+    // Image-join prepend is there.
+    expect(dispatched).toMatch(/^请看 @\/tmp\/inbox\/cat\.png\n/);
+    // Quoted append is NOT there (image-join exempts).
+    expect(dispatched).not.toContain('以下是被引用的消息');
+    await orch.stop();
+  });
+
   it('text reply with parent_id matching stashed image (image-join) + quotedMessage undefined → NO notify (image-join path is intentional)', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);
