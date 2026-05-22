@@ -80,6 +80,8 @@ async function main(): Promise<number> {
   switch (subcommand) {
     case 'hook':
       return await dispatchHook(rest);
+    case 'hook-receiver-codex':
+      return await dispatchCodexHook(rest);
     case 'login':
       return await dispatchLogin(rest);
     case 'cleanup':
@@ -198,6 +200,33 @@ async function dispatchHook(args: string[]): Promise<number> {
   if (result.stdout.length > 0) process.stdout.write(result.stdout);
   if (result.stderr.length > 0) process.stderr.write(`${result.stderr}\n`);
   return result.exitCode;
+}
+
+async function dispatchCodexHook(_args: string[]): Promise<number> {
+  // hook-receiver-codex — entry point for the codex hook subprocess
+  // (registered into `~/.codex/config.toml` by setup-hooks.ts). Reads
+  // stdin JSON payload, dispatches via cli-codex's runFromStdin, writes
+  // the JSON return value (if any) to stdout for codex to read back.
+  // Per codex docs an empty stdout is treated as "no opinion" so the
+  // CLI falls through to its native approval flow — that maps to
+  // hook-receiver returning `void`.
+  const { runFromStdin } = await import('@multi-cc-im/cli-codex');
+  const stdin = await readAllStdin();
+  const stateDir = resolveStateDir();
+  try {
+    const result = await runFromStdin(stdin, { stateDir });
+    if (result !== undefined) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    }
+    return 0;
+  } catch (err) {
+    // Hook failures must not crash the codex parent — log to stderr and
+    // exit non-zero so codex falls back to its native flow per spec.
+    process.stderr.write(
+      `multi-cc-im hook-receiver-codex: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 1;
+  }
 }
 
 async function dispatchStart(args: string[]): Promise<number> {

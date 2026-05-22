@@ -51,6 +51,9 @@ importers:
       '@multi-cc-im/cli-cc':
         specifier: workspace:*
         version: link:../../packages/cli-cc
+      '@multi-cc-im/cli-codex':
+        specifier: workspace:*
+        version: link:../../packages/cli-codex
       '@multi-cc-im/im-lark':
         specifier: workspace:*
         version: link:../../packages/im-lark
