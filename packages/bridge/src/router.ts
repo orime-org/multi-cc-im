@@ -396,7 +396,6 @@ export async function route(
             opts.aiAskUserQuestionRouter,
             opts.listPendingPermissionDialogs,
             opts.aiPermissionRequestRouter,
-            incoming.quotedMessage,
           )
         : handlePlain(parsed.body, sessions, opts.state);
 
@@ -557,7 +556,6 @@ async function handlePlainWithAI(
   aiPermissionRequestRouter:
     | ((opts: PermissionRequestViaAIOpts) => Promise<AIPermissionDialogResult | null>)
     | undefined,
-  quotedMessage?: IncomingMessage['quotedMessage'],
 ): Promise<RouterResult> {
   const namedSessions = sessions.filter((s) => s.tabTitle.length > 0);
   if (namedSessions.length === 0) {
@@ -646,7 +644,6 @@ async function handlePlainWithAI(
 
   const result = await aiRouter({
     userMsg: body,
-    quotedMessage,
     tabs: namedSessions.map((s) => s.tabTitle),
     currentTab,
     pendingRequests: regularPendingForPrompt,

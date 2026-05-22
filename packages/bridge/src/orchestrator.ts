@@ -650,12 +650,36 @@ export function createOrchestrator(
           }))
         : result.dispatches;
 
-    if (effectiveDispatches.length > 0) {
-      const targets = effectiveDispatches
+    // Quoted-message append (programmatic, NOT via AI router): when the
+    // inbound reply carries a resolved quoted parent, suffix it to every
+    // dispatch.content as a clearly-labeled context block. AI triage is
+    // intentionally decoupled — the router only decides target+intent
+    // from the user's current reply; this layer guarantees cc tabs see
+    // quoted verbatim regardless of which routing path won (#tab mention
+    // / AI-routed plain / broadcast). Per
+    // [DD: text reply quoted context (revision)](../../docs/superpowers/specs/2026-05-21-text-reply-routing-dd.md).
+    //
+    // Exempt from append: the image-join path (`joinedImagePath` set).
+    // There the quoted parent is daemon's own "🖼️ 图已收到" hint, and
+    // appending it would be redundant noise — the image attachment is
+    // already prepended above. Matches the [quotedMessage] notify-degrade
+    // skip-on-pendingImage rule earlier in handleInbound.
+    const dispatchesWithQuoted =
+      msg.quotedMessage !== undefined && joinedImagePath === undefined
+        ? effectiveDispatches.map((d) => ({
+            ...d,
+            content: `${d.content}\n\n---\n以下是被引用的消息（来自 ${
+              msg.quotedMessage!.sender.role
+            }）:\n${msg.quotedMessage!.content}`,
+          }))
+        : effectiveDispatches;
+
+    if (dispatchesWithQuoted.length > 0) {
+      const targets = dispatchesWithQuoted
         .map((d) => displayName(d.session))
         .join(', ');
       log(
-        `[IM → ${targets}] ${truncate(effectiveDispatches[0]!.content, 80)}`,
+        `[IM → ${targets}] ${truncate(dispatchesWithQuoted[0]!.content, 80)}`,
       );
     } else if (result.echo.length > 0) {
       // Multi-line echoes (failure echo with `可用：` tab list, plain-route
@@ -669,7 +693,7 @@ export function createOrchestrator(
 
     // Run dispatches in parallel (each pane independent).
     const dispatchErrors: string[] = (
-      await Promise.all(effectiveDispatches.map((d) => dispatchOne(d, msg)))
+      await Promise.all(dispatchesWithQuoted.map((d) => dispatchOne(d, msg)))
     ).filter((e): e is string => e !== null);
 
     const echoLines: string[] = [];
