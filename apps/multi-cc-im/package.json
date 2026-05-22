@@ -1,6 +1,6 @@
 {
   "name": "multi-cc-im",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Bridge multiple Claude Code (cc) sessions in WezTerm or iTerm2 tabs to a Lark/Feishu bot — reach your cc tabs from mobile IM.",
   "keywords": [
     "claude-code",
