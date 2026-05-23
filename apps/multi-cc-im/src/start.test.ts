@@ -413,6 +413,105 @@ describe('runStartCommand — auto setup-hooks', () => {
     await result.shutdown!();
   });
 
+  it('codex enabled → setupHooksCodex invoked; cc NOT in enabled → cc setupHooks NOT invoked', async () => {
+    const ccSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const codexSpy = vi.fn(async () => ({ changed: true, configPath: '/dev/null' }));
+    const result = await runStartCommand({
+      root,
+      setupHooks: ccSpy,
+      setupHooksCodex: codexSpy,
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(['codex']),
+      selectAIRouter: stubSelectAIRouter('codex'),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(ccSpy).not.toHaveBeenCalled();
+    expect(codexSpy).toHaveBeenCalledOnce();
+    await result.shutdown!();
+  });
+
+  it('both cc + codex enabled → BOTH setup-hooks invoked', async () => {
+    const ccSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const codexSpy = vi.fn(async () => ({ changed: true, configPath: '/dev/null' }));
+    const result = await runStartCommand({
+      root,
+      setupHooks: ccSpy,
+      setupHooksCodex: codexSpy,
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(['cc', 'codex']),
+      selectAIRouter: stubSelectAIRouter('cc'),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(ccSpy).toHaveBeenCalledOnce();
+    expect(codexSpy).toHaveBeenCalledOnce();
+    await result.shutdown!();
+  });
+
+  it('codex setup-hooks throws → start aborts with exit 1', async () => {
+    const codexSpy = vi.fn(async () => {
+      throw new Error('toml write EACCES');
+    });
+    const result = await runStartCommand({
+      root,
+      setupHooksCodex: codexSpy,
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(['codex']),
+      selectAIRouter: stubSelectAIRouter('codex'),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/codex setup-hooks failed/);
+    expect(result.stderr).toContain('toml write EACCES');
+  });
+
+  it('cli-selector returns cancelled → exit 0 (user backed out of step 1)', async () => {
+    const ccSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const result = await runStartCommand({
+      root,
+      setupHooks: ccSpy,
+      setupHooksCodex: async () => ({ changed: false, configPath: '/dev/null' }),
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: async () => ({ status: 'cancelled' }),
+      selectAIRouter: stubSelectAIRouter(),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(ccSpy).not.toHaveBeenCalled();
+  });
+
+  it('ai-router selector returns cancelled → exit 0 (user backed out of step 2)', async () => {
+    const ccSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
+    const result = await runStartCommand({
+      root,
+      setupHooks: ccSpy,
+      setupHooksCodex: async () => ({ changed: false, configPath: '/dev/null' }),
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(),
+      selectAIRouter: async () => ({ status: 'cancelled' }),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    // setupHooks for cc still ran (step 1 completed before step 2 cancellation)
+    expect(ccSpy).toHaveBeenCalledOnce();
+  });
+
   it('setupHooks returns non-zero → start aborts with exit 1 + stderr surfacing', async () => {
     const setupSpy = vi.fn(async () => ({
       exitCode: 1,
