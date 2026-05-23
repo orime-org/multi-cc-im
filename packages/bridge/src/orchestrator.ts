@@ -205,6 +205,15 @@ export interface CreateOrchestratorOpts {
    */
   aiRouter?: ((opts: AIRoutingOpts) => Promise<AIRoutingResult>) | null;
   /**
+   * Human-readable name of the CLI tool backing `aiRouter` (e.g.
+   * `'Claude Code AI Agent'` / `'Codex AI Agent'`). Used as the log
+   * prefix for `pre-ack` and outcome lines so an operator reading
+   * `daemon.log` can tell at a glance which CLI ran each triage.
+   * Optional for test injection — defaults to `'AI router'` to
+   * preserve the historical log shape.
+   */
+  aiRouterName?: string;
+  /**
    * AskUserQuestion AI router callback (DD §9.6 R7). Invoked when any
    * pending PreToolUse has `toolName === 'AskUserQuestion'`. Default =
    * the real `routeAskUserQuestionViaAI` (spawns `claude --print` with
@@ -308,6 +317,11 @@ export function createOrchestrator(
     opts.aiRouter === null
       ? undefined
       : (opts.aiRouter ?? routeViaAI);
+  // Log prefix for the AI triage subprocess. Defaults to 'AI router'
+  // (back-compat with pre-2026-05-23 single-CLI installs); start.ts
+  // sets this per wizard step 2 to 'Claude Code AI Agent' or
+  // 'Codex AI Agent'.
+  const aiRouterName = opts.aiRouterName ?? 'AI router';
   const aiAskUserQuestionRouter:
     | ((o: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>)
     | undefined =
@@ -498,7 +512,7 @@ export function createOrchestrator(
         !trimmed.startsWith('#')
       ) {
         const excerpt = truncate(trimmed, 30);
-        log(`[AI router pre-ack] msg="${excerpt}"`);
+        log(`[${aiRouterName} pre-ack] msg="${excerpt}"`);
         try {
           await opts.imAdapter.send(
             `🔍 AI 分诊中: "${excerpt}"`,
@@ -612,7 +626,7 @@ export function createOrchestrator(
       const t = result.aiTrace;
       const fallbackTag = t.fallback ? ` fallback=${t.fallback}` : '';
       log(
-        `[AI router] target=${t.target ?? 'none'} intent="${truncate(t.intent ?? '', 60)}" reason="${truncate(t.reason ?? '', 60)}"${fallbackTag}`,
+        `[${aiRouterName}] target=${t.target ?? 'none'} intent="${truncate(t.intent ?? '', 60)}" reason="${truncate(t.reason ?? '', 60)}"${fallbackTag}`,
       );
       // D5-5 (always log) per DD §8.3 — emit a separate audit trail line
       // when the AI matched the IM message to a pending PreToolUse. The

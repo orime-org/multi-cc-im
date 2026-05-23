@@ -696,6 +696,10 @@ export async function runStartCommand(
     aiRouterCLI === 'codex'
       ? async (o: Parameters<typeof routeViaCodex>[0]) => routeViaCodex(o)
       : undefined;
+  // Human-readable label for daemon.log lines so operators can tell at
+  // a glance which CLI ran each triage.
+  const aiRouterName =
+    aiRouterCLI === 'codex' ? 'Codex AI Agent' : 'Claude Code AI Agent';
 
   // ===== 3. Build + start orchestrator =====
   const orchestrator = opts.buildOrchestrator
@@ -705,6 +709,7 @@ export async function runStartCommand(
         termAdapter,
         cliAdapter,
         ...(aiRouter !== undefined ? { aiRouter } : {}),
+        aiRouterName,
         stateDir: paths.stateDir,
         state: routerState,
         log,
