@@ -230,37 +230,20 @@ async function dispatchCodexHook(_args: string[]): Promise<number> {
 }
 
 async function dispatchStart(args: string[]): Promise<number> {
-  // Parse `multi-cc-im start [<adapter>] [--cli=cc|codex]` — single
-  // optional positional arg + optional `--cli=` flag. Per
-  // [DD §4](docs/superpowers/specs/2026-05-10-interactive-start-wizard-dd.md#4-d1--locked-decision-single-start-command)
-  // for the positional; codex CLI adapter DD §7.1 for `--cli=`.
-  let cliKind: 'cc' | 'codex' | undefined;
-  const positional: string[] = [];
-  for (const arg of args) {
-    if (arg.startsWith('--cli=')) {
-      const v = arg.slice('--cli='.length);
-      if (v !== 'cc' && v !== 'codex') {
-        process.stderr.write(
-          `multi-cc-im start: --cli must be 'cc' or 'codex' (got '${v}')\n`,
-        );
-        return 2;
-      }
-      cliKind = v;
-    } else {
-      positional.push(arg);
-    }
-  }
-  if (positional.length > 1) {
+  // Parse `multi-cc-im start [<adapter>]` — single optional positional
+  // arg. The `--cli=cc|codex` flag was removed 2026-05-23 per
+  // [DD 2026-05-23 revision](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md);
+  // CLI choice is now the wizard's interactive step 1 multiselect.
+  if (args.length > 1) {
     process.stderr.write(
-      `multi-cc-im start: too many positional arguments (got ${positional.length}, expected 0 or 1)\n` +
-        `Usage: multi-cc-im start [<adapter>] [--cli=cc|codex]\n`,
+      `multi-cc-im start: too many positional arguments (got ${args.length}, expected 0 or 1)\n` +
+        `Usage: multi-cc-im start [<adapter>]\n`,
     );
     return 2;
   }
-  const adapterArg = positional[0];
+  const adapterArg = args[0];
   const result = await runStartCommand({
-    adapterArg,
-    ...(cliKind !== undefined ? { cliKind } : {}),
+    ...(adapterArg !== undefined ? { adapterArg } : {}),
   });
   if (result.stderr.length > 0) {
     process.stderr.write(`${result.stderr}\n`);

@@ -10,8 +10,9 @@ import {
 
 /**
  * Routes IM messages via Codex CLI (`codex exec`) instead of Claude
- * Code (`claude --print`). Activated by `multi-cc-im start --cli=codex`.
- * Per [DD §7.1: AI router CLI-selectable](../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#71-ai-router-cli-selectable-2026-05-22-用户新增约束).
+ * Code (`claude --print`). Activated when the `multi-cc-im start`
+ * wizard step 2 picks codex as the AI router CLI. Per
+ * [DD §7.1 + 2026-05-23 revision](../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
  *
  * Why a separate router instead of one factory dispatching on cliKind:
  * codex exec exposes structurally different headless flags than cc

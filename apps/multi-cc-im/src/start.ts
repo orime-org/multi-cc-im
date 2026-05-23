@@ -47,8 +47,14 @@ import {
   selectAndConfigureAdapter,
   type SelectAdapterResult,
 } from './adapter-selector.js';
+import { selectCLIs, type SelectCLIsResult } from './cli-selector.js';
+import {
+  selectAIRouter,
+  type SelectAIRouterResult,
+} from './ai-router-selector.js';
 import { resolveAppPaths } from './config-paths.js';
 import { runSetupHooksCommand } from './setup-hooks.js';
+import { runCodexSetupHooks } from '@multi-cc-im/cli-codex';
 import { sweepStaleStateFiles } from './state-sweep.js';
 
 export interface RunStartCommandOpts {
@@ -100,14 +106,31 @@ export interface RunStartCommandOpts {
    */
   adapterArg?: string;
   /**
-   * Which CLI adapter to attach (`'cc'` = Claude Code, default; `'codex'`
-   * = OpenAI Codex). Set via `multi-cc-im start --cli=codex`. Switches
-   * which factory creates the daemon-side CLI adapter — both share the
-   * same state-file protocol so the orchestrator + chokidar watcher
-   * downstream is CLI-agnostic. Per
-   * [DD: codex CLI adapter §7.1](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
+   * Override the CLI multiselect wizard step (step 1 of 4). Tests stub
+   * this to return a synthetic CLI selection without prompting. Default
+   * runs `selectCLIs` from `cli-selector.ts`.
    */
-  cliKind?: 'cc' | 'codex';
+  selectCLIs?: (opts: {
+    currentEnabled?: readonly import('@multi-cc-im/shared').CLIId[];
+  }) => Promise<import('./cli-selector.js').SelectCLIsResult>;
+  /**
+   * Override the AI router single-select wizard step (step 2 of 4).
+   * Tests stub this to bypass the prompt. Default runs `selectAIRouter`
+   * from `ai-router-selector.ts`.
+   */
+  selectAIRouter?: (opts: {
+    enabledCLIs: readonly import('@multi-cc-im/shared').CLIId[];
+    currentAIRouter?: import('@multi-cc-im/shared').CLIId;
+  }) => Promise<import('./ai-router-selector.js').SelectAIRouterResult>;
+  /**
+   * Override the codex setup-hooks runner (writes `~/.codex/config.toml`).
+   * Default runs `runCodexSetupHooks` from `@multi-cc-im/cli-codex`.
+   * Tests stub to avoid touching the real user config.
+   */
+  setupHooksCodex?: (opts: {
+    binaryPath: string;
+    log?: (line: string) => void;
+  }) => Promise<{ changed: boolean; configPath: string }>;
 
   /**
    * Override the adapter registry consulted by the default selector.
@@ -245,32 +268,117 @@ export async function runStartCommand(
 
   log(`multi-cc-im start (root: ${paths.root})`);
 
-  // ===== 0. Auto-register cc hooks =====
-  // Idempotent — same as `multi-cc-im setup-hooks`. Run unconditionally so
-  // users don't have to remember a separate setup step; if hooks are already
-  // up-to-date this is a no-op (no .bak file, no log noise beyond the
-  // "already up-to-date" line).
+  // Load persisted config FIRST so the CLI multiselect can pre-check
+  // the user's last selection (and same for terminal / AI router below).
+  // Per [DD 2026-05-23 revision](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md):
+  // wizard order is now CLI multi → AI router → terminal → IM.
+  const configStore = createConfigStore({ filePath: paths.configToml });
+  let config = await configStore.load();
+  let persistedConfigChanged = false;
+
+  // ===== Step 1. CLI multiselect =====
+  // Pick which CLI agents (Claude Code / Codex / etc.) the daemon
+  // bridges to IM. Probes installed status via `command -v` so the
+  // user sees disk state inline. Multi-pick supports the "wezterm has
+  // both a cc tab and a codex tab; both reachable from phone IM" use
+  // case. Persisted to `[cli].enabled` for next-start pre-check.
+  const cliFn =
+    opts.selectCLIs ??
+    ((cliOpts) => selectCLIs(cliOpts));
+  const cliResult = await cliFn({ currentEnabled: config.cli.enabled });
+  if (cliResult.status === 'cancelled') {
+    return { exitCode: 0, stderr: '' };
+  }
+  if (cliResult.status === 'error') {
+    return { exitCode: cliResult.exitCode, stderr: cliResult.message };
+  }
+  const enabledCLIs = cliResult.ids;
+  log(`  ✓ enabled CLIs: ${enabledCLIs.join(', ')}`);
+  if (
+    config.cli.enabled.length !== enabledCLIs.length ||
+    config.cli.enabled.some((id, i) => id !== enabledCLIs[i])
+  ) {
+    config = {
+      ...config,
+      cli: { ...config.cli, enabled: [...enabledCLIs] },
+    };
+    persistedConfigChanged = true;
+  }
+
+  // ===== Step 1b. Auto-register hooks for each enabled CLI =====
+  // Per enabled CLI id: cc → `~/.claude/settings.json` via
+  // `runSetupHooksCommand`; codex → `~/.codex/config.toml` via
+  // `runCodexSetupHooks`. Both are idempotent — repeat starts on an
+  // already-configured machine are no-ops + leave no .bak.<ts> noise.
+  // Hook writers backup before edit per [[feedback_user_dotfile_backup]].
   if (!opts.skipSetupHooks) {
-    const setupFn = opts.setupHooks ?? runSetupHooksCommand;
-    const setupResult = await setupFn({ log });
-    if (setupResult.exitCode !== 0) {
-      return {
-        exitCode: 1,
-        stderr:
-          `multi-cc-im start: setup-hooks failed — cannot proceed.\n` +
-          setupResult.stderr,
-      };
+    if (enabledCLIs.includes('cc')) {
+      const setupFn = opts.setupHooks ?? runSetupHooksCommand;
+      const setupResult = await setupFn({ log });
+      if (setupResult.exitCode !== 0) {
+        return {
+          exitCode: 1,
+          stderr:
+            `multi-cc-im start: cc setup-hooks failed — cannot proceed.\n` +
+            setupResult.stderr,
+        };
+      }
+    }
+    if (enabledCLIs.includes('codex')) {
+      // Codex hooks need the resolved multi-cc-im binary path so the
+      // hook command can re-exec us. Mirror the same resolution
+      // cli-cc setup-hooks uses (process.argv[1] = the bin script we
+      // were launched as).
+      const codexFn = opts.setupHooksCodex ?? runCodexSetupHooks;
+      try {
+        await codexFn({
+          binaryPath: process.argv[1] ?? 'multi-cc-im',
+          log,
+        });
+      } catch (err) {
+        return {
+          exitCode: 1,
+          stderr:
+            `multi-cc-im start: codex setup-hooks failed — cannot proceed.\n` +
+            (err instanceof Error ? err.message : String(err)),
+        };
+      }
     }
   }
 
-  // ===== 0a. Terminal-adapter selection =====
+  // ===== Step 2. AI router single-select =====
+  // Pick which CLI runs the daemon's IM triage subprocess. Even when
+  // enabledCLIs.length === 1 the wizard still asks — per explicit user
+  // direction 2026-05-23 ("第 2 步不能跳过"). Persisted to
+  // `[cli].aiRouter` for next-start pre-select.
+  const routerFn =
+    opts.selectAIRouter ??
+    ((routerOpts) => selectAIRouter(routerOpts));
+  const routerResult = await routerFn({
+    enabledCLIs,
+    currentAIRouter: config.cli.aiRouter,
+  });
+  if (routerResult.status === 'cancelled') {
+    return { exitCode: 0, stderr: '' };
+  }
+  if (routerResult.status === 'error') {
+    return { exitCode: routerResult.exitCode, stderr: routerResult.message };
+  }
+  const aiRouterCLI = routerResult.id;
+  log(`  ✓ AI router: ${aiRouterCLI}`);
+  if (config.cli.aiRouter !== aiRouterCLI) {
+    config = {
+      ...config,
+      cli: { ...config.cli, aiRouter: aiRouterCLI },
+    };
+    persistedConfigChanged = true;
+  }
+
+  // ===== Step 3. Terminal-adapter selection =====
   // Per [DD: iTerm2 adapter P4](../../../docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md):
-  // `start` wizard order is term-first then IM. Persisted terminal type
-  // pre-selects the current choice; a brand-new config defaults to
-  // wezterm. iterm2 branch runs setup (prefs check + pip install + cache
-  // python3 path).
-  const configStore = createConfigStore({ filePath: paths.configToml });
-  let config = await configStore.load();
+  // Persisted terminal type pre-selects the current choice; a brand-new
+  // config defaults to wezterm. iterm2 branch runs setup (prefs check +
+  // pip install + cache python3 path).
   const termFn =
     opts.selectTerminal ??
     ((termOpts) => selectTerminal(termOpts));
@@ -285,8 +393,8 @@ export async function runStartCommand(
   log(`  ✓ terminal: ${termId}`);
   // Persist new terminal id + (iterm2) python3 path. Tests confirm an
   // already-aligned config skips the rewrite (no spurious file mtime
-  // churn).
-  let persistedConfigChanged = false;
+  // churn). `persistedConfigChanged` is hoisted up to step 1 (CLI
+  // multiselect) so all wizard steps share one save() at the end.
   if (config.terminal.type !== termId) {
     config = { ...config, terminal: { type: termId } };
     persistedConfigChanged = true;
@@ -557,12 +665,15 @@ export async function runStartCommand(
           // Per user feedback 2026-05-14 after PR #175 smoke.
           log: fileOnlyLog,
         });
-  // CLI adapter — cc (default) or codex (per `start --cli=codex`).
-  // Both share the same state-file protocol; downstream orchestrator +
-  // chokidar watcher are CLI-agnostic. Per DD §7.1 codex CLI adapter.
-  const cliKind = opts.cliKind ?? 'cc';
+  // CLI adapter — `cli-cc` and `cli-codex` adapters share the SAME
+  // state-file protocol (chokidar watcher reads `<paneId>_<sid>.<event>`
+  // filenames CLI-agnostically), so the daemon only needs ONE watcher
+  // regardless of how many CLIs the user enabled in wizard step 1. We
+  // pick the adapter factory whose `name` field matches `enabled[0]` so
+  // monitor / log lines reflect the user's primary CLI. Per
+  // [DD §7 + 2026-05-23 revision](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
   const cliAdapter =
-    cliKind === 'codex'
+    enabledCLIs[0] === 'codex'
       ? createCodexCliAdapter({ stateDir: paths.stateDir })
       : createCcCliAdapter({ stateDir: paths.stateDir });
 
@@ -571,13 +682,12 @@ export async function runStartCommand(
   // [DD 2026-05-15](../../docs/superpowers/specs/2026-05-15-cc-monitor-dashboard-dd.md) §4.
   const errorBuffer = new ErrorRingBuffer({ capacity: 200 });
 
-  // AI router selection — when running with codex as the cc-equivalent
-  // CLI, the daemon's IM triage subprocess must also run codex (so
-  // users don't need cc installed alongside codex). Per DD §7.1.
-  // `undefined` → orchestrator falls back to its built-in `routeViaAI`
-  // (which spawns `claude --print`).
+  // AI router selection — wizard step 2 picks which CLI runs the
+  // headless triage subprocess. `aiRouterCLI === 'codex'` → spawn
+  // `codex exec --output-schema`; `'cc'` → orchestrator's built-in
+  // `routeViaAI` (spawns `claude --print`).
   const aiRouter =
-    cliKind === 'codex'
+    aiRouterCLI === 'codex'
       ? async (o: Parameters<typeof routeViaCodex>[0]) => routeViaCodex(o)
       : undefined;
 
