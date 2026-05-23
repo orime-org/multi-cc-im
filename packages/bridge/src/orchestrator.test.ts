@@ -3002,6 +3002,67 @@ describe('createOrchestrator — AI router pre-ack (v1.10)', () => {
     await writeIMWorkFile(preAckStateDir, 'wezterm', { auto: true });
   });
 
+  it('log prefix defaults to "[AI router ...]" when aiRouterName not set (back-compat)', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'i',
+        reason: 'r',
+        permissionResponse: null,
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('plain msg'));
+    expect(lines.some((l) => l.startsWith('[AI router pre-ack]'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('[AI router] target='))).toBe(true);
+    await orch.stop();
+  });
+
+  it('log prefix uses aiRouterName when provided ("[Codex AI Agent ...]")', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const lines: string[] = [];
+    const orch = createOrchestrator({
+      stateDir: preAckStateDir,
+      imAdapter: im,
+      termAdapter: makeMockTerm([FRONTEND_INFO]),
+      cliAdapter: cli,
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      log: (l) => lines.push(l),
+      aiRouterName: 'Codex AI Agent',
+      aiRouter: async () => ({
+        target: 'frontend',
+        intent: 'i',
+        reason: 'r',
+        permissionResponse: null,
+      }),
+    });
+    await orch.start();
+    await im.handler!.onMessage(incoming('plain msg'));
+    expect(
+      lines.some((l) => l.startsWith('[Codex AI Agent pre-ack]')),
+    ).toBe(true);
+    expect(
+      lines.some((l) => l.startsWith('[Codex AI Agent] target=')),
+    ).toBe(true);
+    // and the old prefix must NOT appear
+    expect(
+      lines.some((l) => l.startsWith('[AI router pre-ack]')),
+    ).toBe(false);
+    await orch.stop();
+  });
+
   it('plain msg → IM gets "🔍 AI 分诊中" pre-ack BEFORE the route result', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
