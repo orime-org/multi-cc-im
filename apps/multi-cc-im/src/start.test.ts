@@ -434,19 +434,23 @@ describe('runStartCommand — auto setup-hooks', () => {
     await result.shutdown!();
   });
 
-  it('codex changed=true → daemon console echoes codex-restart warning', async () => {
-    // Setup: codex setup-hooks returns {changed:true} (real write).
-    // Expected: start.ts re-logs the restart warning to the main log
-    // sink so users see it in console (setup-hooks own log goes to
-    // fileOnlyLog by default).
+  it('codex changed=true → exactly one restart warning (no duplicate)', async () => {
+    // Real runCodexSetupHooks emits WARN_CODEX_RESTART_LINE through the
+    // log callback its caller passes in. Faithful stub must mirror that
+    // behavior — otherwise the test can't catch a bug where start.ts
+    // double-logs the same warning. (2026-05-23 真账号 smoke 抓到的 bug:
+    // start.ts 之前在 changed=true 路径又 echo 一次同样的 warning
+    // 到主 log sink，导致用户控制台看到 2 行重复。)
     const lines: string[] = [];
     const result = await runStartCommand({
       root,
       setupHooks: async () => ({ exitCode: 0, stderr: '' }),
-      setupHooksCodex: async () => ({
-        changed: true,
-        configPath: '/dev/null',
-      }),
+      setupHooksCodex: async ({ log: codexLog }) => {
+        // Faithful imitation of runCodexSetupHooks emitting the warning
+        // via the caller-provided log on a real write.
+        codexLog?.('  ⚠️ codex 不像 cc 自动热重载 hook 配置...stub line');
+        return { changed: true, configPath: '/dev/null' };
+      },
       selectTerminal: stubSelectTerminal(),
       selectCLIs: stubSelectCLIs(['codex']),
       selectAIRouter: stubSelectAIRouter('codex'),
@@ -456,18 +460,22 @@ describe('runStartCommand — auto setup-hooks', () => {
       log: (l) => lines.push(l),
     });
     expect(result.exitCode).toBe(0);
-    // The warning string is owned by cli-codex; we assert by substring
-    // (not equality) so changes to the exact wording in one place do
-    // not silently break this assertion.
-    expect(lines.some((l) => l.includes('codex 不像 cc 自动热重载'))).toBe(true);
+    // EXACTLY one — if start.ts ever echoes a second copy on changed=true
+    // again, this assertion fires.
+    const warningCount = lines.filter((l) =>
+      l.includes('codex 不像 cc 自动热重载'),
+    ).length;
+    expect(warningCount).toBe(1);
     await result.shutdown!();
   });
 
-  it('codex changed=false (idempotent) → NO restart warning echoed', async () => {
+  it('codex changed=false (idempotent) → zero restart warnings', async () => {
     const lines: string[] = [];
     const result = await runStartCommand({
       root,
       setupHooks: async () => ({ exitCode: 0, stderr: '' }),
+      // Idempotent rerun stub: setup-hooks reports changed=false and
+      // emits no warning (mirrors real runCodexSetupHooks behavior).
       setupHooksCodex: async () => ({
         changed: false,
         configPath: '/dev/null',
@@ -481,7 +489,10 @@ describe('runStartCommand — auto setup-hooks', () => {
       log: (l) => lines.push(l),
     });
     expect(result.exitCode).toBe(0);
-    expect(lines.some((l) => l.includes('codex 不像 cc 自动热重载'))).toBe(false);
+    const warningCount = lines.filter((l) =>
+      l.includes('codex 不像 cc 自动热重载'),
+    ).length;
+    expect(warningCount).toBe(0);
     await result.shutdown!();
   });
 
