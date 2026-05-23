@@ -40,6 +40,15 @@ export interface WizardSelectPromptOpts<V extends string = string> {
   initialValue?: V;
 }
 
+export interface WizardMultiselectPromptOpts<V extends string = string> {
+  message: string;
+  options: ReadonlyArray<WizardSelectOption<V>>;
+  /** Values pre-checked when the prompt opens. */
+  initialValues?: readonly V[];
+  /** Minimum number of items the user must check before submitting. */
+  required?: boolean;
+}
+
 /**
  * Thin abstraction over `@clack/prompts` so the wizard logic can be
  * unit-tested with a stub that scripts user responses without spawning a
@@ -67,6 +76,9 @@ export interface WizardPromptIO {
   select: <V extends string>(
     opts: WizardSelectPromptOpts<V>,
   ) => Promise<V | symbol>;
+  multiselect: <V extends string>(
+    opts: WizardMultiselectPromptOpts<V>,
+  ) => Promise<readonly V[] | symbol>;
   /**
    * Test against the sentinel symbol returned by `text` / `password` /
    * `confirm` when the user hits Ctrl-C. Wraps `@clack/core`'s `isCancel`.
@@ -98,5 +110,12 @@ export const realClackIO: WizardPromptIO = {
       options: opts.options as unknown as Parameters<typeof clack.select<V>>[0]['options'],
       initialValue: opts.initialValue,
     }),
+  multiselect: <V extends string>(opts: WizardMultiselectPromptOpts<V>) =>
+    clack.multiselect<V>({
+      message: opts.message,
+      options: opts.options as unknown as Parameters<typeof clack.multiselect<V>>[0]['options'],
+      initialValues: opts.initialValues as V[] | undefined,
+      required: opts.required ?? true,
+    }) as Promise<readonly V[] | symbol>,
   isCancel: clack.isCancel,
 };

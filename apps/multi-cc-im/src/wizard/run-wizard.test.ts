@@ -90,6 +90,11 @@ function makeScriptedIO(scripted: readonly ScriptedResponse[]): {
       select: async () => {
         throw new Error('runWizard tests do not exercise select; selector tests do');
       },
+      multiselect: async () => {
+        throw new Error(
+          'runWizard tests do not exercise multiselect; cli-selector tests do',
+        );
+      },
       isCancel: (v): v is symbol => v === CANCEL,
     },
   };
