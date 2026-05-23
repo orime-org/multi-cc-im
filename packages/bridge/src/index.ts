@@ -31,3 +31,9 @@ export {
   parseRoutingOutput,
 } from './ai-router.js';
 export type { AIRoutingOpts, AIRoutingResult } from './ai-router.js';
+
+// Codex-flavored AI router (`codex exec --output-schema`) — used when
+// the wizard step 2 picks codex as the AI router CLI per
+// [DD 2026-05-23 revision](../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
+export { routeViaCodex } from './ai-router-codex.js';
+export type { CodexRoutingOpts } from './ai-router-codex.js';

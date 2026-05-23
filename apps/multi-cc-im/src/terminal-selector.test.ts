@@ -63,6 +63,11 @@ function makeScripted(opts: {
       const v = selectsQ.shift();
       return v as V | symbol;
     },
+    multiselect: async <V extends string>(): Promise<readonly V[] | symbol> => {
+      throw new Error(
+        'terminal-selector should never call multiselect — only select',
+      );
+    },
     isCancel: (v: unknown): v is symbol => v === cancelSym,
     messages,
     infos,

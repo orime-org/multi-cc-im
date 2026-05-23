@@ -92,6 +92,11 @@ function makeIO(scripted: ScriptedResponse[]): {
         expect(actualValues).toEqual(next.expectedValues);
         return next.pick as V | symbol;
       }) as WizardPromptIO['select'],
+      multiselect: async () => {
+        throw new Error(
+          'adapter-selector tests do not exercise multiselect; cli-selector tests do',
+        );
+      },
       isCancel: (v): v is symbol => v === CANCEL,
     },
   };

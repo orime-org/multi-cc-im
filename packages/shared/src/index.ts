@@ -85,6 +85,8 @@ export type {
   ExternalPaths,
   TerminalConfig,
   TerminalId,
+  CLIConfig,
+  CLIId,
 } from './adapter/storage.js';
 export {
   ConfigSchema,
@@ -92,6 +94,8 @@ export {
   ExternalPathsSchema,
   TerminalConfigSchema,
   TerminalIdSchema,
+  CLIConfigSchema,
+  CLIIdSchema,
 } from './adapter/storage.js';
 
 // Adapter setup wizard interface (W2 — DD §9.D5 hybrid pattern)

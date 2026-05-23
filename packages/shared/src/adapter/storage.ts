@@ -78,6 +78,33 @@ export const TerminalConfigSchema = z.object({
 export type TerminalConfig = z.infer<typeof TerminalConfigSchema>;
 
 /**
+ * Schema for `[cli]` — which CLI agents the daemon manages, and which
+ * one runs the IM triage subprocess. Replaces the v0.1.x `--cli=cc|codex`
+ * command-line flag (deleted 2026-05-23 per
+ * [DD: codex CLI adapter §2026-05-23 revision](../../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md))
+ * with a 4-step interactive wizard that probes installed CLIs, lets the
+ * user pick which ones to bridge, then picks which one runs triage.
+ *
+ * Fields:
+ * - `enabled`: which CLIs the daemon manages — `setup-hooks` runs once
+ *   per id (cc → `~/.claude/settings.json`, codex → `~/.codex/config.toml`).
+ *   Multi-pick supports the "same wezterm has both a cc tab and a codex
+ *   tab, both reachable from IM" use case. Min 1, default `['cc']`.
+ * - `aiRouter`: which CLI runs the daemon's triage subprocess (parses
+ *   the inbound IM message into target/intent). Must be in `enabled`.
+ *   Even when `enabled.length === 1`, the wizard still asks the user to
+ *   confirm — per explicit user direction 2026-05-23 "不能跳过此步".
+ */
+export const CLIIdSchema = z.enum(['cc', 'codex']);
+export type CLIId = z.infer<typeof CLIIdSchema>;
+
+export const CLIConfigSchema = z.object({
+  enabled: z.array(CLIIdSchema).min(1).default(['cc']),
+  aiRouter: CLIIdSchema.default('cc'),
+});
+export type CLIConfig = z.infer<typeof CLIConfigSchema>;
+
+/**
  * Schema for cached external CLI / interpreter absolute paths (per
  * architecture.md "External CLI tool path strategy"). Each field is the
  * resolved absolute path written back to `config.toml` after the first
@@ -101,11 +128,22 @@ export type ExternalPaths = z.infer<typeof ExternalPathsSchema>;
  * Top-level shape of `~/.multi-cc-im/config.toml`. zod-validated on load
  * (zod parse failure = fail-fast per architecture.md).
  */
-export const ConfigSchema = z.object({
-  acl: ACLConfigSchema.default({ owners: [] }),
-  external_paths: ExternalPathsSchema.default({}),
-  terminal: TerminalConfigSchema.default({ type: 'wezterm' }),
-});
+export const ConfigSchema = z
+  .object({
+    acl: ACLConfigSchema.default({ owners: [] }),
+    external_paths: ExternalPathsSchema.default({}),
+    terminal: TerminalConfigSchema.default({ type: 'wezterm' }),
+    cli: CLIConfigSchema.default({ enabled: ['cc'], aiRouter: 'cc' }),
+  })
+  .superRefine((cfg, ctx) => {
+    if (!cfg.cli.enabled.includes(cfg.cli.aiRouter)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `cli.aiRouter '${cfg.cli.aiRouter}' must be one of cli.enabled [${cfg.cli.enabled.join(', ')}]`,
+        path: ['cli', 'aiRouter'],
+      });
+    }
+  });
 export type Config = z.infer<typeof ConfigSchema>;
 
 /** Load / save the user's config.toml. Implementations must use atomic write. */
