@@ -469,17 +469,23 @@ describe('runStartCommand — auto setup-hooks', () => {
     await result.shutdown!();
   });
 
-  it('codex changed=false (idempotent) → zero restart warnings', async () => {
+  it('codex changed=false (idempotent rerun) → STILL exactly one restart warning', async () => {
+    // Per user direction 2026-05-23 "需要每次启动都提醒": the warning is
+    // about pre-hook codex processes; daemon rerun doesn't fix them
+    // regardless of whether the toml needed a rewrite. So idempotent
+    // reruns MUST also emit the warning. The real runCodexSetupHooks
+    // emits unconditionally; this stub mirrors that behavior.
     const lines: string[] = [];
     const result = await runStartCommand({
       root,
       setupHooks: async () => ({ exitCode: 0, stderr: '' }),
-      // Idempotent rerun stub: setup-hooks reports changed=false and
-      // emits no warning (mirrors real runCodexSetupHooks behavior).
-      setupHooksCodex: async () => ({
-        changed: false,
-        configPath: '/dev/null',
-      }),
+      setupHooksCodex: async ({ log: codexLog }) => {
+        // Faithful imitation: real runCodexSetupHooks emits the warning
+        // even on changed=false. Stub must do the same so start.test
+        // can catch any future regression of the unconditional behavior.
+        codexLog?.('  ⚠️ codex 不像 cc 自动热重载 hook 配置...stub line');
+        return { changed: false, configPath: '/dev/null' };
+      },
       selectTerminal: stubSelectTerminal(),
       selectCLIs: stubSelectCLIs(['codex']),
       selectAIRouter: stubSelectAIRouter('codex'),
@@ -492,7 +498,7 @@ describe('runStartCommand — auto setup-hooks', () => {
     const warningCount = lines.filter((l) =>
       l.includes('codex 不像 cc 自动热重载'),
     ).length;
-    expect(warningCount).toBe(0);
+    expect(warningCount).toBe(1);
     await result.shutdown!();
   });
 

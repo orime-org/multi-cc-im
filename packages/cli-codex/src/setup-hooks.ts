@@ -295,8 +295,28 @@ export async function runCodexSetupHooks(
   // already there?
   const alreadyInstalled = hooksMapsEqual(existingHooksRaw as CodexHooksMap, merged);
 
+  // UX防呆: codex unlike cc does NOT hot-reload its hooks config. Per
+  // [[reference_codex_hook_no_hot_reload_cc_does]] — cc has a file
+  // watcher that picks up settings.json edits live; codex reads
+  // ~/.codex/config.toml once at process startup
+  // (codex-rs/core/src/config/mod.rs::Config::load_with_cli_overrides
+  // → Hooks::new(Arc<HooksConfig>), no watcher). Result: codex tabs
+  // launched BEFORE this setup-hooks run won't see the new handlers —
+  // their Stop / PreToolUse / PermissionRequest events fire silently
+  // with no hook spawn, daemon never gets a state file, IM never
+  // forwards.
+  //
+  // The deeper invariant: a codex tab launched before the hook reaches
+  // ~/.codex/config.toml is stuck without hooks for its entire lifetime,
+  // regardless of how many times the daemon restarts. So even on an
+  // idempotent rerun (changed=false) — where this run made no toml
+  // changes — the user still might have pre-hook codex tabs in their
+  // wezterm. Warn on EVERY runCodexSetupHooks call so the user always
+  // sees the reminder and never has to debug a silent failure path
+  // (2026-05-23 user direction "需要每次启动都提醒").
   if (alreadyInstalled) {
     log(`  ✓ already up-to-date (${countHandlers(merged)} handlers); no write needed.`);
+    log(WARN_CODEX_RESTART_LINE);
     return {
       configPath,
       changed: false,
@@ -321,20 +341,6 @@ export async function runCodexSetupHooks(
   await atomicWrite(configPath, out);
 
   log(`  ✓ wrote ${countHandlers(merged)} handlers across ${Object.keys(merged).length} events.`);
-
-  // UX防呆: codex unlike cc does NOT hot-reload its hooks config. Per
-  // [[reference_codex_hook_no_hot_reload_cc_does]] — cc has a file
-  // watcher that picks up settings.json edits live; codex reads
-  // ~/.codex/config.toml once at process startup
-  // (codex-rs/core/src/config/mod.rs::Config::load_with_cli_overrides
-  // → Hooks::new(Arc<HooksConfig>), no watcher). Result: codex tabs
-  // launched BEFORE this setup-hooks run won't see the new handlers —
-  // their Stop / PreToolUse / PermissionRequest events fire silently
-  // with no hook spawn, daemon never gets a state file, IM never
-  // forwards.
-  //
-  // Only print the warning when changed=true (we actually wrote new
-  // hooks). Idempotent reruns are no-ops; warning would be noise.
   log(WARN_CODEX_RESTART_LINE);
 
   return {
