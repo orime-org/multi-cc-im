@@ -57,6 +57,7 @@ export {
   defaultCodexConfigPath,
   pruneExistingHooks,
   buildMultiCcImHookGroups,
+  WARN_CODEX_RESTART_LINE,
 } from './setup-hooks.js';
 export type {
   RunCodexSetupHooksOpts,

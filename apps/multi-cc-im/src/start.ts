@@ -54,7 +54,7 @@ import {
 } from './ai-router-selector.js';
 import { resolveAppPaths } from './config-paths.js';
 import { runSetupHooksCommand } from './setup-hooks.js';
-import { runCodexSetupHooks } from '@multi-cc-im/cli-codex';
+import { runCodexSetupHooks, WARN_CODEX_RESTART_LINE } from '@multi-cc-im/cli-codex';
 import { sweepStaleStateFiles } from './state-sweep.js';
 
 export interface RunStartCommandOpts {
@@ -331,10 +331,16 @@ export async function runStartCommand(
       // were launched as).
       const codexFn = opts.setupHooksCodex ?? runCodexSetupHooks;
       try {
-        await codexFn({
+        const codexResult = await codexFn({
           binaryPath: process.argv[1] ?? 'multi-cc-im',
           log,
         });
+        // codex 不热重载 hook 配置（[[reference_codex_hook_no_hot_reload_cc_does]]）—
+        // 只在真改了 toml (changed=true) 时把 warning 再打一次到主 log，
+        // 因为 setup-hooks 内部 log 默认走 fileOnlyLog（用户控制台看不到）。
+        if (codexResult.changed) {
+          log(WARN_CODEX_RESTART_LINE);
+        }
       } catch (err) {
         return {
           exitCode: 1,
