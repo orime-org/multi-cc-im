@@ -228,3 +228,53 @@ const aiRouter = createAIRouter({
 - [[feedback_user_dotfile_backup]] — 写 `~/.codex/config.toml` 前必 backup
 - [[feedback_upstream_schema_real_smoke]] — 单测绿 ≠ done；真账号 smoke 必跑
 - [[reference_feishu_cardkit_limits]] / [[reference_feishu_message_get_interactive_user_card_content]] — 接入 codex 后 IM 适配仍走飞书已知规则
+
+---
+
+## §11 设计修订（2026-05-23）：4 步 wizard + 删 `--cli=` flag
+
+### 11.1 触发
+
+实施 §7.1 接近完成时用户给出 3 条新约束：
+
+1. wizard 应在启动时**自动探测**本地装了哪些 CLI，再让用户多选要 bridge 哪些 — 不是命令行参数二选一
+2. 「AI router 用哪个 CLI」应作 wizard 独立一步让用户选（单选）；即使只勾 1 个 CLI，第 2 步**不能跳过**
+3. 删掉 `--cli=cc|codex` 命令行参数 — 所有启动必须走 wizard，没有脚本绕过
+
+### 11.2 修订决策
+
+| 维度 | 原 §7.1 设计 | 修订设计 |
+|---|---|---|
+| CLI 选择 | `--cli=cc\|codex` 命令行二选一 | wizard step 1 多选（探装机 + ☑️）|
+| AI router 选择 | 跟 CLI 选择绑定（同 cliKind 字段）| wizard step 2 独立单选 |
+| 顺序 | term → IM | CLI multi → AI router → term → IM |
+| 单 CLI 时是否跳过 step 2 | n/a | **不跳过** — 用户明确说「分诊用哪个永远显式确认」|
+| 命令行入口 | `multi-cc-im start [<adapter>] [--cli=cc\|codex]` | `multi-cc-im start [<adapter>]`；wizard 强制 |
+| 配置持久化 | n/a | `[cli] enabled = ['cc','codex']  aiRouter = 'cc'` |
+
+### 11.3 实施清单（增量于 §6 任务表）
+
+| # | 范围 | 内容 |
+|---|---|---|
+| **w1** | shared | `CLIIdSchema` z.enum + `CLIConfigSchema { enabled[], aiRouter }` + `ConfigSchema.superRefine(cli.aiRouter ∈ cli.enabled)` |
+| **w2** | app | `cli-selector.ts` — `command -v claude` / `command -v codex` 探装机 + clack `multiselect` + 持久化预勾选 + ≥1 校验 + 拒「defies-the-hint」 |
+| **w3** | app | `ai-router-selector.ts` — 从 step 1 结果出 clack `select`；**enabledCLIs.length===1 仍 ask** |
+| **w4** | app | `start.ts` 重排 4 步顺序：CLI multi → AI router → term → IM；按 `enabledCLIs` 分别跑 `runSetupHooksCommand` (cc) + `runCodexSetupHooks` (codex)；按 `aiRouterCLI` 选 `routeViaCodex` 或内置 `routeViaAI` |
+| **w5** | app | `cli.ts` 删 `--cli=` 解析整段；HELP_TEXT 不再列 `[--cli=cc\|codex]` |
+| **w6** | bridge | `index.ts` + `ai-router-codex.ts` 注释更新（去除 `--cli=codex` 字面引用，改为 wizard step 2）|
+| **w7** | app | 36 新测试（cli-selector 10 + ai-router-selector 8 + start 4-step + 双 setup-hooks + 取消传播 5）|
+| **w8** | docs | 本节修订 + README 描述「multi-cc-im start 进入 4 步 wizard」+ architecture.md adapter 表加 `[cli]` 段 + conventions.md 状态总表 + 修订日志 v0.2.0 entry |
+| **w9** | verify | `pnpm typecheck` + `pnpm test` + `pnpm --filter multi-cc-im build` + `./bin/multi-cc-im --version` smoke + `pnpm install --frozen-lockfile`（schema 改动）|
+
+### 11.4 取舍
+
+| 候选 | 评价 | 否决理由 |
+|---|---|---|
+| 保留 `--cli=cc,codex` 多值（B.1）| 跟 wizard 多选语义对齐 | 用户拍 B.2（删字段）— wizard 是唯一入口；脚本化场景靠 daemon-restart manager + 持久化 config 而非 reflag |
+| step 2 单 CLI 时跳过（A.2）| 减一次按键 | 用户拍 A.1 + 加码「不能跳过」— 长期暗箱选择风险大于一次确认成本 |
+| env var `MULTI_CC_IM_CLI=cc` 旁路 wizard | 给 CI / batch 用户兜底 | 同样被 B.2「wizard 是唯一入口」覆盖；CI 应用持久化 config.toml + 二次 start 不再交互 |
+
+### 11.5 状态
+
+- §7.1 + 本节双锁定 → `feat/cli-codex-adapter` 分支推进，并入 v0.2.0 一次发布
+- Memory 沉淀：[[feedback_check_superset_of_existing]] 再次命中 — 「命令行二选一」是 wizard 现行流程 superset，1 处改动而非 5 候选 DD
