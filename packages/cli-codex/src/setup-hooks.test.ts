@@ -233,7 +233,7 @@ statusMessage = "user-tool"
     expect(lines.some((l) => l.includes('binary:'))).toBe(true);
   });
 
-  it('emits codex-restart warning when changed=true (real toml write)', async () => {
+  it('emits codex-restart warning on real toml write (changed=true)', async () => {
     const lines: string[] = [];
     const result = await runCodexSetupHooks({
       binaryPath: BIN,
@@ -241,13 +241,17 @@ statusMessage = "user-tool"
       log: (l) => lines.push(l),
     });
     expect(result.changed).toBe(true);
-    expect(lines).toContain(WARN_CODEX_RESTART_LINE);
+    expect(lines.filter((l) => l === WARN_CODEX_RESTART_LINE)).toHaveLength(1);
   });
 
-  it('does NOT emit codex-restart warning on idempotent rerun (changed=false)', async () => {
-    // First run actually writes — warning expected
+  it('emits codex-restart warning ALSO on idempotent rerun (changed=false)', async () => {
+    // Per user direction 2026-05-23 "需要每次启动都提醒": the warning is
+    // about pre-hook codex processes whose lifetime started before
+    // hook reached the toml — those tabs need a manual restart regardless
+    // of whether the current daemon invocation rewrites the toml. So
+    // every runCodexSetupHooks call MUST emit the warning, including
+    // idempotent reruns.
     await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
-    // Second run is a no-op — warning would be noise
     const lines: string[] = [];
     const result = await runCodexSetupHooks({
       binaryPath: BIN,
@@ -255,7 +259,7 @@ statusMessage = "user-tool"
       log: (l) => lines.push(l),
     });
     expect(result.changed).toBe(false);
-    expect(lines).not.toContain(WARN_CODEX_RESTART_LINE);
+    expect(lines.filter((l) => l === WARN_CODEX_RESTART_LINE)).toHaveLength(1);
   });
 
   it('atomic write: no temp file lingers after write', async () => {
