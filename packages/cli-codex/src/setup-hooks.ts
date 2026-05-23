@@ -322,6 +322,21 @@ export async function runCodexSetupHooks(
 
   log(`  ✓ wrote ${countHandlers(merged)} handlers across ${Object.keys(merged).length} events.`);
 
+  // UX防呆: codex unlike cc does NOT hot-reload its hooks config. Per
+  // [[reference_codex_hook_no_hot_reload_cc_does]] — cc has a file
+  // watcher that picks up settings.json edits live; codex reads
+  // ~/.codex/config.toml once at process startup
+  // (codex-rs/core/src/config/mod.rs::Config::load_with_cli_overrides
+  // → Hooks::new(Arc<HooksConfig>), no watcher). Result: codex tabs
+  // launched BEFORE this setup-hooks run won't see the new handlers —
+  // their Stop / PreToolUse / PermissionRequest events fire silently
+  // with no hook spawn, daemon never gets a state file, IM never
+  // forwards.
+  //
+  // Only print the warning when changed=true (we actually wrote new
+  // hooks). Idempotent reruns are no-ops; warning would be noise.
+  log(WARN_CODEX_RESTART_LINE);
+
   return {
     configPath,
     ...(backupPath !== undefined ? { backupPath } : {}),
@@ -329,3 +344,13 @@ export async function runCodexSetupHooks(
     handlerCount: countHandlers(merged),
   };
 }
+
+/**
+ * The exact warning string emitted by `runCodexSetupHooks` after a
+ * successful hook write. Exported so callers (e.g. `multi-cc-im start`)
+ * can echo it to the daemon console — the setup-hooks log itself goes
+ * to fileOnlyLog, but users see only console output at startup.
+ */
+export const WARN_CODEX_RESTART_LINE =
+  '  ⚠️ codex 不像 cc 自动热重载 hook 配置。如果你的 codex tab 在装 hook 之前就启动了，' +
+  '需要在那个 tab 里 /quit 然后重新 codex 一次才能让 IM 收到回信。新启动的 codex tab 自动生效。';

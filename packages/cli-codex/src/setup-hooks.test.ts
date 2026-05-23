@@ -8,6 +8,7 @@ import {
   pruneExistingHooks,
   buildMultiCcImHookGroups,
   defaultCodexConfigPath,
+  WARN_CODEX_RESTART_LINE,
   type CodexHooksMap,
 } from './setup-hooks.js';
 
@@ -230,6 +231,31 @@ statusMessage = "user-tool"
     });
     expect(lines.some((l) => l.includes('config:'))).toBe(true);
     expect(lines.some((l) => l.includes('binary:'))).toBe(true);
+  });
+
+  it('emits codex-restart warning when changed=true (real toml write)', async () => {
+    const lines: string[] = [];
+    const result = await runCodexSetupHooks({
+      binaryPath: BIN,
+      codexHome: sandboxRoot,
+      log: (l) => lines.push(l),
+    });
+    expect(result.changed).toBe(true);
+    expect(lines).toContain(WARN_CODEX_RESTART_LINE);
+  });
+
+  it('does NOT emit codex-restart warning on idempotent rerun (changed=false)', async () => {
+    // First run actually writes — warning expected
+    await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    // Second run is a no-op — warning would be noise
+    const lines: string[] = [];
+    const result = await runCodexSetupHooks({
+      binaryPath: BIN,
+      codexHome: sandboxRoot,
+      log: (l) => lines.push(l),
+    });
+    expect(result.changed).toBe(false);
+    expect(lines).not.toContain(WARN_CODEX_RESTART_LINE);
   });
 
   it('atomic write: no temp file lingers after write', async () => {

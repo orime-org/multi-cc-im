@@ -434,6 +434,57 @@ describe('runStartCommand — auto setup-hooks', () => {
     await result.shutdown!();
   });
 
+  it('codex changed=true → daemon console echoes codex-restart warning', async () => {
+    // Setup: codex setup-hooks returns {changed:true} (real write).
+    // Expected: start.ts re-logs the restart warning to the main log
+    // sink so users see it in console (setup-hooks own log goes to
+    // fileOnlyLog by default).
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      root,
+      setupHooks: async () => ({ exitCode: 0, stderr: '' }),
+      setupHooksCodex: async () => ({
+        changed: true,
+        configPath: '/dev/null',
+      }),
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(['codex']),
+      selectAIRouter: stubSelectAIRouter('codex'),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: (l) => lines.push(l),
+    });
+    expect(result.exitCode).toBe(0);
+    // The warning string is owned by cli-codex; we assert by substring
+    // (not equality) so changes to the exact wording in one place do
+    // not silently break this assertion.
+    expect(lines.some((l) => l.includes('codex 不像 cc 自动热重载'))).toBe(true);
+    await result.shutdown!();
+  });
+
+  it('codex changed=false (idempotent) → NO restart warning echoed', async () => {
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      root,
+      setupHooks: async () => ({ exitCode: 0, stderr: '' }),
+      setupHooksCodex: async () => ({
+        changed: false,
+        configPath: '/dev/null',
+      }),
+      selectTerminal: stubSelectTerminal(),
+      selectCLIs: stubSelectCLIs(['codex']),
+      selectAIRouter: stubSelectAIRouter('codex'),
+      resolveWezTerm: async () => '/usr/local/bin/wezterm',
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      selectAdapter: stubSelectAdapter(),
+      log: (l) => lines.push(l),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(lines.some((l) => l.includes('codex 不像 cc 自动热重载'))).toBe(false);
+    await result.shutdown!();
+  });
+
   it('both cc + codex enabled → BOTH setup-hooks invoked', async () => {
     const ccSpy = vi.fn(async () => ({ exitCode: 0, stderr: '' }));
     const codexSpy = vi.fn(async () => ({ changed: true, configPath: '/dev/null' }));
