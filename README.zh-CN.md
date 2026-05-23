@@ -2,9 +2,9 @@
 
 [English](https://github.com/orime-org/multi-cc-im/blob/main/README.md) | **中文**
 
-把跑在 **WezTerm 或 iTerm2 tabs 里**的多个 Claude Code (cc) session 桥接到飞书 (Lark) bot。手机 IM 端能远程驱动各 cc tab；回复和工具审批反向到 IM。
+把跑在 **WezTerm 或 iTerm2 tabs 里**的多个 **Claude Code (cc)** 或 **OpenAI Codex** session 桥接到飞书 (Lark) bot。手机 IM 端能远程驱动各 AI agent tab；回复和工具审批反向到 IM。
 
-> **v0.1.5**（2026-05-20）— README 相对链接全改 absolute github URL，npm 包页正确渲染。详见 [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) 修订日志 或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.1.5)。
+> **v0.2.0**（2026-05-23）— Codex CLI 适配落地，跟 cc 并列；新 4 步交互式启动向导（CLI 多选 → 分诊 AI → 终端 → IM）；删 `--cli=` 命令行参数，改为向导。同一 wezterm 能同时挂一个 cc tab 和一个 codex tab，两边都能从一个 IM 寻址。详见 [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) 修订日志 或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.0)。
 
 **两类受众**：
 - **[Part 1 — 用户使用](#part-1--用户使用)** — 安装 / 飞书 app 配置 / IM 命令 / 故障排查。只想用 multi-cc-im 看这部分。
@@ -22,7 +22,7 @@
 | Node.js | ≥ 22 |
 | pnpm | ≥ 9 |
 | 终端 | WezTerm ≥ 20240203 **或** iTerm2 ≥ 3.3 (macOS only) |
-| Claude Code | `claude` 在 `PATH` + 已登录（Pro / Max 订阅 — AI 路由要调）|
+| AI agent | 至少装一个：**Claude Code**（`claude` 在 `PATH` + 已登录 Pro / Max 订阅）或 **OpenAI Codex**（`codex` 在 `PATH`，免登录 — ChatGPT Plus 账号或 API key）。向导第 1 步会自动探装机，没装的灰色显示 + 给安装链接。装两个都勾就能在同一 wezterm 里 cc 标签 + codex 标签同时挂 IM。|
 | Lark 账号 | 一个用作 bot 的飞书账号 |
 
 ## 1.2 创建飞书 app（必先做完这一节）
@@ -58,20 +58,22 @@ multi-cc-im start
 
 **Alternative**（想 hack 源码 / 跑测试 / 二次开发）— 见 [Part 2](#part-2--二次开发)。
 
-首次启动跑 wizard：
+首次启动跑 4 步向导（v0.2.0 起）：
 
 | 步 | 做什么 | 做完得到 |
 |---|---|---|
-| W1 | 选终端 `wezterm` 或 `iterm2` | `~/.multi-cc-im/config.toml` 写 `[terminal] type` |
-| W2 | (iTerm2 路径) 启 Python API preference + 装 `iterm2` PyPI 包 + 同意 macOS Automation 权限 | iTerm2 adapter 能列 pane / send-text |
-| W3 | 选 IM 走 `lark` | 进飞书 setup |
-| W4 | 粘贴 1.2 拿到的 `App ID` + `App Secret` | daemon 拿凭据用 SDK 跟飞书 handshake |
-| W5 | wizard 验证凭据有效 | 凭据写 `~/.multi-cc-im/credentials/lark.json` (mode 0600) |
+| W1 | **CLI 多选** — 探装机后让你勾要桥接到 IM 的 CLI（Claude Code 或 OpenAI Codex 或都勾） | `[cli].enabled` 写 `~/.multi-cc-im/config.toml`；每个勾选的 CLI 自动注册 hook（cc 进 `~/.claude/settings.json`，codex 进 `~/.codex/config.toml`，写前 `.bak.<ISO>` 备份）|
+| W2 | **分诊 AI 单选** — 选哪个 CLI 跑 daemon 内部 IM 消息分诊子进程（即使只勾了 1 个 CLI 也要按 Enter 确认） | `[cli].aiRouter` 写 config.toml |
+| W3 | 选终端 `wezterm` 或 `iterm2` | `[terminal].type` 写 config.toml |
+| W3b | (iTerm2 路径) 启 Python API preference + 装 `iterm2` PyPI 包 + 同意 macOS Automation 权限 | iTerm2 adapter 能列 pane / send-text |
+| W4 | 选 IM 走 `lark` 并粘贴 1.2 拿到的 `App ID` + `App Secret` | 凭据写 `~/.multi-cc-im/credentials/lark.json` (mode 0600) + daemon WS handshake |
 
 完成 = daemon 前台跑 + WS 连飞书 ready + 监控 dashboard 在 `http://127.0.0.1:40719`。
 
+> ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
+>
 > Ctrl+C 停 daemon。一台机器只能一个 daemon。
-> 非交互式：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
+> 非交互式凭据预填：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
 > 重新配：再跑 `./bin/multi-cc-im start`，wizard 用旧值预填，回车保留 / 方向键改。
 
 ## 1.4 IM 命令速查
@@ -242,9 +244,11 @@ multi-cc-im/
 
 > `termId` 必须随 Stop payload 端到端传，不许下游 `typeof paneId` 反推（参 [memory: feedback_carry_facts_dont_infer]）。
 
-## 2.7 加一个 CLI adapter（codex / aider / 等）
+## 2.7 加一个 CLI adapter（gemini / aider / 等）
 
-cc adapter 耦合 cc-specific hook（`PreToolUse` / `Stop` / `PermissionRequest`）+ jsonl transcript。新 CLI 需等价扩展点；若无 → 提 DD 先不动 — 见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「不破坏现有 cc 进程」。
+**已落地（v0.2.0）**：`@multi-cc-im/cli-cc` (Claude Code) + `@multi-cc-im/cli-codex` (OpenAI Codex) 两个 adapter 都在仓库里，向导第 1 步多选哪个或都勾。本节描述如何再添加第三个（gemini / aider / 等）。
+
+需求：新 CLI 必须有等价扩展点（hook lifecycle：tool-use 拦截 / 会话结束 / 权限请求等）。codex 接入是个参考——见 [`docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md) 的 5 步 DD（候选枚举 / hook events source-verify / 共享 state-file 协议 / 4 步向导接入）。无等价扩展点 → 提 DD 先不动 — 见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「不破坏现有 cc 进程」。
 
 ## 2.8 重大决策（DD）流程
 
