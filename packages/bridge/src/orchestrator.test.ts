@@ -670,6 +670,119 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
     await orch.stop();
   });
 
+  it('inline post-style msg (text + 1 image attached) → prepends "请看 @<path>\\n" without stash', async () => {
+    // Feishu `post` type: one IncomingMessage carries text AND one
+    // inline image. NOT a stash+wait flow — dispatch immediately with
+    // image prefix. Per [decision 1A, 2026-05-26].
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    const postMsg: IncomingMessage = {
+      msgId: 'm_post_1',
+      from: 'ou_owner',
+      text: '#frontend 看这张图',
+      attachments: [
+        { kind: 'image', localPath: '/tmp/inbox/screenshot.png' },
+      ],
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000000,
+    };
+    await im.handler!.onMessage(postMsg);
+    expect(term.sendTextCalls).toHaveLength(1);
+    expect(term.sendTextCalls[0]!.content).toMatch(
+      /^请看 @\/tmp\/inbox\/screenshot\.png\n/,
+    );
+    await orch.stop();
+  });
+
+  it('inline post-style msg (text + N images) → prepends "请看 @<p1> @<p2>\\n" with all paths', async () => {
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    const postMsg: IncomingMessage = {
+      msgId: 'm_post_multi',
+      from: 'ou_owner',
+      text: '#frontend 这两张',
+      attachments: [
+        { kind: 'image', localPath: '/tmp/inbox/a.png' },
+        { kind: 'image', localPath: '/tmp/inbox/b.png' },
+      ],
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000000,
+    };
+    await im.handler!.onMessage(postMsg);
+    expect(term.sendTextCalls).toHaveLength(1);
+    // Both image paths appear; @-prefixed; single newline separator.
+    expect(term.sendTextCalls[0]!.content).toMatch(
+      /^请看 @\/tmp\/inbox\/a\.png @\/tmp\/inbox\/b\.png\n/,
+    );
+    await orch.stop();
+  });
+
+  it('inline + stash join are mutually exclusive — stash path wins when reply targets stashed image', async () => {
+    // Edge case: user sends a stashed image, then sends a post-style
+    // message that BOTH carries inline attachments AND has parent_id
+    // pointing at the stashed image. The reply-join path takes
+    // precedence (the stashed image was the user's primary subject),
+    // so inline attachments are NOT prepended a second time.
+    const im = makeMockIM();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const orch = createOrchestrator({
+      stateDir: testStateDir,
+      imAdapter: im,
+      termAdapter: term,
+      cliAdapter: makeMockCLI(),
+      state: memState(),
+      sendKeystrokeDelayMs: 0,
+      aiRouter: null,
+    });
+    await orch.start();
+    // Stash an image first.
+    await im.handler!.onMessage({
+      msgId: 'm_img_stash',
+      from: 'ou_owner',
+      text: null,
+      attachments: [{ kind: 'image', localPath: '/tmp/stash.png' }],
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000000,
+    });
+    im.sent.length = 0;
+    // Now a post-style msg that ALSO has parent_id pointing at the stash
+    // AND its own inline image. The stash path should win.
+    await im.handler!.onMessage({
+      msgId: 'm_post_collide',
+      from: 'ou_owner',
+      text: '#frontend 看',
+      attachments: [{ kind: 'image', localPath: '/tmp/inline.png' }],
+      replyToMessageId: 'm_img_stash',
+      replyCtx: { imType: 'lark', openId: 'ou_owner', chatId: 'oc_chat' },
+      timestamp: 1700000000001,
+    });
+    expect(term.sendTextCalls).toHaveLength(1);
+    // Stash path: only the stash image, NOT the inline.
+    expect(term.sendTextCalls[0]!.content).toMatch(/^请看 @\/tmp\/stash\.png\n/);
+    expect(term.sendTextCalls[0]!.content).not.toContain('/tmp/inline.png');
+    await orch.stop();
+  });
+
   it('text reply with replyToMessageId NOT in stash → normal route, no image join', async () => {
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);

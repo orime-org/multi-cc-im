@@ -22,6 +22,7 @@ import {
 } from './inbound-image.js';
 import { stripMarkdown } from './markdown.js';
 import { mdToCard, splitMarkdownByTableCapacity } from './md-to-card.js';
+import { parsePostContent } from './parse-post-content.js';
 import type { TenantTokenStore } from './tenant-token.js';
 
 /**
@@ -820,13 +821,116 @@ export function createLarkAdapter(
             return;
           }
 
+          // post: Feishu's native rich-text (mixed text + image + links +
+          // mentions in one message). Parse into normalized
+          // `{text, imageKeys[]}`, download all image_keys via the same
+          // `downloadImpl` cli-cc image path uses, then dispatch as ONE
+          // `IncomingMessage` with `text` set AND `attachments` populated.
+          // Orchestrator joint-dispatch path picks this up and prepends
+          // `请看 @<path> ...` to each dispatch.content (same convention
+          // image-reply-join uses) so cc tab reads images + text in one
+          // turn. Per [decisions 1A + 2A, 2026-05-26].
+          if (data.message.message_type === 'post') {
+            if (!opts.tenantTokenStore || !opts.inboundImagesDir) {
+              log(
+                `[lark] dropping post message_id=${data.message.message_id} (image inbound not wired — opts.tenantTokenStore/inboundImagesDir missing)`,
+              );
+              return;
+            }
+            const parsed = parsePostContent(data.message.content);
+            if (parsed === null) {
+              log(
+                `[lark] dropping post message_id=${data.message.message_id} with malformed content (parsePostContent returned null)`,
+              );
+              return;
+            }
+            const openIdPost = data.sender.sender_id?.open_id;
+            if (!openIdPost) {
+              log(`[lark] dropping post event missing sender.sender_id.open_id`);
+              return;
+            }
+            // Download all image_keys in parallel. Partial failure is
+            // tolerated — a failed image is logged and its path omitted
+            // from attachments; the post still routes with the text and
+            // any successfully-downloaded images. Total failure (zero
+            // images down where some were promised) still routes the
+            // text-only — better than silent drop.
+            const downloadImplPost = opts.downloadAttachmentImpl ?? defaultDownloadAttachment;
+            const downloadResults = await Promise.allSettled(
+              parsed.imageKeys.map((imageKey) =>
+                downloadImplPost(
+                  data.message.message_id,
+                  imageKey,
+                  'image',
+                  undefined,
+                  {
+                    appId: creds.appId,
+                    appSecret: creds.appSecret,
+                    tenantTokenStore: opts.tenantTokenStore!,
+                    outDir: opts.inboundImagesDir!,
+                  },
+                ),
+              ),
+            );
+            const downloadedAttachments: IncomingMessage['attachments'] = [];
+            for (let i = 0; i < downloadResults.length; i++) {
+              const r = downloadResults[i]!;
+              if (r.status === 'fulfilled') {
+                downloadedAttachments.push({
+                  kind: 'image',
+                  localPath: r.value.localPath,
+                  mimetype: r.value.mimetype,
+                });
+              } else {
+                log(
+                  `[lark] post image download failed (key=${parsed.imageKeys[i]}): ${formatErrorWithCause(r.reason)}`,
+                );
+              }
+            }
+            const replyCtxPost: IMReplyContext = {
+              imType: 'lark',
+              openId: openIdPost,
+              chatId: data.message.chat_id,
+              messageId: data.message.message_id,
+            };
+            const parentRawPost = (data.message as { parent_id?: unknown }).parent_id;
+            const replyToMessageIdPost =
+              typeof parentRawPost === 'string' && parentRawPost.length > 0
+                ? parentRawPost
+                : undefined;
+            const quotedMessagePost =
+              replyToMessageIdPost && client
+                ? await fetchQuotedMessage(client, replyToMessageIdPost, log)
+                : undefined;
+            const postMsg: IncomingMessage = {
+              msgId: data.message.message_id,
+              from: openIdPost,
+              text: parsed.text.length > 0 ? parsed.text : null,
+              attachments: downloadedAttachments,
+              timestamp: Number(data.message.create_time),
+              replyToMessageId: replyToMessageIdPost,
+              quotedMessage: quotedMessagePost,
+              replyCtx: replyCtxPost,
+            };
+            try {
+              await handler.onMessage(postMsg);
+            } catch (err) {
+              if (handler.onError) {
+                await handler.onError(
+                  err instanceof Error ? err : new Error(String(err)),
+                );
+              }
+            }
+            return;
+          }
+
           // Other non-text types (file / sticker / etc.) still drop silently
-          // — out of scope for the audio + image DDs. Re-evaluate per type
-          // if user reports the "did my message disappear?" symptom for
-          // those too.
+          // — out of scope for the audio + image + post DDs. Re-evaluate
+          // per type if user reports the "did my message disappear?"
+          // symptom for those too.
           if (data.message.message_type !== 'text') {
             log(
-              `[lark] dropping non-text message_type=${data.message.message_type} (v1 MVP text + image only)`,
+              `[lark] dropping non-text message_type=${data.message.message_type} (v1 MVP text + image + post only)`,
             );
             return;
           }
