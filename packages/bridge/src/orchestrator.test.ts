@@ -704,7 +704,11 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
     await orch.stop();
   });
 
-  it('inline post-style msg (text + N images) → prepends "请看 @<p1> @<p2>\\n" with all paths', async () => {
+  it('inline post-style msg (text + N images) → prepends numbered "第1张:@<p1> 第2张:@<p2>\\n请先用 Read..." with anchor instruction', async () => {
+    // Per 1D decision 2026-05-26: multi-image dispatch must instruct cc
+    // to anchor each numbered image to its content in the first reply
+    // turn. Without this, user follow-ups ("look at the red one") have
+    // no way to map back to a specific path.
     const im = makeMockIM();
     const term = makeMockTerm([FRONTEND_INFO]);
     const orch = createOrchestrator({
@@ -730,10 +734,19 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
     };
     await im.handler!.onMessage(postMsg);
     expect(term.sendTextCalls).toHaveLength(1);
-    // Both image paths appear; @-prefixed; single newline separator.
-    expect(term.sendTextCalls[0]!.content).toMatch(
-      /^请看 @\/tmp\/inbox\/a\.png @\/tmp\/inbox\/b\.png\n/,
+    const sent = term.sendTextCalls[0]!.content;
+    // Numbered references in order, @-prefixed.
+    expect(sent).toMatch(
+      /^请看 第1张:@\/tmp\/inbox\/a\.png 第2张:@\/tmp\/inbox\/b\.png\n/,
     );
+    // Anchor instruction telling cc to label each image by number on
+    // the first reply (so user follow-ups stay disambiguated).
+    expect(sent).toContain('请先用 Read 看每张图');
+    expect(sent).toContain('按编号简述');
+    // The user's original text rides at the end, after the instruction.
+    // Note: daemon strips the `#frontend ` mention prefix before
+    // dispatching, so cc sees just '这两张'.
+    expect(sent).toContain('这两张');
     await orch.stop();
   });
 
