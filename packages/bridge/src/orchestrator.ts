@@ -674,10 +674,30 @@ export function createOrchestrator(
         : [];
     let imagePrefix = '';
     if (joinedImagePath !== undefined) {
+      // Stash join is always one image (pendingImages Map<msgId, single>).
       imagePrefix = `请看 @${joinedImagePath}\n`;
-    } else if (inlineImagePaths.length > 0) {
-      const refs = inlineImagePaths.map((p) => `@${p}`).join(' ');
-      imagePrefix = `请看 ${refs}\n`;
+    } else if (inlineImagePaths.length === 1) {
+      // Single inline image — same plain format as stash join. No
+      // ordering anchor needed because there's no ambiguity.
+      imagePrefix = `请看 @${inlineImagePaths[0]}\n`;
+      log(
+        `[inlineImage] joint msgId=${msg.msgId} count=1 paths=${inlineImagePaths[0]}`,
+      );
+    } else if (inlineImagePaths.length > 1) {
+      // Multi-image inline (Feishu `post` with 2+ inline images): number
+      // every image and explicitly instruct cc to anchor each number to
+      // its content in the first reply turn. Without this, cc gets a
+      // flat path list with no way to map user follow-ups ("look at the
+      // red one") back to a specific path. Per 1D decision 2026-05-26:
+      // put the image-content understanding in cc (it has Read tool +
+      // is going to look at images anyway) rather than burning extra
+      // LLM calls in the daemon to pre-generate alt-text.
+      const numbered = inlineImagePaths
+        .map((p, i) => `第${i + 1}张:@${p}`)
+        .join(' ');
+      imagePrefix =
+        `请看 ${numbered}\n` +
+        `请先用 Read 看每张图，按编号简述（「第1张：...；第2张：...」），再回应：`;
       log(
         `[inlineImage] joint msgId=${msg.msgId} count=${inlineImagePaths.length} paths=${inlineImagePaths.join(',')}`,
       );
