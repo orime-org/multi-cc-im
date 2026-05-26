@@ -656,13 +656,38 @@ export function createOrchestrator(
         );
       }
     }
-    const effectiveDispatches =
-      joinedImagePath !== undefined
-        ? result.dispatches.map((d) => ({
-            ...d,
-            content: `请看 @${joinedImagePath}\n${d.content}`,
-          }))
-        : result.dispatches;
+    // Inline images riding on the same message as the text. Per decision
+    // 1A (2026-05-26): a Feishu `post` message arrives as one
+    // `IncomingMessage` with `text` set AND `attachments` carrying the
+    // inline images. Distinct from the image-stash→text-reply join path
+    // above — there the image is a separate `image`-only message
+    // followed by a text reply. Mutually exclusive: if the stash join
+    // already wired one image, we don't double-prepend; if the inline
+    // path wired N images, we don't also pull from stash. Both paths
+    // emit the same `请看 @<path>...\n` convention so downstream cc tabs
+    // see one prepend format.
+    const inlineImagePaths: string[] =
+      joinedImagePath === undefined
+        ? msg.attachments
+            .filter((a) => a.kind === 'image')
+            .map((a) => a.localPath)
+        : [];
+    let imagePrefix = '';
+    if (joinedImagePath !== undefined) {
+      imagePrefix = `请看 @${joinedImagePath}\n`;
+    } else if (inlineImagePaths.length > 0) {
+      const refs = inlineImagePaths.map((p) => `@${p}`).join(' ');
+      imagePrefix = `请看 ${refs}\n`;
+      log(
+        `[inlineImage] joint msgId=${msg.msgId} count=${inlineImagePaths.length} paths=${inlineImagePaths.join(',')}`,
+      );
+    }
+    const effectiveDispatches = imagePrefix
+      ? result.dispatches.map((d) => ({
+          ...d,
+          content: `${imagePrefix}${d.content}`,
+        }))
+      : result.dispatches;
 
     // Quoted-message append (programmatic, NOT via AI router): when the
     // inbound reply carries a resolved quoted parent, suffix it to every
