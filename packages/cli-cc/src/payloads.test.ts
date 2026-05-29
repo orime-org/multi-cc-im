@@ -98,6 +98,23 @@ describe('StopPayloadSchema', () => {
       '多行\n第二行 ✨ probe',
     );
   });
+
+  // cc omits `last_assistant_message` entirely (the JSON has no such key) when
+  // the final turn ends in a tool call with no trailing text — JSON.stringify
+  // drops undefined-valued keys. The schema must accept the omission instead of
+  // throwing `Required`. See `reference_cc_stop_hook_payload_final_only`.
+  it('accepts Stop payload with last_assistant_message omitted (cc omits the key when the final turn has no trailing text)', () => {
+    const { last_assistant_message, ...withoutMsg } = STOP;
+    void last_assistant_message;
+    expect(() => StopPayloadSchema.parse(withoutMsg)).not.toThrow();
+  });
+
+  it('accepts explicit null last_assistant_message (future-proof; aligns with codex NullableString)', () => {
+    expect(
+      StopPayloadSchema.parse({ ...STOP, last_assistant_message: null })
+        .last_assistant_message,
+    ).toBeNull();
+  });
 });
 
 describe('PermissionRequestPayloadSchema', () => {
