@@ -722,7 +722,12 @@ export async function runHookReceiver(
 
       const now = opts.now ?? (() => new Date());
       const timestamp = formatStopTimestamp(now());
-      const msgLen = payload.last_assistant_message.length;
+      // cc omits `last_assistant_message` (undefined) when the final turn ends
+      // in a tool call with no trailing text; schema is `.nullish()`. Normalize
+      // to '' so downstream state-file + daemon contract stays string-typed.
+      // The daemon-side orchestrator skips forwarding empty messages.
+      const lastMsg = payload.last_assistant_message ?? '';
+      const msgLen = lastMsg.length;
       trace(
         `stop-write paneId=${String(paneId)} sid=${sessionId} ts=${timestamp} msg-len=${msgLen} stop_hook_active=${payload.stop_hook_active}`,
       );
@@ -731,7 +736,7 @@ export async function runHookReceiver(
         paneId,
         sessionId,
         timestamp,
-        last_assistant_message: payload.last_assistant_message,
+        last_assistant_message: lastMsg,
         termId,
       });
       trace(`stop-write OK`);

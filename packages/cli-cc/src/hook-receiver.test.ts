@@ -906,6 +906,39 @@ describe('runHookReceiver — Stop event', () => {
     expect(got?.last_assistant_message).toBe('hi');
   });
 
+  // Crash repro: cc omits `last_assistant_message` when the final turn ends in
+  // a tool call with no trailing text. The receiver must normalize the absent
+  // value to '' (not crash on `.length`) and still write the Stop file — the
+  // daemon-side empty guard then skips the actual IM forward.
+  it('last_assistant_message omitted → writes Stop file normalized to empty string (no crash)', async () => {
+    await setupBoundState(stateDir);
+    const fixedNow = new Date('2026-05-08T01:43:40.131Z');
+    const stopNoMsg: ParsedHookPayload = {
+      session_id: SID as never,
+      transcript_path: TX as never,
+      cwd: CWD as never,
+      hook_event_name: 'Stop',
+      permission_mode: 'default',
+      stop_hook_active: false,
+      // last_assistant_message intentionally omitted (cc's real behavior).
+    };
+    const result = await runHookReceiver({
+      stateDir,
+      payload: stopNoMsg,
+      resolvePaneOrigin: stubPaneOrigin,
+      now: () => fixedNow,
+    });
+    expect(result).toBeUndefined();
+    const path = stopFilePath({
+      stateDir,
+      paneId: PANE_ID,
+      sessionId: SID,
+      timestamp: '2026-05-08T01-43-40-131Z',
+    });
+    const got = await readStopFile(path);
+    expect(got?.last_assistant_message).toBe('');
+  });
+
   it('clears stale Stop.* for the pane+sid before writing fresh', async () => {
     await setupBoundState(stateDir);
     // Pre-seed a stale Stop file.

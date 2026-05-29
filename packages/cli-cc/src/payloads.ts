@@ -45,7 +45,15 @@ export const StopPayloadSchema = z.object({
   hook_event_name: z.literal('Stop'),
   permission_mode: z.string(),
   stop_hook_active: z.boolean(),
-  last_assistant_message: z.string(),
+  // cc OMITS this key entirely (JSON.stringify drops undefined-valued keys)
+  // when the final assistant turn ends in a tool call with no trailing text;
+  // it is not sent as `null`. `.nullish()` (= optional + nullable) accepts
+  // both the omitted case (current cc behavior) and an explicit null (matches
+  // codex's NullableString, future-proofing if cc ever switches). Consumers
+  // normalize to '' — see hook-receiver Stop handler + the daemon-side empty
+  // guard (orchestrator skips forwarding empty messages).
+  // Ref: reference_cc_stop_hook_payload_final_only.
+  last_assistant_message: z.string().nullish(),
 });
 
 /**
