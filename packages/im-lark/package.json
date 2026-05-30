@@ -1,6 +1,6 @@
 {
   "name": "@multi-cc-im/im-lark",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -14,7 +14,6 @@
     "@larksuiteoapi/node-sdk": "^1.63.1",
     "@multi-cc-im/shared": "workspace:*",
     "@multi-cc-im/storage-files": "workspace:*",
-    "marked": "^15.0.0",
     "zod": "^3.23.8"
   }
 }

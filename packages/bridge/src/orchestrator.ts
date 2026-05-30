@@ -989,11 +989,10 @@ export function createOrchestrator(
     log(
       `[cc → IM] ${prefix} reply='${truncate(p.last_assistant_message, 80)}'`,
     );
-    // Source-tag carried as metadata, not baked into content: when the
-    // adapter splits the reply across multiple IM messages (Lark
-    // FEISHU_CARD_TABLE_LIMIT) the tag must appear on every chunk —
-    // a single baked `[${prefix}]\n` only survived chunk[0]. Per
-    // [project_future_im_adapters] + reference_feishu_cardkit_limits.
+    // Source-tag carried as metadata, not baked into content: the lark
+    // adapter prefixes it once at the top of the single cardkit card it
+    // sends per reply (one reply = one card = one message). Per
+    // [project_future_im_adapters].
     try {
       await opts.imAdapter.send(p.last_assistant_message, replyCtx, {
         sourceTag: prefix,
