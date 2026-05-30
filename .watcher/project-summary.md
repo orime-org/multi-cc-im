@@ -5,7 +5,7 @@
 TypeScript pnpm monorepo (apps/multi-cc-im + 8 workspace packages) + DD 报告 (`docs/superpowers/specs/*-dd.md`) + 修订日志 (`docs/conventions.md`)。
 
 # 项目阶段
-**v0.2.x alpha personal-tool** — 单人 use case 真账号验证迭代中。开源 MIT，已发布 npm（`multi-cc-im` package，当前 latest = `0.2.2`，2026-05-29 publish — 含 codex CLI 适配 + 4 步启动向导 + 双 CLI 共存 + 飞书 post 类型支持 + 多图序号 anchor 协议 + cli-cc Stop hook 缺 last_assistant_message 崩溃修复）。
+**v0.2.x alpha personal-tool** — 单人 use case 真账号验证迭代中。开源 MIT，已发布 npm（`multi-cc-im` package，当前 latest = `0.2.3`，2026-05-30 publish — cc 回复改 CardKit 单卡根治飞书多消息顺序乱 + markdown 原生渲染不限 3 表 + README 四部分重组；前序 0.2.2 含 codex CLI 适配 + 4 步启动向导 + 双 CLI 共存 + 飞书 post 类型支持）。
 
 # 关键约束 / 红线
 - TypeScript strict 禁 `any` / ESM only / 凭据 0600 落 JSON 不进 git
