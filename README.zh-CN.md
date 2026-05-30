@@ -4,7 +4,7 @@
 
 把跑在 **WezTerm 或 iTerm2 tabs 里**的多个 **Claude Code (cc)** 或 **OpenAI Codex** session 桥接到飞书 (Lark) bot。手机 IM 端能远程驱动各 AI agent tab；回复和工具审批反向到 IM。
 
-> **v0.2.0**（2026-05-23）— Codex CLI 适配落地，跟 cc 并列；新 4 步交互式启动向导（CLI 多选 → 分诊 AI → 终端 → IM）；删 `--cli=` 命令行参数，改为向导。同一 wezterm 能同时挂一个 cc tab 和一个 codex tab，两边都能从一个 IM 寻址。详见 [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) 修订日志 或 [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.0)。
+> **v0.2.3**（2026-05-30）— cc 回复改用单张 CardKit 卡片发送（一条回复 = 一张卡 = 一条消息），根治多表格回复顺序乱；markdown（标题/表格/代码/列表）原生渲染，不再限 3 张表。**新增 scope 要求**：`cardkit:card:write`（**应用身份**）— 见 [Part 1.1](#11-创建飞书-app必先做完这一节) step 2c。修订日志：[`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) · [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.3)。
 
 **四部分**：
 - **[Part 1 — 用户使用](#part-1--用户使用)** — 飞书 app 配置 / IM 命令 / 监控 / 使用类故障排查。装好后怎么用（两种装法都先做这里 1.1 的飞书配置）。
