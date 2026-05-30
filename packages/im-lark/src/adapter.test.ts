@@ -1320,51 +1320,33 @@ describe('createLarkAdapter', () => {
   });
 
   describe('send()', () => {
-    it('calls client.im.v1.message.create with correct shape (chat_id + text msg_type + JSON-wrapped content)', async () => {
+    // 2026-05-30 — CardKit single-card rewrite (DD 2026-05-30): the whole cc
+    // reply goes into ONE cardkit card entity (one markdown element) sent as
+    // ONE interactive message. No more splitMarkdownByTableCapacity multi-send
+    // — that was the message-ordering bug's root cause (Feishu doesn't
+    // guarantee order across multiple messages). One card = one message =
+    // in-card element order is fixed = no reordering.
+    it('cardkit single card: 6-table reply → ONE card.create (all tables in one markdown element) + ONE interactive message, no split', async () => {
       const dispatcher = makeStubDispatcher();
-      const create = vi.fn(async () => ({ code: 0 }));
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({
-          im: { v1: { message: { create } } },
+      const cardCreate = vi.fn(
+        async (_p: { data: { type: string; data: string } }) => ({
+          code: 0,
+          data: { card_id: 'cardabc' },
         }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-      await adapter.send('hello user', {
-        imType: 'lark',
-        openId: 'ou_user',
-        chatId: 'oc_chat',
-      });
-      expect(create).toHaveBeenCalledWith({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: 'oc_chat',
-          msg_type: 'text',
-          content: JSON.stringify({ text: 'hello user' }),
-        },
-      });
-    });
-
-    it('markdown stripping: bold / heading / fenced code in cc reply are simplified before send', async () => {
-      const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
+      );
+      const msgCreate = vi.fn(
+        async (_p: {
           params: { receive_id_type: string };
           data: { receive_id: string; msg_type: string; content: string };
         }) => ({ code: 0 }),
       );
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({
-          im: { v1: { message: { create } } },
-        }),
+        buildClient: () =>
+          ({
+            im: { v1: { message: { create: msgCreate } } },
+            cardkit: { v1: { card: { create: cardCreate } } },
+          }) as never,
         buildWSClient: (_creds, cbs) => ({
           start: async () => {
             cbs.onReady();
@@ -1375,90 +1357,65 @@ describe('createLarkAdapter', () => {
       });
       await adapter.start(makeHandler());
 
-      const ccReply =
-        '# 完成\n\n修了 `router.ts` 的 **bold echo**。\n\n```ts\nconst x = 1;\n```';
-      await adapter.send(ccReply, {
+      const sixTables = Array.from(
+        { length: 6 },
+        (_, i) => `**表格 ${i + 1}**\n| A | B |\n|---|---|\n| ${i + 1}a | ${i + 1}b |`,
+      ).join('\n\n');
+      await adapter.send(sixTables, {
         imType: 'lark',
         openId: 'ou_user',
         chatId: 'oc_chat',
       });
 
-      // Inspect what the SDK actually got: the inner `text` should be
-      // the stripped version, not the raw markdown.
-      const sent = create.mock.calls[0]![0];
-      const sentText = JSON.parse(sent.data.content) as { text: string };
-      expect(sentText.text).toContain('▌ 完成');
-      expect(sentText.text).toContain('「router.ts」');
-      expect(sentText.text).toContain('bold echo');
-      expect(sentText.text).not.toContain('**');
-      expect(sentText.text).toContain('[ts]');
-      expect(sentText.text).toContain('const x = 1;');
-      expect(sentText.text).not.toContain('```');
-    });
-
-    // β.MVP P3 (2026-05-18): cc reply containing a markdown table → adapter
-    // routes through `mdToCard` and sends as `msg_type: 'interactive'`
-    // (schema-2.0 card JSON) so the table renders with native column_set
-    // rows on mobile instead of `|...|---|` character garbage.
-    it('card path: cc reply containing md table → msg_type=interactive + card JSON content', async () => {
-      const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
-          params: { receive_id_type: string };
-          data: { receive_id: string; msg_type: string; content: string };
-        }) => ({ code: 0 }),
-      );
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-
-      const replyWithTable = [
-        '改完了，结果：',
-        '',
-        '| 文件 | 状态 |',
-        '|---|---|',
-        '| router.ts | ✅ |',
-        '| adapter.ts | ✅ |',
-      ].join('\n');
-      await adapter.send(replyWithTable, {
-        imType: 'lark',
-        openId: 'ou_user',
-        chatId: 'oc_chat',
-      });
-
-      const sent = create.mock.calls[0]![0];
-      expect(sent.data.msg_type).toBe('interactive');
-      expect(sent.data.receive_id).toBe('oc_chat');
-      const parsed = JSON.parse(sent.data.content) as {
-        schema: string;
-        body: { elements: Array<{ tag: string }> };
+      // ONE card entity created, whole reply in one markdown element.
+      expect(cardCreate).toHaveBeenCalledTimes(1);
+      const cardArg = cardCreate.mock.calls[0]![0] as {
+        data: { type: string; data: string };
       };
-      expect(parsed.schema).toBe('2.0');
-      const tags = parsed.body.elements.map((e) => e.tag);
-      // markdown(intro) + column_set(header) + 2 × column_set(rows)
-      expect(tags).toEqual(['markdown', 'column_set', 'column_set', 'column_set']);
+      expect(cardArg.data.type).toBe('card_json');
+      const cardJson = JSON.parse(cardArg.data.data) as {
+        schema: string;
+        body: { elements: Array<{ tag: string; content: string }> };
+      };
+      expect(cardJson.schema).toBe('2.0');
+      expect(cardJson.body.elements).toHaveLength(1);
+      expect(cardJson.body.elements[0]!.tag).toBe('markdown');
+      expect(cardJson.body.elements[0]!.content).toContain('表格 1');
+      expect(cardJson.body.elements[0]!.content).toContain('表格 6');
+
+      // ONE message referencing the card_id — no multi-message split.
+      expect(msgCreate).toHaveBeenCalledTimes(1);
+      const msgArg = msgCreate.mock.calls[0]![0] as {
+        data: { msg_type: string; content: string };
+      };
+      expect(msgArg.data.msg_type).toBe('interactive');
+      expect(JSON.parse(msgArg.data.content)).toEqual({
+        type: 'card',
+        data: { card_id: 'cardabc' },
+      });
     });
 
-    it('text path preserved: cc reply WITHOUT table still goes msg_type=text + stripMarkdown', async () => {
+    it('cardkit path: markdown reply (heading/list/bold) → card.create carries NATIVE markdown (not stripMarkdown)', async () => {
       const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
+      const cardCreate = vi.fn(
+        async (_p: { data: { type: string; data: string } }) => ({
+          code: 0,
+          data: { card_id: 'c1' },
+        }),
+      );
+      const msgCreate = vi.fn(
+        async (_p: {
           params: { receive_id_type: string };
           data: { receive_id: string; msg_type: string; content: string };
         }) => ({ code: 0 }),
       );
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildClient: () =>
+          ({
+            im: { v1: { message: { create: msgCreate } } },
+            cardkit: { v1: { card: { create: cardCreate } } },
+          }) as never,
         buildWSClient: (_creds, cbs) => ({
           start: async () => {
             cbs.onReady();
@@ -1468,34 +1425,93 @@ describe('createLarkAdapter', () => {
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
-      await adapter.send('just a paragraph, no tables here', {
+      await adapter.send('# 完成\n\n- 改了 router\n\n**加粗** 正文', {
         imType: 'lark',
         openId: 'ou_user',
         chatId: 'oc_chat',
       });
-      const sent = create.mock.calls[0]![0];
+      expect(cardCreate).toHaveBeenCalledTimes(1);
+      const cardJson = JSON.parse(
+        (cardCreate.mock.calls[0]![0] as { data: { data: string } }).data.data,
+      ) as { body: { elements: Array<{ content: string }> } };
+      // Native markdown is preserved verbatim — the old stripMarkdown path
+      // (`▌` heading framing, `「」` code framing) is gone for the card path.
+      expect(cardJson.body.elements[0]!.content).toContain('# 完成');
+      expect(cardJson.body.elements[0]!.content).toContain('**加粗**');
+      expect(cardJson.body.elements[0]!.content).not.toContain('▌');
+      expect(msgCreate).toHaveBeenCalledTimes(1);
+      expect(
+        (msgCreate.mock.calls[0]![0] as { data: { msg_type: string } }).data
+          .msg_type,
+      ).toBe('interactive');
+    });
+
+    it('fallback: cardkit card.create returns non-zero → degrade to text msg + stripMarkdown', async () => {
+      const dispatcher = makeStubDispatcher();
+      const cardCreate = vi.fn(
+        async (_p: { data: { type: string; data: string } }) => ({
+          code: 99991672,
+          msg: 'no perm',
+        }),
+      );
+      const msgCreate = vi.fn(
+        async (_p: {
+          params: { receive_id_type: string };
+          data: { receive_id: string; msg_type: string; content: string };
+        }) => ({ code: 0 }),
+      );
+      const adapter = createLarkAdapter({
+        credentialStore: makeStore(VALID_CREDS),
+        buildClient: () =>
+          ({
+            im: { v1: { message: { create: msgCreate } } },
+            cardkit: { v1: { card: { create: cardCreate } } },
+          }) as never,
+        buildWSClient: (_creds, cbs) => ({
+          start: async () => {
+            cbs.onReady();
+          },
+          close: () => {},
+        }),
+        buildDispatcher: () => dispatcher,
+      });
+      await adapter.start(makeHandler());
+      await adapter.send('# 标题\n\n**加粗**', {
+        imType: 'lark',
+        openId: 'ou_user',
+        chatId: 'oc_chat',
+      });
+      // cardkit failed (non-zero code) → fell back to a plain text message.
+      const sent = msgCreate.mock.calls[0]![0] as {
+        data: { msg_type: string; content: string };
+      };
       expect(sent.data.msg_type).toBe('text');
-      expect(JSON.parse(sent.data.content)).toEqual({
-        text: 'just a paragraph, no tables here',
-      });
+      const txt = JSON.parse(sent.data.content) as { text: string };
+      expect(txt.text).not.toContain('**'); // stripMarkdown removed bold markers
+      expect(txt.text).toContain('▌ 标题'); // stripMarkdown heading framing
     });
 
-    // 2026-05-19 — Feishu rejects cards with > 3 md tables (code 230099
-    // ErrCode 11310 card table number over limit; verified via
-    // larksuite/openclaw-lark source). The adapter splits the reply
-    // into N consecutive IM messages, each ≤ 3 tables, each prefixed
-    // with a `**[X/Y]**` section marker.
-    it('table-limit split: 5-table cc reply → 2 IM messages (3 + 2) with section markers', async () => {
+    it('sourceTag → prepended as **[tag]** at the top of the card markdown', async () => {
       const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
+      const cardCreate = vi.fn(
+        async (_p: { data: { type: string; data: string } }) => ({
+          code: 0,
+          data: { card_id: 'c1' },
+        }),
+      );
+      const msgCreate = vi.fn(
+        async (_p: {
           params: { receive_id_type: string };
           data: { receive_id: string; msg_type: string; content: string };
         }) => ({ code: 0 }),
       );
       const adapter = createLarkAdapter({
         credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
+        buildClient: () =>
+          ({
+            im: { v1: { message: { create: msgCreate } } },
+            cardkit: { v1: { card: { create: cardCreate } } },
+          }) as never,
         buildWSClient: (_creds, cbs) => ({
           start: async () => {
             cbs.onReady();
@@ -1505,265 +1521,21 @@ describe('createLarkAdapter', () => {
         buildDispatcher: () => dispatcher,
       });
       await adapter.start(makeHandler());
-
-      const fiveTables = [
-        'lead intro',
-        '',
-        '| t1 | v1 |',
-        '|---|---|',
-        '| 1 | 2 |',
-        '',
-        '| t2 | v2 |',
-        '|---|---|',
-        '| 3 | 4 |',
-        '',
-        '| t3 | v3 |',
-        '|---|---|',
-        '| 5 | 6 |',
-        '',
-        '| t4 | v4 |',
-        '|---|---|',
-        '| 7 | 8 |',
-        '',
-        '| t5 | v5 |',
-        '|---|---|',
-        '| 9 | 0 |',
-        '',
-        'closing line',
-      ].join('\n');
-      await adapter.send(fiveTables, {
-        imType: 'lark',
-        openId: 'ou_user',
-        chatId: 'oc_chat',
-      });
-
-      expect(create).toHaveBeenCalledTimes(2);
-      const first = create.mock.calls[0]![0];
-      const second = create.mock.calls[1]![0];
-      expect(first.data.msg_type).toBe('interactive');
-      expect(second.data.msg_type).toBe('interactive');
-
-      const firstCard = JSON.parse(first.data.content) as {
-        schema: string;
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-      const secondCard = JSON.parse(second.data.content) as {
-        schema: string;
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-
-      const firstFirstEl = firstCard.body.elements[0]!;
-      const secondFirstEl = secondCard.body.elements[0]!;
-      expect(firstFirstEl.tag).toBe('markdown');
-      expect(secondFirstEl.tag).toBe('markdown');
-      expect(firstFirstEl.content).toContain('**[1/2]**');
-      expect(secondFirstEl.content).toContain('**[2/2]**');
-
-      const firstTables = firstCard.body.elements.filter((e) => e.tag === 'column_set').length;
-      const secondTables = secondCard.body.elements.filter((e) => e.tag === 'column_set').length;
-      expect(firstTables).toBeGreaterThanOrEqual(6);
-      expect(secondTables).toBeGreaterThanOrEqual(4);
-    });
-
-    it('serial send order: messages arrive in chunk order (await each)', async () => {
-      const dispatcher = makeStubDispatcher();
-      const sendOrder: string[] = [];
-      const create = vi.fn(
-        async (opts: {
-          params: { receive_id_type: string };
-          data: { receive_id: string; msg_type: string; content: string };
-        }) => {
-          const card = JSON.parse(opts.data.content) as {
-            body: { elements: Array<{ tag: string; content?: string }> };
-          };
-          const markerEl = card.body.elements[0];
-          if (markerEl?.tag === 'markdown' && markerEl.content) {
-            const m = /\*\*\[(\d+)\/(\d+)\]\*\*/.exec(markerEl.content);
-            if (m) sendOrder.push(`${m[1]}/${m[2]}`);
-          }
-          await new Promise((r) => setTimeout(r, 0));
-          return { code: 0 };
-        },
-      );
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-
-      const md4 = ['| a | b |', '|---|---|', '| 1 | 2 |']
-        .concat(['', '| c | d |', '|---|---|', '| 3 | 4 |'])
-        .concat(['', '| e | f |', '|---|---|', '| 5 | 6 |'])
-        .concat(['', '| g | h |', '|---|---|', '| 7 | 8 |'])
-        .join('\n');
-      await adapter.send(md4, {
-        imType: 'lark',
-        openId: 'ou_user',
-        chatId: 'oc_chat',
-      });
-
-      expect(sendOrder).toEqual(['1/2', '2/2']);
-    });
-
-    it('single-chunk (≤ 3 tables) preserves PR #197 surface: NO section marker', async () => {
-      const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
-          params: { receive_id_type: string };
-          data: { receive_id: string; msg_type: string; content: string };
-        }) => ({ code: 0 }),
-      );
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-
-      const oneTable = ['intro', '', '| a | b |', '|---|---|', '| 1 | 2 |'].join('\n');
-      await adapter.send(oneTable, {
-        imType: 'lark',
-        openId: 'ou_user',
-        chatId: 'oc_chat',
-      });
-
-      expect(create).toHaveBeenCalledTimes(1);
-      const sent = create.mock.calls[0]![0];
-      const card = JSON.parse(sent.data.content) as {
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-      // First element should be the `intro` paragraph, NOT a `**[1/1]**` marker.
-      const firstEl = card.body.elements[0];
-      expect(firstEl?.tag).toBe('markdown');
-      expect(firstEl?.content).not.toContain('[1/1]');
-      expect(firstEl?.content).toContain('intro');
-    });
-
-    // 2026-05-19 — sourceTag is carried as `opts.sourceTag` metadata, not
-    // baked into `content`. The adapter prepends `**[<tag>] [X/Y]**\n\n`
-    // on every chunk so the user knows both the producer and the section
-    // (the old approach baked `[<tag>]` into chunk[0] only, leaving
-    // chunk[1+] without source attribution — discovered in real-account
-    // smoke when an operations cc tab's 4-table audit summary split into
-    // 2 IM messages but only the first carried `[operations]`).
-    it('sourceTag + multi-chunk: every chunk gets `[<tag>] [X/Y]` prefix', async () => {
-      const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
-          params: { receive_id_type: string };
-          data: { receive_id: string; msg_type: string; content: string };
-        }) => ({ code: 0 }),
-      );
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-
-      const fourTables = [
-        'lead',
-        '',
-        '| t1 | v1 |',
-        '|---|---|',
-        '| 1 | 2 |',
-        '',
-        '| t2 | v2 |',
-        '|---|---|',
-        '| 3 | 4 |',
-        '',
-        '| t3 | v3 |',
-        '|---|---|',
-        '| 5 | 6 |',
-        '',
-        '| t4 | v4 |',
-        '|---|---|',
-        '| 7 | 8 |',
-      ].join('\n');
-
       await adapter.send(
-        fourTables,
+        '正文内容',
         { imType: 'lark', openId: 'ou_user', chatId: 'oc_chat' },
-        { sourceTag: 'operations' },
+        { sourceTag: 'pane-1' },
       );
-
-      expect(create).toHaveBeenCalledTimes(2);
-      const first = create.mock.calls[0]![0];
-      const second = create.mock.calls[1]![0];
-      const firstCard = JSON.parse(first.data.content) as {
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-      const secondCard = JSON.parse(second.data.content) as {
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-      // Both chunks must carry the source-tag + section marker.
-      expect(firstCard.body.elements[0]?.content).toContain('**[operations] [1/2]**');
-      expect(secondCard.body.elements[0]?.content).toContain('**[operations] [2/2]**');
-    });
-
-    it('sourceTag + single chunk: only `[<tag>]` prefix, no [1/1] section marker', async () => {
-      const dispatcher = makeStubDispatcher();
-      const create = vi.fn(
-        async (_opts: {
-          params: { receive_id_type: string };
-          data: { receive_id: string; msg_type: string; content: string };
-        }) => ({ code: 0 }),
-      );
-      const adapter = createLarkAdapter({
-        credentialStore: makeStore(VALID_CREDS),
-        buildClient: () => ({ im: { v1: { message: { create } } } }),
-        buildWSClient: (_creds, cbs) => ({
-          start: async () => {
-            cbs.onReady();
-          },
-          close: () => {},
-        }),
-        buildDispatcher: () => dispatcher,
-      });
-      await adapter.start(makeHandler());
-
-      const oneTable = ['intro', '', '| a | b |', '|---|---|', '| 1 | 2 |'].join('\n');
-      await adapter.send(
-        oneTable,
-        { imType: 'lark', openId: 'ou_user', chatId: 'oc_chat' },
-        { sourceTag: 'frontend' },
-      );
-
-      expect(create).toHaveBeenCalledTimes(1);
-      const sent = create.mock.calls[0]![0];
-      const card = JSON.parse(sent.data.content) as {
-        body: { elements: Array<{ tag: string; content?: string }> };
-      };
-      const firstEl = card.body.elements[0];
-      expect(firstEl?.content).toContain('**[frontend]**');
-      expect(firstEl?.content).not.toContain('[1/1]');
-      // Original `intro` paragraph still present after the tag prefix.
-      expect(firstEl?.content).toContain('intro');
+      const cardJson = JSON.parse(
+        (cardCreate.mock.calls[0]![0] as { data: { data: string } }).data.data,
+      ) as { body: { elements: Array<{ content: string }> } };
+      expect(
+        cardJson.body.elements[0]!.content.startsWith('**[pane-1]**'),
+      ).toBe(true);
+      expect(cardJson.body.elements[0]!.content).toContain('正文内容');
     });
 
     // β.MVP P5 (2026-05-19): sendAUQ + card.action.trigger handler.
-    // Verifies the IMAUQSender capability path — adapter renders a
-    // button card per AUQRequest, zod-parses card click events, and
-    // forwards them to handler.onCardAction.
     it('sendAUQ: builds card with interactive_container per option + sourceTag prefix', async () => {
       const dispatcher = makeStubDispatcher();
       const create = vi.fn(

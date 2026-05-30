@@ -21,7 +21,6 @@ import {
   type DownloadedAttachment,
 } from './inbound-image.js';
 import { stripMarkdown } from './markdown.js';
-import { mdToCard, splitMarkdownByTableCapacity } from './md-to-card.js';
 import { parsePostContent } from './parse-post-content.js';
 import type { TenantTokenStore } from './tenant-token.js';
 
@@ -40,11 +39,11 @@ export interface LarkClientShape {
           data: {
             receive_id: string;
             /**
-             * - `'text'` — plain text (`content: JSON.stringify({text})`); used
-             *   when `mdToCard` returns null (no table) per β.MVP P3.
-             * - `'interactive'` — schema-2.0 card JSON stringified into
-             *   `content`; used when `mdToCard` returns a card (md table
-             *   detected). Per [P3 strategic DD](../../../docs/superpowers/specs/2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md).
+             * - `'text'` — plain text (`content: JSON.stringify({text})`);
+             *   `send()`'s fallback path when cardkit is unavailable / fails.
+             * - `'interactive'` — references a cardkit card entity
+             *   (`content: {"type":"card","data":{"card_id"}}`); `send()`'s
+             *   primary path. Per [DD 2026-05-30](../../../docs/superpowers/specs/2026-05-30-feishu-message-ordering-cardkit-dd.md).
              */
             msg_type: 'text' | 'interactive';
             content: string;
@@ -100,6 +99,33 @@ export interface LarkClientShape {
               };
             }>;
           };
+        }>;
+      };
+    };
+  };
+  /**
+   * CardKit v1 — create a card entity (returns `card_id`) so the whole cc
+   * reply can be sent as ONE interactive message. Per
+   * [DD 2026-05-30](../../../docs/superpowers/specs/2026-05-30-feishu-message-ordering-cardkit-dd.md):
+   * one reply = one card = one message → eliminates the multi-message
+   * ordering bug (Feishu doesn't guarantee order across separate messages;
+   * in-card element order is fixed by structure). Requires
+   * `cardkit:card:write` (**application identity** — daemon uses
+   * tenant_access_token; the user-identity variant does NOT work).
+   *
+   * **Optional** so inbound-only test stubs (which mock just `im.message`)
+   * still satisfy the shape; `send()` null-checks and degrades to a plain
+   * text message when absent.
+   */
+  cardkit?: {
+    v1: {
+      card: {
+        create: (payload: {
+          data: { type: 'card_json'; data: string };
+        }) => Promise<{
+          code?: number;
+          msg?: string;
+          data?: { card_id?: string };
         }>;
       };
     };
@@ -1208,40 +1234,61 @@ export function createLarkAdapter(
         );
       }
 
-      // `sourceTag` is the producer identity (cc tab title, system role)
-      // surfaced as a prefix on every chunk. Per
-      // [project_future_im_adapters] this is a base-interface concept;
-      // bridge passes it as metadata so the adapter can repeat / format
-      // it on every chunk (the previous baked-in `[tab]\n` approach only
-      // survived chunk[0]).
+      // CardKit single-card path (DD 2026-05-30): the whole cc reply goes
+      // into ONE card entity (one markdown element) sent as ONE interactive
+      // message. Feishu renders the card's markdown natively (tables, lists,
+      // headings, code) and the in-card element order is fixed by structure,
+      // so there is NO cross-message reordering — the multi-message split this
+      // replaced (splitMarkdownByTableCapacity + mdToCard column_set) was the
+      // ordering bug's root cause (Feishu doesn't guarantee order across
+      // separate text/interactive messages). `sourceTag` (cc tab / system
+      // role) is prefixed once at the top.
       const sourceTag = opts.sourceTag ?? null;
+      const bodyMd =
+        sourceTag !== null ? `**[${sourceTag}]**\n\n${content}` : content;
 
-      // Try the card path first: if cc's reply contains a GFM table,
-      // `mdToCard` emits a Lark Card Kit schema-2.0 card whose tables
-      // render as `column_set` rows on mobile. Lark `msg_type: 'text'`
-      // doesn't parse md, so a verbatim table would look like garbage
-      // (`|...|---|`). Per [β.MVP P3](../../../docs/superpowers/specs/2026-05-18-multi-cc-im-vs-lodestar-strategic-dd.md)
-      // (2026-05-18).
-      //
-      // **Table-limit split (2026-05-19, post-PR-#197 fix)**: Feishu
-      // rejects cards containing more than 3 md tables with
-      // `code:230099 ErrCode:11310 card table number over limit` (see
-      // [[reference_feishu_cardkit_limits]]). We `splitMarkdownByTableCapacity`
-      // first; if the reply contains > 3 tables it gets sent as N
-      // consecutive IM messages, each ≤ 3 tables and each prefixed
-      // with a `**[<sourceTag>] [X/Y]**` section marker so the user
-      // knows the reply continues + which cc produced it. Single-chunk
-      // replies (≤ 3 tables) prepend just `**[<sourceTag>]**` when a
-      // tag was passed; with no tag they stay marker-free to preserve
-      // PR #197 surface form.
-      const chunks = splitMarkdownByTableCapacity(content);
-      const totalChunks = chunks.length;
-
-      if (totalChunks === 0) {
-        // splitMarkdownByTableCapacity returns [] only for whitespace /
-        // empty input. Defer to the legacy single-shot path so existing
-        // behavior (text msg with empty body) doesn't change.
-        const stripped = stripMarkdown(content);
+      try {
+        if (!client.cardkit) {
+          throw new Error('cardkit client unavailable — falling back to text');
+        }
+        const cardJson = {
+          schema: '2.0',
+          body: { elements: [{ tag: 'markdown', content: bodyMd }] },
+        };
+        const created = await client.cardkit.v1.card.create({
+          data: { type: 'card_json', data: JSON.stringify(cardJson) },
+        });
+        if (created.code !== 0 || !created.data?.card_id) {
+          throw new Error(
+            `cardkit card.create failed (code=${created.code}, msg=${created.msg ?? '<empty>'})`,
+          );
+        }
+        const sent = await client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: replyCtx.chatId,
+            msg_type: 'interactive',
+            content: JSON.stringify({
+              type: 'card',
+              data: { card_id: created.data.card_id },
+            }),
+          },
+        });
+        if (sent.code !== 0) {
+          throw new Error(
+            `lark send card failed (code=${sent.code}, msg=${sent.msg ?? '<empty>'})`,
+          );
+        }
+      } catch (err) {
+        // Fallback: cardkit is a 2-call flow (create + send) — a higher
+        // failure surface than a single text send. On ANY cardkit failure,
+        // degrade to plain text so the reply is never lost. `stripMarkdown`
+        // simplifies syntax because Feishu `msg_type:'text'` doesn't render
+        // markdown. Classified-log per CLAUDE.md (no silent swallow).
+        log(
+          `[lark send] cardkit path failed, falling back to text: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        const stripped = stripMarkdown(bodyMd);
         const response = await client.im.v1.message.create({
           params: { receive_id_type: 'chat_id' },
           data: {
@@ -1252,64 +1299,7 @@ export function createLarkAdapter(
         });
         if (response.code !== 0) {
           throw new Error(
-            `lark send failed (code=${response.code}, msg=${response.msg ?? '<empty>'})`,
-          );
-        }
-        return;
-      }
-
-      // Serial send: chunks must arrive in order on the recipient's
-      // screen. Parallel sends would let the Feishu frontend reorder
-      // them (no msg.sequence guarantee on text/interactive msg_type).
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = chunks[i]!;
-        // Prefix policy:
-        //   - sourceTag + multi-chunk: `**[<tag>] [i+1/N]**\n\n<chunk>`
-        //   - sourceTag + single chunk: `**[<tag>]**\n\n<chunk>`
-        //   - no sourceTag + multi-chunk: `**[i+1/N]**\n\n<chunk>`
-        //   - no sourceTag + single chunk: `<chunk>` (PR #197 surface)
-        let prefix = '';
-        if (sourceTag !== null && totalChunks > 1) {
-          prefix = `**[${sourceTag}] [${i + 1}/${totalChunks}]**\n\n`;
-        } else if (sourceTag !== null) {
-          prefix = `**[${sourceTag}]**\n\n`;
-        } else if (totalChunks > 1) {
-          prefix = `**[${i + 1}/${totalChunks}]**\n\n`;
-        }
-        const bodyMd = `${prefix}${chunk}`;
-
-        const card = mdToCard(bodyMd);
-        let response: Awaited<ReturnType<LarkClientShape['im']['v1']['message']['create']>>;
-        if (card !== null) {
-          response = await client.im.v1.message.create({
-            params: { receive_id_type: 'chat_id' },
-            data: {
-              receive_id: replyCtx.chatId,
-              msg_type: 'interactive',
-              content: JSON.stringify(card),
-            },
-          });
-        } else {
-          // Strip markdown markers — Feishu `msg_type: 'text'` does NOT
-          // parse markdown, so cc's `**bold**` / `# heading` / fenced code
-          // would render literally. `stripMarkdown` simplifies the syntax
-          // to plain text + Unicode framing (▌ / 「」 / •). Per user smoke
-          // 2026-05-11.
-          const stripped = stripMarkdown(bodyMd);
-          response = await client.im.v1.message.create({
-            params: { receive_id_type: 'chat_id' },
-            data: {
-              receive_id: replyCtx.chatId,
-              msg_type: 'text',
-              content: JSON.stringify({ text: stripped }),
-            },
-          });
-        }
-
-        if (response.code !== 0) {
-          throw new Error(
-            `lark send failed chunk ${i + 1}/${totalChunks} ` +
-              `(code=${response.code}, msg=${response.msg ?? '<empty>'})`,
+            `lark send failed (text fallback, code=${response.code}, msg=${response.msg ?? '<empty>'})`,
           );
         }
       }
