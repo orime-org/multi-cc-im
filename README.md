@@ -4,7 +4,7 @@
 
 Bridge multiple **Claude Code (cc)** or **OpenAI Codex** sessions running in **WezTerm or iTerm2** tabs to a Lark/Feishu bot. Reach your AI-agent tabs from mobile IM; replies and tool prompts come back to IM.
 
-> **v0.2.0** (2026-05-23) — Codex CLI adapter lands alongside cc; new 4-step interactive launch wizard (CLI multi-select → AI router → terminal → IM); the `--cli=` flag is removed in favor of the wizard. Same wezterm can host a cc tab AND a codex tab — both reachable from one IM. See [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) revision log or [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.0).
+> **v0.2.3** (2026-05-30) — cc replies are now sent as a single CardKit card (one reply = one card = one message), fixing intermittent out-of-order delivery when a reply has multiple tables; markdown (headings, tables, code, lists) renders natively with no 3-table limit. **New scope required**: `cardkit:card:write` (**application identity**) — see [Part 1.1](#11-create-the-feishu-app-do-this-first) step 2c. Revision log: [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) · [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.3).
 
 **Four parts**:
 - **[Part 1 — Daily use](#part-1--daily-use)** — Feishu app setup, IM commands, monitor, usage troubleshooting. 装好后怎么用（两种装法都先做这里 1.1 的飞书配置）。
