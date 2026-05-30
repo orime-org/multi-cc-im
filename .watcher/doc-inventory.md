@@ -2,7 +2,7 @@
 
 | 路径 | 用途 | 什么时候改 |
 |---|---|---|
-| README.md | 用户入口 + Quick Start + Two-audience 分流 (Part 1 用户 / Part 2 二次开发) | 主功能 / Quick Start 变 |
+| README.md | 用户入口 + 四部分分流 (Part 1 用户使用 / Part 2 从源码安装 / Part 3 pnpm 安装 / Part 4 二次开发；2026-05-30 PR #240 起) | 主功能 / Quick Start 变 |
 | README.zh-CN.md | 中文 README，跟英文同步 | 同 README.md |
 | CLAUDE.md | AI 干活纪律（头号原则 / 核心约束 / DD 流程 / 编码准则） | 用户拍板纪律变（改前 ask） |
 | docs/conventions.md | **状态总表 + 修订日志 + 项目特定规范 + 禁止清单 + 参考资料** | 任何 milestone 必加 entry |
@@ -15,7 +15,7 @@
 
 # 缺失文档（推断该有 / 待补）
 - **CHANGELOG.md** — 目前靠 conventions.md 修订日志 + GitHub releases，无独立 CHANGELOG（如发布 npm 需补）
-- **README.dev.md** 单独的二次开发 onboarding — 当前 README.md Part 2 已覆盖，暂不需
+- **README.dev.md** 单独的二次开发 onboarding — 当前 README.md Part 4（二次开发）已覆盖，暂不需
 
 # 跨文档同步规则
 
