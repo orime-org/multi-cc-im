@@ -6,28 +6,21 @@ Bridge multiple **Claude Code (cc)** or **OpenAI Codex** sessions running in **W
 
 > **v0.2.0** (2026-05-23) — Codex CLI adapter lands alongside cc; new 4-step interactive launch wizard (CLI multi-select → AI router → terminal → IM); the `--cli=` flag is removed in favor of the wizard. Same wezterm can host a cc tab AND a codex tab — both reachable from one IM. See [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) revision log or [release notes](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.0).
 
-**Two audiences below**:
-- **[Part 1 — Direct use](#part-1--direct-use)** — install, Feishu app setup, IM commands, troubleshooting. Read if you just want to use multi-cc-im.
-- **[Part 2 — Secondary development](#part-2--secondary-development)** — repo layout, adapter contracts, DD flow, doc pointers. Read if you want to add an IM / terminal / CLI adapter or fix bugs.
+**Four parts**:
+- **[Part 1 — Daily use](#part-1--daily-use)** — Feishu app setup, IM commands, monitor, usage troubleshooting. 装好后怎么用（两种装法都先做这里 1.1 的飞书配置）。
+- **[Part 2 — Install from source](#part-2--install-from-source)** — git clone + build + run（想跑最新代码 / 改源码）。
+- **[Part 3 — Install via pnpm](#part-3--install-via-pnpm)** — one-line global install（大多数人）。
+- **[Part 4 — Secondary development](#part-4--secondary-development)** — repo layout, adapter contracts, DD flow, doc pointers.
 
 ---
 
-# Part 1 — Direct use
+# Part 1 — Daily use
 
-## 1.1 Prerequisites
+> 不管用哪种装法（[Part 2](#part-2--install-from-source) 源码 / [Part 3](#part-3--install-via-pnpm) pnpm），都**先做完 1.1 的飞书配置**，装好启动后回这部分看怎么用。
 
-| 需要 | 要求 |
-|---|---|
-| OS | macOS / Linux（Windows via WSL untested）|
-| Node.js | ≥ 22 |
-| pnpm | ≥ 9 |
-| 终端 | WezTerm ≥ 20240203 **或** iTerm2 ≥ 3.3 (macOS only) |
-| AI agent | 至少装一个：**Claude Code**（`claude` 在 `PATH` + 已登录 Pro / Max 订阅）或 **OpenAI Codex**（`codex` 在 `PATH`，免登录 — 用 ChatGPT Plus 账号或 API key）。wizard 第 1 步会自动探装机，没装的灰色显示 + 给安装链接。装两个都勾就能在同一 wezterm 里 cc 标签 + codex 标签同时挂 IM。|
-| Lark 账号 | 一个用作 bot 的飞书账号 |
+## 1.1 Create the Feishu app (do this FIRST)
 
-## 1.2 Create the Feishu app (do this FIRST)
-
-按顺序跑完这 7 步。**没跑完不要去 1.3** — daemon 会因为 scope / event 缺连不上飞书。
+按顺序跑完这 7 步。**没跑完别去装** — daemon 会因为 scope / event 缺连不上飞书。
 
 | 步 | 做什么 | 做完得到 |
 |---|---|---|
@@ -41,43 +34,11 @@ Bridge multiple **Claude Code (cc)** or **OpenAI Codex** sessions running in **W
 | 4 | 左侧「应用功能」→「机器人」→ 启用 | app 在飞书里以 bot 身份能被加好友 / 拉群 |
 | 5 | 左侧「版本管理与发布」→「创建版本」→ 填版本号 + changelog →「保存并申请发布」| 版本进审批 |
 | 6 | 自建 app 你即 admin → 在「我的待审批」点同意 | scope 和 event 真正生效 |
-| 7 | 左侧「凭证与基础信息」→ 复制 `App ID` + `App Secret` | 1.3 wizard 要填这两个字段 |
+| 7 | 左侧「凭证与基础信息」→ 复制 `App ID` + `App Secret` | 装好启动时向导（[Part 2.2](#22-install--start) / [Part 3](#part-3--install-via-pnpm)）要填这两个字段 |
 
 > 后续改 scope（如缺权限）从 step 2 重跑 + step 5+6 重新发版；token rotate（≤ 2h）或重启 daemon 强刷生效。
 
-## 1.3 Install & start
-
-**Recommended**: 全局装 npm 包（一行装完）—
-
-```bash
-pnpm install -g multi-cc-im
-# 或 npm install -g multi-cc-im
-multi-cc-im start
-```
-
-> 没用过 pnpm 的话先 `npm install -g pnpm`。
-
-**Alternative**（想 hack 源码 / 跑测试 / 二次开发）— 见 [Part 2](#part-2--secondary-development)。
-
-首次启动跑 4 步 wizard（v0.2.0 起）：
-
-| 步 | 做什么 | 做完得到 |
-|---|---|---|
-| W1 | **CLI 多选** — 探装机后让你勾要桥接到 IM 的 CLI（Claude Code 或 OpenAI Codex 或都勾） | `[cli].enabled` 写 `~/.multi-cc-im/config.toml`；每个勾选的 CLI 自动注册 hook（cc 进 `~/.claude/settings.json`，codex 进 `~/.codex/config.toml`，写前 `.bak.<ISO>` 备份）|
-| W2 | **分诊 AI 单选** — 选哪个 CLI 跑 daemon 内部 IM 消息分诊子进程（即使只勾了 1 个 CLI 也要按 Enter 确认） | `[cli].aiRouter` 写 config.toml |
-| W3 | 选终端 `wezterm` 或 `iterm2` | `[terminal].type` 写 config.toml |
-| W3b | (iTerm2 路径) 启 Python API preference + 装 `iterm2` PyPI 包 + 同意 macOS Automation 权限 | iTerm2 adapter 能列 pane / send-text |
-| W4 | 选 IM 走 `lark` 并粘贴 1.2 拿到的 `App ID` + `App Secret` | 凭据写 `~/.multi-cc-im/credentials/lark.json` (mode 0600) + daemon WS handshake |
-
-完成 = daemon 前台跑 + WS 连飞书 ready + 监控 dashboard 在 `http://127.0.0.1:40719`。
-
-> ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
->
-> Ctrl+C 停 daemon。一台机器只能一个 daemon。
-> 非交互式凭据预填：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
-> 重新配：再跑 `./bin/multi-cc-im start`，wizard 用旧值预填，回车保留 / 方向键改。
-
-## 1.4 IM commands cheat sheet
+## 1.2 IM commands cheat sheet
 
 > daemon 启后 IM mode 默认 OFF。先 IM 端发 `/start` 或 `/start off` 开。然后在每个 cc TUI 跑 `/rename <name>` 给 tab 起名（纯数字名会撞 pane id，wizard 会警告）。
 
@@ -101,7 +62,7 @@ multi-cc-im start
 
 > 模糊匹配支持（`#front` → `frontend` 若唯一）。`/start` echo 里有 `✓ terminal: <id>` 行告诉你 daemon 启动时选了哪个终端。
 
-## 1.5 cc → IM (反向通知)
+## 1.3 cc → IM (反向通知)
 
 cc 端三种事件自动转发到 IM，不需要你做配置：
 
@@ -111,7 +72,7 @@ cc 端三种事件自动转发到 IM，不需要你做配置：
 | cc 调 AskUserQuestion 选择题（计划 / 设计选项）| 题目 + 编号选项 + 「你的考虑」 | 回编号 / 选项 label / 自然语言 / 自由文本（5 min 超时，逾时 cc 自己继续）|
 | cc 编辑 `.claude/* / .git/* / .env*` 等敏感路径 | auto 模式 → 审计行 `🛡️ daemon auto-allowed`；ask 模式 → 编号选项「同意一次 / 始终允许 / 拒绝」| auto 模式不用回；ask 模式回编号 / 自然语言（2 min 超时，逾时 plain allow）|
 
-## 1.6 Monitor dashboard
+## 1.4 Monitor dashboard
 
 浏览器开 `http://127.0.0.1:40719`（只 bind loopback，不可远程）。SSR 静态 HTML 无 JS：
 
@@ -125,7 +86,7 @@ cc 端三种事件自动转发到 IM，不需要你做配置：
 
 JSON 路由：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 
-## 1.7 Where things live
+## 1.5 Where things live
 
 | 路径 | 用途 |
 |---|---|
@@ -138,24 +99,21 @@ JSON 路由：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 
 `MULTI_CC_IM_HOME` env 覆盖根目录。
 
-## 1.8 Troubleshooting
+## 1.6 Troubleshooting (usage)
+
+> 装 / 启动阶段的报错（找不到 wezterm / python3 / daemon 已在跑 等）看 [Part 2.3](#23-troubleshooting-install)。
 
 | 现象 | 修法 |
 |---|---|
-| start 报 `wezterm CLI not found` | `which wezterm` 验证；或写 `[external_paths] wezterm = "..."` 到 `~/.multi-cc-im/config.toml` |
-| start 报 `python3 not found` (iTerm2) | `brew install python3` 或 `xcode-select --install` |
-| start 报 `cannot connect to iTerm2 Python API` | iTerm2 → Settings → General → Magic → 勾「Enable Python API」+ 启 iTerm2 后重跑 |
-| `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
-| start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
-| daemon 起了 IM 收不到消息 | 重跑 `login lark` 验证凭据；确认 1.2 step 5+6 发版本 + 同意 |
-| 图入站报 `HTTP 400 code=99991672 Access denied` | 1.2 step 2b/2c scope 漏了 — 补 + 发版 + 重启 daemon |
+| daemon 起了 IM 收不到消息 | 重跑 `login lark` 验证凭据；确认 [1.1](#11-create-the-feishu-app-do-this-first) step 5+6 发版本 + 同意 |
+| 图入站报 `HTTP 400 code=99991672 Access denied` | [1.1](#11-create-the-feishu-app-do-this-first) step 2b/2c scope 漏了 — 补 + 发版 + 重启 daemon |
+| 发卡片失败、回复退成纯文本（`▌「」`）| `cardkit:card:write` 没开成**应用身份**，或 daemon 跑的是没这权限的旧版 — 见 [1.1](#11-create-the-feishu-app-do-this-first) step 2c；daemon.log 搜 `cardkit path failed` |
 | `#frontend` 报 not found | cc TUI 里 `/rename frontend`；IM 发 `/list` 验证 |
 | IM 收不到工具审批 | 必须 `/start off`；至少先用 IM 寻址过该 cc 一次 |
-| hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 | Ctrl+C 后 IM 收僵尸消息 | `rm -f ~/.multi-cc-im/state/{IMWork,IMOrigin,daemon.pid}` |
 | `state/` 堆积 | `./bin/multi-cc-im cleanup --dry-run` 预览 / 去掉 `--dry-run` 真扫 |
 
-## 1.9 CLI reference
+## 1.7 CLI reference
 
 | 命令 | 描述 |
 |---|---|
@@ -169,9 +127,81 @@ JSON 路由：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 
 ---
 
-# Part 2 — Secondary development
+# Part 2 — Install from source
 
-## 2.1 Stack
+不想走 npm、想直接跑 git 最新代码 / 改源码，从源码装。
+
+## 2.1 Prerequisites
+
+| 需要 | 要求 |
+|---|---|
+| OS | macOS / Linux（Windows via WSL untested）|
+| Node.js | ≥ 22 |
+| pnpm | ≥ 9 |
+| 终端 | WezTerm ≥ 20240203 **或** iTerm2 ≥ 3.3 (macOS only) |
+| AI agent | 至少装一个：**Claude Code**（`claude` 在 `PATH` + 已登录 Pro / Max 订阅）或 **OpenAI Codex**（`codex` 在 `PATH`，免登录 — 用 ChatGPT Plus 账号或 API key）。wizard 第 1 步会自动探装机，没装的灰色显示 + 给安装链接。装两个都勾就能在同一 wezterm 里 cc 标签 + codex 标签同时挂 IM。|
+| Lark 账号 | 一个用作 bot 的飞书账号 |
+
+## 2.2 Install & start
+
+```bash
+git clone https://github.com/orime-org/multi-cc-im.git
+cd multi-cc-im
+pnpm install                        # 装依赖（没用过 pnpm 先 npm install -g pnpm）
+pnpm --filter multi-cc-im build     # 编译出 dist/
+./bin/multi-cc-im start             # 用仓库自带的 bin 启动
+```
+
+首次启动跑 4 步 wizard（v0.2.0 起）：
+
+| 步 | 做什么 | 做完得到 |
+|---|---|---|
+| W1 | **CLI 多选** — 探装机后让你勾要桥接到 IM 的 CLI（Claude Code 或 OpenAI Codex 或都勾） | `[cli].enabled` 写 `~/.multi-cc-im/config.toml`；每个勾选的 CLI 自动注册 hook（cc 进 `~/.claude/settings.json`，codex 进 `~/.codex/config.toml`，写前 `.bak.<ISO>` 备份）|
+| W2 | **分诊 AI 单选** — 选哪个 CLI 跑 daemon 内部 IM 消息分诊子进程（即使只勾了 1 个 CLI 也要按 Enter 确认） | `[cli].aiRouter` 写 config.toml |
+| W3 | 选终端 `wezterm` 或 `iterm2` | `[terminal].type` 写 config.toml |
+| W3b | (iTerm2 路径) 启 Python API preference + 装 `iterm2` PyPI 包 + 同意 macOS Automation 权限 | iTerm2 adapter 能列 pane / send-text |
+| W4 | 选 IM 走 `lark` 并粘贴 [1.1](#11-create-the-feishu-app-do-this-first) 拿到的 `App ID` + `App Secret` | 凭据写 `~/.multi-cc-im/credentials/lark.json` (mode 0600) + daemon WS handshake |
+
+完成 = daemon 前台跑 + WS 连飞书 ready + 监控 dashboard 在 `http://127.0.0.1:40719`。
+
+> ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
+>
+> Ctrl+C 停 daemon。一台机器只能一个 daemon。
+> 非交互式凭据预填：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
+> 重新配：再跑 `./bin/multi-cc-im start`，wizard 用旧值预填，回车保留 / 方向键改。
+
+## 2.3 Troubleshooting (install)
+
+| 现象 | 修法 |
+|---|---|
+| start 报 `wezterm CLI not found` | `which wezterm` 验证；或写 `[external_paths] wezterm = "..."` 到 `~/.multi-cc-im/config.toml` |
+| start 报 `python3 not found` (iTerm2) | `brew install python3` 或 `xcode-select --install` |
+| start 报 `cannot connect to iTerm2 Python API` | iTerm2 → Settings → General → Magic → 勾「Enable Python API」+ 启 iTerm2 后重跑 |
+| `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
+| start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
+| hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
+
+---
+
+# Part 3 — Install via pnpm
+
+大多数人推荐 — 全局装 npm 包（一行装完）：
+
+```bash
+pnpm install -g multi-cc-im
+# 或 npm install -g multi-cc-im
+multi-cc-im start
+```
+
+> 没用过 pnpm 的话先 `npm install -g pnpm`。环境要求同 [Part 2.1](#21-prerequisites)。
+
+首次启动的 4 步 wizard 跟 [Part 2.2](#22-install--start) **完全一样**（只是启动命令是 `multi-cc-im start` 而非 `./bin/multi-cc-im start`）。装 / 启动阶段报错看 [Part 2.3](#23-troubleshooting-install)。
+
+---
+
+# Part 4 — Secondary development
+
+## 4.1 Stack
 
 | 维度 | 选择 |
 |---|---|
@@ -181,7 +211,7 @@ JSON 路由：`/api/state` `/api/sessions` `/api/errors` `/api/cost`。
 | 测试 | Vitest (unit + integration) |
 | 打包 | tsup (CLI bundling) |
 
-## 2.2 Repo layout
+## 4.2 Repo layout
 
 ```
 multi-cc-im/
@@ -200,7 +230,7 @@ multi-cc-im/
 └── CLAUDE.md                — project rules (mandatory before contributing)
 ```
 
-## 2.3 Dev commands
+## 4.3 Dev commands
 
 | 命令 | 用途 |
 |---|---|
@@ -213,11 +243,11 @@ multi-cc-im/
 | `pnpm --filter <pkg> exec vitest run <file>` | 跑单测文件 |
 | `pnpm --filter multi-cc-im build` | tsup 打包 → `apps/multi-cc-im/dist/cli.js` |
 
-## 2.4 TDD rhythm
+## 4.4 TDD rhythm
 
 红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) + [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md)。
 
-## 2.5 Adding an IM adapter (Telegram / Slack / etc.)
+## 4.5 Adding an IM adapter (Telegram / Slack / etc.)
 
 | # | 做什么 |
 |---|---|
@@ -229,7 +259,7 @@ multi-cc-im/
 | 6 | 凭据写 `~/.multi-cc-im/credentials/<im>.json`（mode 0600）— **不**调 OS keychain (DD: credentials persistence) |
 | 7 | 可选：`docs/setup-<im>.md` 走读 + registry 设 `guideDocPath` |
 
-## 2.6 Adding a terminal adapter (tmux / kitty / Ghostty / etc.)
+## 4.6 Adding a terminal adapter (tmux / kitty / Ghostty / etc.)
 
 参考 [`docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-13-iterm2-adapter-dd.md) + `packages/term-iterm2/` 实测代码。
 
@@ -245,17 +275,17 @@ multi-cc-im/
 
 > `termId` 必须随 Stop payload 端到端传，不许下游 `typeof paneId` 反推（参 [memory: feedback_carry_facts_dont_infer]）。
 
-## 2.7 Adding a CLI adapter (gemini / aider / etc.)
+## 4.7 Adding a CLI adapter (gemini / aider / etc.)
 
 **已落地（v0.2.0）**：`@multi-cc-im/cli-cc` (Claude Code) + `@multi-cc-im/cli-codex` (OpenAI Codex) 两个 adapter 都在仓库里，wizard 第 1 步多选哪个或都勾。本节描述如何再添加第三个（gemini / aider / 等）。
 
 需求：新 CLI 必须有等价扩展点（hook lifecycle：tool-use 拦截 / 会话结束 / 权限请求等）。codex 接入是个参考——见 [`docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md) 的 5 步 DD（candidate enumeration / source-verify hook events / shared state-file protocol / 4 step wizard 接入）。无等价扩展点 → 提 DD 先不动 — 见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「不破坏现有 cc 进程」。
 
-## 2.8 Major decision (DD) flow
+## 4.8 Major decision (DD) flow
 
 凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「重大决策 DD 流程」。
 
-## 2.9 Documentation pointers
+## 4.9 Documentation pointers
 
 | 文档 | 何时读 |
 |---|---|
@@ -263,10 +293,10 @@ multi-cc-im/
 | [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) | 状态总表 + 修订日志 + 项目特定规范 |
 | [`docs/architecture.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/architecture.md) | 架构图 + 状态 schema + 文件 IPC |
 | [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md) | dev 命令 + TDD 节奏 + 调试 |
-| [`docs/setup-feishu.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/setup-feishu.md) | 飞书 app 详细 step-by-step（1.2 是摘要版）|
+| [`docs/setup-feishu.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/setup-feishu.md) | 飞书 app 详细 step-by-step（[Part 1.1](#11-create-the-feishu-app-do-this-first) 是摘要版）|
 | [`docs/superpowers/specs/`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/) | DD 报告（一锁一份）|
 | [`docs/competitors.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/competitors.md) | 同类工具对比 |
 
-## 2.10 License
+## 4.10 License
 
 See [`LICENSE`](https://github.com/orime-org/multi-cc-im/blob/main/LICENSE) (MIT).
