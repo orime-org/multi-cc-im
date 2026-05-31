@@ -35,10 +35,11 @@ Usage:
                                      args or LARK_APP_ID / LARK_APP_SECRET
                                      env vars.
   multi-cc-im cleanup [--dry-run]  — manually sweep ~/.multi-cc-im/state/
-                                     (paired SessionStart+SessionEnd, orphan Stop
-                                     files, legacy state files). Same as the
-                                     daemon's startup sweep; safe to run while
-                                     daemon is running (won't touch live cc).
+                                     (orphan pane files whose wezterm tab is
+                                     gone, stale daemon.pid, pre-DD-#61 legacy
+                                     files). Same as the daemon's startup sweep;
+                                     safe to run while daemon is running (won't
+                                     touch live cc).
   multi-cc-im hook <event>         — cc hook entrypoint (called by cc settings.json)
   multi-cc-im --help | -h          — print this help
   multi-cc-im --version | -v       — print version
