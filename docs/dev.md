@@ -144,7 +144,7 @@ ls -la ~/.multi-cc-im/state/wechat-cursor
 ls -la ~/.multi-cc-im/credentials/wechat.json   # mode 必须 -rw-------
 
 # 4. cc hook 真触发了吗？
-ls ~/.multi-cc-im/state/                         # 应该看到 <sid>.SessionStart 等文件
+ls ~/.multi-cc-im/state/                         # IM 模式跑起来后应看到 <paneId>_<sid>.Stop 等 pane-keyed 文件
 ```
 
 ## 验证 cc hook 已配置
@@ -152,7 +152,8 @@ ls ~/.multi-cc-im/state/                         # 应该看到 <sid>.SessionSta
 ```bash
 # 看 settings.json 有没有 multi-cc-im hook
 jq '.hooks' ~/.claude/settings.json
-# 应该看到 SessionStart / PreToolUse / Stop / SessionEnd 4 个 event 各一条 multi-cc-im hook 命令
+# 应该看到 PreToolUse / PermissionRequest / Stop 3 个 event 各一条 multi-cc-im hook 命令
+# (SessionStart / SessionEnd 自 DD #61 起已退订)
 
 # 重新合并（已存在的不动，只补缺失 / 替换 stale 路径）
 ./bin/multi-cc-im setup-hooks
@@ -162,12 +163,14 @@ setup-hooks 改写之前会自动备份 `~/.claude/settings.json` 到 `settings.
 
 ## 看 hook payload 实际长啥样
 
-cc hook 只能通过 stdin 收 payload。手动模拟：
+cc hook 只能通过 stdin 收 payload。手动模拟（用真实订阅的 event：`PreToolUse` / `PermissionRequest` / `Stop`）：
 
 ```bash
-echo '{"hook_event_name":"SessionStart","session_id":"...","cwd":"/tmp/x","transcript_path":"/tmp/t.jsonl","source":"startup","model":"claude-opus-4-7"}' \
-  | ./bin/multi-cc-im hook SessionStart
-ls ~/.multi-cc-im/state/
+# DD #61 起 hook 先过 WEZTERM_PANE 闸门——没有它会静默退出；没有 IMWork 也会
+# 静默退出（不写 state 文件）。开 MULTI_CC_IM_DEBUG=1 看 detector / gate 决策 trace。
+echo '{"hook_event_name":"Stop","session_id":"x","cwd":"/tmp/x","transcript_path":"/tmp/t.jsonl","stop_hook_active":false}' \
+  | MULTI_CC_IM_DEBUG=1 WEZTERM_PANE=0 ./bin/multi-cc-im hook Stop
+cat ~/.multi-cc-im/hook-trace.log                # 看 hook 收到 payload + 每一步 gate 决策
 ```
 
 实际 cc 触发的 payload 也写到 jsonl 里：`~/.claude/projects/<slug>/<sid>.jsonl`（只读，不要改）。
@@ -179,7 +182,7 @@ ls ~/.multi-cc-im/state/
 ./bin/multi-cc-im cleanup             # 实删
 ```
 
-`cleanup` 安全可在 daemon 运行时跑 —— 只删配对的 SessionStart+SessionEnd（cc 已死且 daemon 已不再路由），不动 lone SessionStart（cc 可能还活着）。
+`cleanup` 安全可在 daemon 运行时跑 —— 以 wezterm 当前活动 tab 的 paneId 集合为基准，只删 ① tab 已关的孤儿 pane 文件 ② 死掉的 `daemon.pid` ③ DD #61 之前的 legacy 旧文件（`<sid>.SessionStart` 等旧命名）；活动 cc 的文件（paneId 还在 wezterm 里）一律不动。只扫 `~/.multi-cc-im/state/` 这一个目录，不碰 `~/.claude/settings.json` 或任何业务文件。
 
 ## 微信端 routing echo 看不见
 
