@@ -74,10 +74,15 @@ export interface HookCommandResult {
  * Implement the `multi-cc-im hook <event>` subcommand. cc invokes this from
  * its `settings.json` `hooks` config; this entry:
  *
- * 1. Parse + zod-validate stdin payload (`@multi-cc-im/cli-cc` `parseHookPayload`)
- * 2. Run state-file side-effects via `runHookReceiver` (touch last-hook-at,
- *    write cc-pid on SessionStart, write ended on SessionEnd, append events.jsonl,
- *    pop injection queue on Stop)
+ * 1. Parse + zod-validate stdin payload (`@multi-cc-im/cli-cc` `parseHookPayload`).
+ *    Only the 3 subscribed events parse (`PreToolUse` / `PermissionRequest` /
+ *    `Stop`); anything else (e.g. `SessionStart` / `SessionEnd`, dropped per
+ *    DD #61) fails the discriminated union → step 4 exit 1.
+ * 2. Run state-file side-effects via `runHookReceiver`: gate on terminal +
+ *    IM-mode first, then per event — `PreToolUse` / `PermissionRequest` write a
+ *    Request file and poll the daemon's Response for an allow/deny decision;
+ *    `Stop` writes a Stop state file and pops the injection queue when
+ *    `stop_hook_active === false`.
  * 3. If receiver returned a `HookDecision`, JSON-stringify to stdout
  * 4. Errors → stderr + exit 1 (cc treats non-zero exit as hook failure but
  *    doesn't crash the session)
