@@ -1,8 +1,6 @@
 # 开发命令 · TDD 节奏 · 调试
 
-> **历史遗留警告（2026-05-11）**：本文部分调试 / 故障排查段是 v1.4 wechat 时代的真实经验。当前飞书 (Lark) adapter 已实施（DD #86 M2-M7 + interactive wizard DD W1-W8），daemon 可正常运行 —— 用户上手命令以 [`../README.md`](../README.md) Quick Start 为准。本文 wechat 时代字样仅作历史参考；通用的 TDD 节奏 / 单测调试经验仍然有效。
-
-> 本文是 v1 实施后的真实命令清单。新人 onboard 可对着跑。
+> 本文是面向开发者的真实命令 / 调试清单（飞书 Lark adapter，DD #86 M2-M7 + interactive wizard DD W1-W8）。新人 onboard 可对着跑；终端用户上手命令以 [`../README.md`](../README.md) 为准。
 
 ## 快速跑通
 
@@ -23,9 +21,9 @@ pnpm --filter multi-cc-im build      # tsup → apps/multi-cc-im/dist/cli.js
 
 ```bash
 ./bin/multi-cc-im start              # 启动 daemon（Ctrl+C graceful shutdown）
-./bin/multi-cc-im login wechat       # iLink 扫码登录，存 0600 凭据
-./bin/multi-cc-im setup-hooks        # 把 4 个 hook 命令幂等合并到 ~/.claude/settings.json
-./bin/multi-cc-im cleanup            # 扫 ~/.multi-cc-im/state/ 删完成 session + orphan
+./bin/multi-cc-im login lark         # 配飞书 app_id + app_secret，存 0600 凭据
+./bin/multi-cc-im setup-hooks        # 把 3 个 hook 命令幂等合并到 ~/.claude/settings.json
+./bin/multi-cc-im cleanup            # 扫 ~/.multi-cc-im/state/ 删孤儿 pane 文件 + legacy
 ./bin/multi-cc-im cleanup --dry-run  # 预览不删
 ./bin/multi-cc-im hook <event>       # 内部 hook 入口（cc 调，不要手动跑）
 ```
@@ -57,7 +55,7 @@ pnpm exec vitest packages/bridge/src/router.test.ts
 1. macOS（v1 仅支持 macOS — Linux 待测）
 2. wezterm 已装（`brew install --cask wezterm`）
 3. cc 已登录（`claude` 在某个 wezterm tab 里能起）
-4. iLink bot 已扫码登录（`./bin/multi-cc-im login wechat`）
+4. 飞书 app 已配置（`./bin/multi-cc-im login lark`，填 app_id + app_secret）
 5. cc settings.json 已合并 multi-cc-im hook（`./bin/multi-cc-im setup-hooks`）
 
 ---
@@ -108,7 +106,7 @@ DD 锁定方案 → TDD 红 → TDD 绿 → TDD 蓝 → commit → CI
 | 集成测试 | 20-30% | vitest + 真 fs (mkdtemp 沙盒) | adapter ↔ adapter / chokidar ↔ state files / orchestrator e2e |
 | E2E 测试 | <10% | （v1 后再加） | 关键用户流（#session 路由 / permission gate / cc Stop forward） |
 
-> 80% 是**最低**门槛。关键路径（路由 / send-text 注入两步法 / hook stdin 解析 / iLink 长轮询 cursor / permission gate poll/timeout）应当 100%。
+> 80% 是**最低**门槛。关键路径（路由 / send-text 注入两步法 / hook stdin 解析 / 飞书 WSClient 长连接重连 / permission gate poll/timeout）应当 100%。
 
 ## 反 TDD 模式（一律违规）
 
@@ -129,19 +127,19 @@ DD 锁定方案 → TDD 红 → TDD 绿 → TDD 蓝 → commit → CI
 
 # 调试技巧
 
-## daemon 跑了但微信不收消息
+## daemon 跑了但飞书不收消息
 
 按这个顺序排查：
 
 ```bash
-# 1. daemon 起来了吗？看日志
-tail -f ~/.multi-cc-im/logs/multi-cc-im-$(date +%F).log
+# 1. daemon 起来了吗？看日志（总写，tail -f 看实时）
+tail -f ~/.multi-cc-im/daemon.log
 
-# 2. iLink 长轮询 cursor 在动吗？
-ls -la ~/.multi-cc-im/state/wechat-cursor
+# 2. 飞书 WSClient 长连接连上了吗？daemon.log 里搜连接 / WS 相关行
+grep -iE "ws|连接|connect|ready" ~/.multi-cc-im/daemon.log | tail
 
-# 3. 凭据还活着吗？（bot_token 可能过期）
-ls -la ~/.multi-cc-im/credentials/wechat.json   # mode 必须 -rw-------
+# 3. 凭据还在吗？
+ls -la ~/.multi-cc-im/credentials/lark.json      # mode 必须 -rw-------
 
 # 4. cc hook 真触发了吗？
 ls ~/.multi-cc-im/state/                         # IM 模式跑起来后应看到 <paneId>_<sid>.Stop 等 pane-keyed 文件
@@ -184,11 +182,11 @@ cat ~/.multi-cc-im/hook-trace.log                # 看 hook 收到 payload + 每
 
 `cleanup` 安全可在 daemon 运行时跑 —— 以 wezterm 当前活动 tab 的 paneId 集合为基准，只删 ① tab 已关的孤儿 pane 文件 ② 死掉的 `daemon.pid` ③ DD #61 之前的 legacy 旧文件（`<sid>.SessionStart` 等旧命名）；活动 cc 的文件（paneId 还在 wezterm 里）一律不动。只扫 `~/.multi-cc-im/state/` 这一个目录，不碰 `~/.claude/settings.json` 或任何业务文件。
 
-## 微信端 routing echo 看不见
+## 飞书端 routing echo 看不见
 
-每条入站消息都应该有 visible echo（CLAUDE.md "routing visible echo required" 硬规则）。如果你 `#frontend hello` 发了但微信没收到 `→ frontend received` 类反馈：
+每条入站消息都应该有 visible echo（CLAUDE.md "routing visible echo required" 硬规则）。如果你 `#frontend hello` 发了但飞书没收到 `→ frontend received` 类反馈：
 
-1. 看 daemon log 有没有 `[wechat → frontend]` 行
+1. 看 `~/.multi-cc-im/daemon.log` 有没有把消息路由到 `frontend` 的记录（AI 分诊路径会打 `[AI router] target=frontend` 行）
 2. 看 `wezterm cli list --format json` —— 有没有叫 `frontend` 的 tab？
 3. 没有 → 进 cc TUI 跑 `/rename frontend`，再发一次（tab title 实时 poll，不用重启 daemon）
 
@@ -196,6 +194,6 @@ cat ~/.multi-cc-im/hook-trace.log                # 看 hook 收到 payload + 每
 
 `#frontend /1` 没生效有几种可能：
 
-1. **没绑过 wechat origin**：你最近**没**从微信发过给 `frontend`，所以 `pendingReplyCtxBySession` 里没存 replyCtx → daemon 拿到 PreToolUse 后 log "no wechat origin"，hook 30s timeout default-allow。**解法**：先发个 `#frontend ping` 绑一下。
+1. **没绑过 IMOrigin**：你最近**没**从飞书发过给 `frontend`，所以 daemon 没写 `<paneId>.IMOrigin` 文件（DD: IMOrigin global）→ hook 的 PreToolUse/PermissionRequest gate 走到 `!existsIMOriginFile` 分支静默退出，cc 落回原生权限流 / timeout default-allow。**解法**：先发个 `#frontend ping` 绑一下（daemon 入站时写 IMOrigin）。
 2. **多个 cc 同时跑工具**：cc 对同一 session 串行 PreToolUse，但**多 session 并发**时 `/1` 必须带 tab name 区分（`#frontend /1` 不是裸 `/1`）
 3. **超过 30s**：默认放行了，hook 已退出，再发 `/1` 没 polling 进程读取（state-sweep 会把孤儿 Response 文件清掉）
