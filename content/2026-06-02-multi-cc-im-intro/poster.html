@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>multi-cc-im poster</title>
+<style>
+  :root{
+    --bg:#0b0e14; --fg:#e6edf3; --body:#cdd6e0; --muted:#94a3b4;
+    --accent:#58a6ff; --green:#7ee787; --code:#161d2b;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#05070b;font-family:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .slide{
+    width:1080px;min-height:1180px;
+    background:radial-gradient(120% 80% at 50% 0%,#10192b 0%,#0b0e14 55%,#080b11 100%);
+    padding:96px 84px;display:flex;flex-direction:column;position:relative;overflow:hidden;
+  }
+  .slide::before{content:"";position:absolute;top:-160px;right:-160px;width:520px;height:520px;border-radius:50%;
+    background:radial-gradient(circle,rgba(88,166,255,.16),transparent 70%);pointer-events:none}
+  .badge{display:inline-flex;align-items:center;gap:18px;color:var(--accent);font-size:30px;font-weight:700;letter-spacing:1px;margin-bottom:34px;position:relative}
+  .badge .num{width:60px;height:60px;border-radius:18px;background:rgba(88,166,255,.16);border:1px solid rgba(88,166,255,.3);display:flex;align-items:center;justify-content:center;font-size:32px}
+  h1{color:var(--fg);font-size:64px;font-weight:800;line-height:1.26;margin-bottom:48px;letter-spacing:.5px}
+  h1.small{font-size:56px}
+  p{color:var(--body);font-size:37px;line-height:1.88;margin-bottom:32px}
+  .lead{font-size:41px;color:#fff;font-weight:600}
+  .hl{color:var(--green);font-weight:700}
+  .accent{color:var(--accent);font-weight:700}
+  ul{list-style:none;margin:6px 0 32px}
+  li{color:var(--body);font-size:36px;line-height:1.7;padding-left:46px;position:relative;margin-bottom:22px}
+  li::before{content:"";position:absolute;left:4px;top:18px;width:18px;height:18px;border-radius:6px;background:linear-gradient(135deg,#58a6ff,#7ee787)}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace;background:var(--code);color:#7ee787;padding:6px 16px;border-radius:11px;font-size:31px;white-space:nowrap}
+  .cmd{font-family:"SF Mono",Menlo,Consolas,monospace;background:var(--code);color:#7ee787;font-size:42px;padding:30px 40px;border-radius:20px;display:inline-block;margin:12px 0 4px;border:1px solid #26334d;letter-spacing:1px}
+  .spacer{flex:1;min-height:40px}
+  .brand{display:flex;align-items:center;justify-content:space-between;margin-top:56px;padding-top:38px;border-top:1px solid #1c2536;color:var(--muted);font-size:28px}
+  .brand b{color:var(--fg);font-weight:800;font-size:33px;letter-spacing:.5px}
+</style>
+</head>
+<body>
+
+<section class="slide" id="s1">
+  <div class="badge"><span class="num">1</span> 为什么</div>
+  <h1>我把电脑上的<br>AI 编程助手，搬进了手机</h1>
+  <p>人在地铁上，笔记本扔在家里，一个 Claude Code agent 正跑到一半的重构。</p>
+  <p>以前这种时候我是抓瞎的：它干完了我不知道；它中途要问我"用方案 A 还是 B"，我也收不到；只能等回到工位。在公司大屏上跟 AI 结对编程很爽，可人一离开工位，就跟正在干活的 agent 彻底失联。</p>
+  <p>于是我写了 <span class="accent">multi-cc-im</span>：把跑在终端标签里的多个 AI 编程 agent，桥接到飞书。手机和电脑两头，都能驱动同一批 agent。</p>
+  <div class="spacer"></div>
+  <div class="brand"><b>multi-cc-im</b><span>github.com/orime-org/multi-cc-im · MIT</span></div>
+</section>
+
+<section class="slide" id="s2">
+  <div class="badge"><span class="num">2</span> 回复</div>
+  <h1>一张卡片，就读完</h1>
+  <p>agent 干完一轮，完整回复以一张卡片推到手机上 —— markdown 原生渲染，标题、表格、代码块、列表都在，不是被切成十几条乱序的纯文本碎片。</p>
+  <p class="lead"><span class="hl">一条回复 = 一张卡 = 一条消息。</span></p>
+  <p>在手机上读一份真实的 diff，第一次不觉得是受刑。</p>
+  <div class="spacer"></div>
+  <div class="brand"><b>multi-cc-im</b><span>github.com/orime-org/multi-cc-im · MIT</span></div>
+</section>
+
+<section class="slide" id="s3">
+  <div class="badge"><span class="num">3</span> 路由 + 决策</div>
+  <h1 class="small">派活像发消息，决策回个数字</h1>
+  <p>给 agent 派活，就像发微信：</p>
+  <ul>
+    <li>直接发文字 → AI 自动分诊到该处理的那个 agent</li>
+    <li><code>#frontend 修登录 bug</code> → 精确发给那个标签</li>
+    <li><code>#all 跑一下测试</code> → 广播给所有 agent</li>
+  </ul>
+  <p>更妙的是反过来 —— agent 需要我拍板时：遇到方案分叉，它把"A / B / C 选哪个"以编号选项推到手机，我回个数字就定；要动 <code>.git</code> / <code>.env</code> 这类敏感文件，先在手机上问我"同意一次 / 始终允许 / 拒绝"。锁屏上就能批。</p>
+  <div class="spacer"></div>
+  <div class="brand"><b>multi-cc-im</b><span>github.com/orime-org/multi-cc-im · MIT</span></div>
+</section>
+
+<section class="slide" id="s4">
+  <div class="badge"><span class="num">4</span> 最特别的地方</div>
+  <h1>它从不"套壳"你的 agent</h1>
+  <p>市面上很多 AI 工具是包一层自己的界面、接管你的输入输出。multi-cc-im 反着来 —— 你的 Claude Code 继续以原生的样子跑在终端标签里。这个 bridge 不启动它、不接管它的输入输出、不假装一层界面。</p>
+  <p>出站（agent → 手机）纯靠 Claude Code 自己暴露的 hook；入站（手机 → agent）纯靠终端命令行把文字打进标签。你随时能走到电脑前，直接接手那个标签 —— bridge 从不挡在中间。</p>
+  <p class="lead"><span class="hl">零侵入、零套壳、零绑定。</span></p>
+  <div class="spacer"></div>
+  <div class="brand"><b>multi-cc-im</b><span>github.com/orime-org/multi-cc-im · MIT</span></div>
+</section>
+
+<section class="slide" id="s5">
+  <div class="badge"><span class="num">5</span> 还有 + 怎么用</div>
+  <h1>顺手的，和怎么开始</h1>
+  <ul>
+    <li>本地一个监控面板，实时看哪些 agent 在跑、各烧了多少 token / 多少钱</li>
+    <li>Claude Code 和 OpenAI Codex 在同一个终端共存，都从一个手机寻址</li>
+    <li>所有数据只落本机，凭据加密存储，不上传任何服务器</li>
+  </ul>
+  <p>它是我的个人项目，MIT 开源，我自己天天在用。需要一个飞书机器人 + WezTerm 或 iTerm2，启动向导带你走完配置。</p>
+  <div class="cmd">pnpm i -g multi-cc-im</div>
+  <div class="spacer"></div>
+  <div class="brand"><b>multi-cc-im</b><span>github.com/orime-org/multi-cc-im · MIT</span></div>
+</section>
+
+</body>
+</html>
