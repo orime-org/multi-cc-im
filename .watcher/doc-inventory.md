@@ -12,6 +12,7 @@
 | docs/competitors.md | 同类产品调研 | 竞品出新版 |
 | docs/superpowers/specs/*-dd.md | DD 报告（每个重大决策一份） | 新 DD / DD 修订 |
 | LICENSE | MIT 标准模板 | 永不变 |
+| content/ | 对外发布内容存档（X / 博客 / 微博等），按 `<日期>-<slug>/` 组织（article + tweet + images；2026-06-02 PR #244 起）— **非项目文档：内容不随代码变，audit 不审查其与代码一致性** | 发新内容时加 |
 
 # 缺失文档（推断该有 / 待补）
 - **CHANGELOG.md** — 目前靠 conventions.md 修订日志 + GitHub releases，无独立 CHANGELOG（如发布 npm 需补）
