@@ -179,6 +179,7 @@ pnpm --filter multi-cc-im build     # 编译出 dist/
 | start 报 `cannot connect to iTerm2 Python API` | iTerm2 → Settings → General → Magic → 勾「Enable Python API」+ 启 iTerm2 后重跑 |
 | `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
 | start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
+| daemon 退出并报 `cannot watch the state directory ... EMFILE`（macOS）/ `ENOSPC`（Linux） | 系统的文件监听名额被别的进程用光了（macOS fseventsd 全系统 1024 个；`tsx watch` 这类 dev server 一个就能占几百个）。按提示里的 `Check:` 命令确认，停掉不用的 dev server / `tsx watch`，或重启，再 `start` |
 | hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 
 ---

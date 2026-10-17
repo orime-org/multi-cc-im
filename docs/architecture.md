@@ -433,6 +433,12 @@ daemon start (apps/multi-cc-im/src/start.ts):
 
   ────── 启动 adapters + orchestrator ──────
 
+daemon state watcher 出错（chokidar 'error'，如 macOS fseventsd 名额满 → EMFILE）:
+  watcher 不再收到新文件事件 → 当致命错误处理
+  提示写 daemon.log + 终端（watcher-error.ts 生成，含确认命令）
+  启动期：orchestrator.stop() → exit 1
+  运行期：StartCommandResult.failure → cli.ts shutdown → exit 1
+
 daemon stop（Ctrl+C / SIGTERM）:
   await imAdapter.stop / termAdapter.stop / cliAdapter.stop
   clear reaperTimers
