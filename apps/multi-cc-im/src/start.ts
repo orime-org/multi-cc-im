@@ -1,4 +1,8 @@
-import { formatErrorWithCause, type PaneId } from '@multi-cc-im/shared';
+import {
+  formatErrorWithCause,
+  type CLIAdapter,
+  type PaneId,
+} from '@multi-cc-im/shared';
 import {
   createOrchestrator,
   routeViaCodex,
@@ -56,6 +60,7 @@ import { resolveAppPaths } from './config-paths.js';
 import { runSetupHooksCommand } from './setup-hooks.js';
 import { runCodexSetupHooks } from '@multi-cc-im/cli-codex';
 import { sweepStaleStateFiles } from './state-sweep.js';
+import { formatStateWatcherError } from './watcher-error.js';
 
 export interface RunStartCommandOpts {
   /** Override `~/.multi-cc-im` root (env or for tests). */
@@ -71,6 +76,16 @@ export interface RunStartCommandOpts {
    * lifecycle / IM long-poll.
    */
   buildOrchestrator?: () => BridgeOrchestrator;
+  /**
+   * Override CLI adapter construction. Default builds the cc or codex
+   * state-dir watcher adapter. Tests inject a stub and keep the passed
+   * `onWatcherError` to simulate the watcher failing at startup or while
+   * running.
+   */
+  buildCliAdapter?: (opts: {
+    stateDir: string;
+    onWatcherError: (err: unknown) => void;
+  }) => CLIAdapter;
   /**
    * Skip the auto-`setup-hooks` step at the top of `start`. Default `false`:
    * `runStartCommand` runs `runSetupHooksCommand` first so users don't have
@@ -181,6 +196,13 @@ export interface StartCommandResult {
    * persistent state before returning.
    */
   shutdown?: () => Promise<void>;
+  /**
+   * Present when `exitCode === 0`. Resolves with a ready-to-print message
+   * when the state-dir watcher fails while the daemon runs; the daemon can
+   * no longer see hook output, so the caller prints the message, awaits
+   * `shutdown` and exits non-zero. Never resolves otherwise.
+   */
+  failure?: Promise<string>;
 }
 
 /**
@@ -677,10 +699,31 @@ export async function runStartCommand(
   // pick the adapter factory whose `name` field matches `enabled[0]` so
   // monitor / log lines reflect the user's primary CLI. Per
   // [DD §7 + 2026-05-23 revision](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
-  const cliAdapter =
-    enabledCLIs[0] === 'codex'
-      ? createCodexCliAdapter({ stateDir: paths.stateDir })
-      : createCcCliAdapter({ stateDir: paths.stateDir });
+  //
+  // A watcher error is fatal: the first one is formatted, written to
+  // daemon.log, and either returned as the startup error (below, after
+  // `orchestrator.start()`) or delivered through `failure` while running.
+  let watcherFailure: string | undefined;
+  let resolveFailure!: (message: string) => void;
+  const failure = new Promise<string>((resolve) => {
+    resolveFailure = resolve;
+  });
+  const onWatcherError = (err: unknown): void => {
+    if (watcherFailure !== undefined) return;
+    watcherFailure = formatStateWatcherError(
+      err,
+      paths.stateDir,
+      process.platform,
+    );
+    fileOnlyLog(watcherFailure);
+    resolveFailure(watcherFailure);
+  };
+  const cliAdapterOpts = { stateDir: paths.stateDir, onWatcherError };
+  const cliAdapter = opts.buildCliAdapter
+    ? opts.buildCliAdapter(cliAdapterOpts)
+    : enabledCLIs[0] === 'codex'
+      ? createCodexCliAdapter(cliAdapterOpts)
+      : createCcCliAdapter(cliAdapterOpts);
 
   // Shared error ring buffer for the monitor dashboard. Orchestrator's
   // onError pushes here; monitor reads at render time. N=200 per
@@ -729,7 +772,23 @@ export async function runStartCommand(
         },
       });
 
+  // Close the diagnostic log stream cleanly so the shutdown banner
+  // ends up on disk before the process exits. Tests with injected
+  // opts.log never created logStream so this is a no-op for them.
+  const closeLogStream = async (): Promise<void> => {
+    if (logStream) {
+      const ts = new Date().toISOString();
+      logStream.write(`${ts} === daemon stopped PID=${process.pid} ===\n`);
+      await new Promise<void>((r) => logStream!.end(r));
+    }
+  };
+
   await orchestrator.start();
+  if (watcherFailure !== undefined) {
+    await orchestrator.stop();
+    await closeLogStream();
+    return { exitCode: 1, stderr: watcherFailure };
+  }
   log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
 
   // ===== 3b. Start monitor dashboard =====
@@ -802,17 +861,9 @@ export async function runStartCommand(
         await monitorHandle.stop().catch(() => {});
       }
       await orchestrator.stop();
-      // Close the diagnostic log stream cleanly so the shutdown banner
-      // ends up on disk before the process exits. Tests with injected
-      // opts.log never created logStream so this is a no-op for them.
-      if (logStream) {
-        const ts = new Date().toISOString();
-        logStream.write(
-          `${ts} === daemon stopped PID=${process.pid} ===\n`,
-        );
-        await new Promise<void>((r) => logStream!.end(r));
-      }
+      await closeLogStream();
     },
+    failure,
   };
 }
 

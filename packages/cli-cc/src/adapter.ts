@@ -43,6 +43,15 @@ export interface CreateCcCliAdapterOpts {
       sessionId: string;
     },
   ) => void;
+  /**
+   * Called when the chokidar watcher on `stateDir` emits `'error'` (e.g.
+   * `EMFILE` when macOS FSEvents has no client slots left, `ENOSPC` when
+   * Linux inotify watches run out). After such an error the watcher stops
+   * delivering new-file events, so the daemon can no longer see hook output;
+   * the caller must treat it as fatal. When omitted, chokidar's unhandled
+   * `'error'` event throws.
+   */
+  onWatcherError?: (err: unknown) => void;
 }
 
 interface ClassifiedStopFile {
@@ -208,6 +217,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
         depth: 0,
       });
       watcher = w;
+      if (opts.onWatcherError) w.on('error', opts.onWatcherError);
 
       // Buffer initial-scan adds + drain in basename-sorted order so
       // backlogged Stop files dispatch in chronological (= lex) order
