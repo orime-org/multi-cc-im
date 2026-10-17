@@ -253,12 +253,13 @@ async function dispatchStart(args: string[]): Promise<number> {
 
   if (!result.shutdown) return result.exitCode;
 
-  // Bridge is running; install signal handlers for graceful shutdown.
+  // Bridge is running; stop gracefully on a signal (exit 0) or when the
+  // state watcher fails (exit 1).
   let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  const shutdown = async (banner: string, exitCode: number): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    process.stderr.write(`\nmulti-cc-im: ${signal} received, stopping...\n`);
+    process.stderr.write(banner);
     try {
       await result.shutdown!();
     } catch (err) {
@@ -266,10 +267,13 @@ async function dispatchStart(args: string[]): Promise<number> {
         `multi-cc-im: shutdown error: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
-    process.exit(0);
+    process.exit(exitCode);
   };
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  const onSignal = (signal: string): void =>
+    void shutdown(`\nmulti-cc-im: ${signal} received, stopping...\n`, 0);
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  void result.failure?.then((message) => shutdown(`${message}\n`, 1));
 
   // Keep the event loop alive until a signal triggers shutdown.
   return await new Promise<number>(() => {});

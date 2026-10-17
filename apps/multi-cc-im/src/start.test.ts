@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { IMAdapter } from '@multi-cc-im/shared';
+import type { CLIAdapter, IMAdapter } from '@multi-cc-im/shared';
 import {
   defaultResolvePython3,
   resolveIterm2HelperPath,
@@ -653,6 +653,89 @@ describe('runStartCommand — default orchestrator branch wires entry.buildAdapt
     expect(passed.paths).toBeDefined();
     expect(typeof passed.paths.credentialFor).toBe('function');
     expect(typeof passed.log).toBe('function');
+    await result.shutdown!();
+  });
+});
+
+describe('runStartCommand — state watcher errors', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'start-watcher-error-'));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  function emfileError(): NodeJS.ErrnoException {
+    return Object.assign(new Error('EMFILE: too many open files, watch'), {
+      code: 'EMFILE',
+    });
+  }
+
+  function baseOpts() {
+    let fireWatcherError: ((err: unknown) => void) | undefined;
+    const stubCliAdapter: CLIAdapter = {
+      name: 'claude-code',
+      start: async () => {},
+      enqueueInjection: async () => {},
+      stop: async () => {},
+    };
+    return {
+      fire: (err: unknown) => fireWatcherError!(err),
+      opts: {
+        skipSetupHooks: true,
+        root,
+        selectTerminal: stubSelectTerminal(),
+        selectCLIs: stubSelectCLIs(),
+        selectAIRouter: stubSelectAIRouter(),
+        setupHooksCodex: async () => ({ changed: false, configPath: '/dev/null' }),
+        resolveWezTerm: async () => '/usr/local/bin/wezterm',
+        selectAdapter: stubSelectAdapter(),
+        buildCliAdapter: (o: { onWatcherError: (err: unknown) => void }) => {
+          fireWatcherError = o.onWatcherError;
+          return stubCliAdapter;
+        },
+      },
+    };
+  }
+
+  it('watcher error during startup → exit 1 with readable stderr, orchestrator stopped, no shutdown handle', async () => {
+    const { fire, opts } = baseOpts();
+    const stopSpy = vi.fn(async () => {});
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      ...opts,
+      buildOrchestrator: () => ({
+        start: async () => fire(emfileError()),
+        stop: stopSpy,
+      }),
+      log: (l) => lines.push(l),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('EMFILE: too many open files, watch');
+    expect(result.stderr).toContain(join(root, 'state'));
+    expect(result.stderr).toContain('multi-cc-im start');
+    expect(result.shutdown).toBeUndefined();
+    expect(stopSpy).toHaveBeenCalledOnce();
+    expect(lines.some((l) => l.includes('orchestrator started'))).toBe(false);
+  });
+
+  it('watcher error while running → failure resolves with the readable message', async () => {
+    const { fire, opts } = baseOpts();
+    const result = await runStartCommand({
+      ...opts,
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.failure).toBeDefined();
+
+    fire(emfileError());
+    const message = await result.failure!;
+    expect(message).toContain('EMFILE: too many open files, watch');
+    expect(message).toContain(join(root, 'state'));
     await result.shutdown!();
   });
 });
