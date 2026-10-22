@@ -65,6 +65,11 @@ records verified protocols, completed repairs, and remaining questions. Check
 current code and Git before resuming an item. Runtime session ids, local pane
 numbers, machine paths, and conversation handoffs stay out of shared docs.
 
+The current deployment terminal is WezTerm. Development acceptance and its
+fixture boundaries are recorded in the
+[WezTerm execution record](superpowers/specs/2026-10-22-codex-wezterm-acceptance.md).
+The maintainer deploys from GitHub and performs real Feishu account acceptance.
+
 ## Verify instruction loading
 
 In Claude Code, use `/memory` to inspect loaded instructions and confirm the

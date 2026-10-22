@@ -191,6 +191,10 @@ Codex 的回复和权限 hook 共用这个身份来源，不再信任共享服�
 [提问通道 DD](docs/superpowers/specs/2026-10-22-codex-question-bridge-dd.md) 和
 [线程身份 DD](docs/superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
 
+WezTerm 部署验收：W3 选择 `wezterm`；部署后在飞书执行 `/start` 和 `/list`，
+核对终端与会话列表，再向 `#<标签页标题>` 发送消息，检查回复与原生提问的回答往返。
+开发侧隔离测试的环境与结果见 [WezTerm 验收记录](docs/superpowers/specs/2026-10-22-codex-wezterm-acceptance.md)。
+
 > **Codex hook**：在 `/hooks` 中审核／刷新 hook；在 `/terminal-title` 中启用线程 ID。
 > 安装器不会替你授予 hook 信任或修改 Codex 自身的审批策略。
 >
