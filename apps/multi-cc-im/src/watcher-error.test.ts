@@ -17,11 +17,14 @@ describe('formatStateWatcherError', () => {
     expect(msg).toContain(STATE_DIR);
     expect(msg).toContain('EMFILE: too many open files, watch');
     expect(msg).toContain('cc replies');
-    expect(msg).toContain('file-watch limit');
+    expect(msg).toContain('file-watch resources');
     expect(msg).toContain(
       `/usr/bin/log show --last 5m --predicate 'process == "fseventsd"' | grep "too many clients"`,
     );
     expect(msg).toContain('multi-cc-im start');
+    expect(msg).toContain('does not stop your Claude Code / Codex sessions or other development processes');
+    expect(msg).toContain('file descriptors or file-watch resources');
+    expect(msg).not.toContain('used up by other processes');
     expect(msg).not.toContain('inotify');
   });
 
@@ -34,6 +37,13 @@ describe('formatStateWatcherError', () => {
     expect(msg).toContain('file-watch limit');
     expect(msg).toContain('fs.inotify.max_user_watches');
     expect(msg).not.toContain('fseventsd');
+  });
+
+  it('Linux EMFILE also points at per-process open-file limits', () => {
+    const msg = formatStateWatcherError(errnoError('EMFILE', 'watch failed'), STATE_DIR, 'linux');
+    expect(msg).toContain('ulimit -n');
+    expect(msg).toContain('fs.inotify.max_user_instances');
+    expect(msg).toContain('only processes you no longer need');
   });
 
   it('other error codes: shows the original error without the watch-limit advice', () => {

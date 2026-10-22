@@ -436,8 +436,14 @@ daemon start (apps/multi-cc-im/src/start.ts):
 daemon state watcher 出错（chokidar 'error'，如 macOS fseventsd 名额满 → EMFILE）:
   watcher 不再收到新文件事件 → 当致命错误处理
   提示写 daemon.log + 终端（watcher-error.ts 生成，含确认命令）
-  启动期：orchestrator.stop() → exit 1
+  同步创建失败 / ready 前 error：adapter.start() reject；失败 watcher 关闭
+  启动期：启动与 watcher failure 竞速，不等待其他 adapter 连接成功
+          orchestrator.stop() + 日志落盘 → 可读提示 + exit 1
+          stop 后未完成的启动步骤不再启动后续 adapter 或计时器
   运行期：StartCommandResult.failure → cli.ts shutdown → exit 1
+  提示包含停止状态、IM 转发影响、平台检查命令和手动恢复步骤
+  EMFILE 不直接归因为其他进程：可能是描述符或文件监听资源耗尽
+  不自动停止其他开发任务或 Claude Code / Codex 会话
 
 daemon stop（Ctrl+C / SIGTERM）:
   await imAdapter.stop / termAdapter.stop / cliAdapter.stop

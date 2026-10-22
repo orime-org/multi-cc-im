@@ -48,8 +48,9 @@ export interface CreateCcCliAdapterOpts {
    * `EMFILE` when macOS FSEvents has no client slots left, `ENOSPC` when
    * Linux inotify watches run out). After such an error the watcher stops
    * delivering new-file events, so the daemon can no longer see hook output;
-   * the caller must treat it as fatal. When omitted, chokidar's unhandled
-   * `'error'` event throws.
+   * the caller must treat it as fatal. Synchronous watch failures and errors
+   * before ready also reject start(). When omitted, startup still rejects;
+   * an unhandled runtime `'error'` event throws.
    */
   onWatcherError?: (err: unknown) => void;
 }
@@ -210,12 +211,19 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
       }
       handler = h;
 
-      const w = chokidar.watch(opts.stateDir, {
-        ignoreInitial: false,
-        persistent: true,
-        awaitWriteFinish: false,
-        depth: 0,
-      });
+      let w: FSWatcher;
+      try {
+        w = chokidar.watch(opts.stateDir, {
+          ignoreInitial: false,
+          persistent: true,
+          awaitWriteFinish: false,
+          depth: 0,
+        });
+      } catch (err) {
+        handler = undefined;
+        opts.onWatcherError?.(err);
+        throw err;
+      }
       watcher = w;
       if (opts.onWatcherError) w.on('error', opts.onWatcherError);
 
@@ -238,9 +246,27 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
       w.on('add', onAdd);
       w.on('change', onAdd);
 
-      await new Promise<void>((resolve) => {
-        w.once('ready', () => resolve());
-      });
+      let onReady!: () => void;
+      let onStartupError!: (err: unknown) => void;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          onReady = resolve;
+          onStartupError = reject;
+          w.once('ready', onReady);
+          w.once('error', onStartupError);
+        });
+      } catch (err) {
+        try {
+          await w.close();
+        } finally {
+          watcher = undefined;
+          handler = undefined;
+        }
+        throw err;
+      } finally {
+        w.off('ready', onReady);
+        w.off('error', onStartupError);
+      }
       initialScanComplete = true;
 
       backlog.sort((a, b) =>

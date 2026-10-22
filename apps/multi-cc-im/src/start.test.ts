@@ -738,6 +738,65 @@ describe('runStartCommand — state watcher errors', () => {
     expect(message).toContain(join(root, 'state'));
     await result.shutdown!();
   });
+
+  it('a rejected watcher startup returns recovery advice and stops partial startup', async () => {
+    const { fire, opts } = baseOpts();
+    const err = emfileError();
+    const stopSpy = vi.fn(async () => {});
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      ...opts,
+      buildOrchestrator: () => ({
+        start: async () => { fire(err); throw err; },
+        stop: stopSpy,
+      }),
+      log: (line) => lines.push(line),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('EMFILE');
+    expect(result.stderr).toContain('multi-cc-im stopped');
+    expect(result.stderr).toContain('multi-cc-im start');
+    expect(result.shutdown).toBeUndefined();
+    expect(stopSpy).toHaveBeenCalledOnce();
+    expect(lines.some((line) => line.includes('orchestrator started'))).toBe(false);
+  });
+
+  it('preserves watcher recovery advice if partial-startup cleanup also fails', async () => {
+    const { fire, opts } = baseOpts();
+    const lines: string[] = [];
+    const result = await runStartCommand({
+      ...opts,
+      buildOrchestrator: () => ({
+        start: async () => { const err = emfileError(); fire(err); throw err; },
+        stop: async () => { throw new Error('cleanup failed'); },
+      }),
+      log: (line) => lines.push(line),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('EMFILE');
+    expect(result.stderr).toContain('multi-cc-im start');
+    expect(lines.some((line) => line.includes('cleanup failed'))).toBe(true);
+  });
+
+  it('returns watcher recovery advice even while another adapter is still connecting', async () => {
+    const { fire, opts } = baseOpts();
+    const stopSpy = vi.fn(async () => {});
+    const result = await runStartCommand({
+      ...opts,
+      buildOrchestrator: () => ({
+        start: () => {
+          queueMicrotask(() => fire(emfileError()));
+          return new Promise<void>(() => {});
+        },
+        stop: stopSpy,
+      }),
+      log: () => {},
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('EMFILE');
+    expect(result.stderr).toContain('multi-cc-im start');
+    expect(stopSpy).toHaveBeenCalledOnce();
+  });
 });
 
 describe('defaultResolvePython3 (P3)', () => {
