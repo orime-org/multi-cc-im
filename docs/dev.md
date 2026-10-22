@@ -50,6 +50,24 @@ pnpm exec vitest run apps/multi-cc-im/src/setup-hooks.test.ts
 pnpm exec vitest packages/bridge/src/router.test.ts
 ```
 
+## EMFILE / ENOSPC 错误处理验证
+
+相关测试：
+`pnpm test packages/cli-cc/src/adapter.watcher-error.test.ts apps/multi-cc-im/src/watcher-error.test.ts apps/multi-cc-im/src/start.test.ts packages/bridge/src/orchestrator.test.ts`。
+覆盖监听同步抛错、ready 前错误、运行期错误、飞书连接未完成时的监听失败，
+以及停止后的启动流程不会继续启动其他 adapter。故障测试用可控事件源，
+无需耗尽主机资源，也不会关闭其他开发服务。
+
+验收：终端说明桥接停止和 IM 转发影响，保留原错误与平台检查命令，给出手动恢复
+及 `multi-cc-im start`；退出码为 1、清理 daemon.pid，错误也写入 daemon.log。
+真实文件事件集成测试仍依赖主机可分配监听资源；环境耗尽时应明确记录该限制，
+不能把此时的测试超时当成错误提示已被验证，也不应自动关闭其他开发任务。
+
+2026-10-22 验证记录：131 项相关测试、typecheck、build 和 bin 版本验证通过；
+实际打包 CLI 在 ready 前及飞书连接中的故障注入均验证了提示、日志、PID 清理和
+退出码 1。原生全量 1,220 通过 / 10 失败（同一主机监听资源限制）；仅对测试进程
+设置 `CHOKIDAR_USEPOLLING=1 pnpm test` 后 1,230 项通过，产品未增加轮询回退。
+
 ## 启动前置（首次跑 daemon）
 
 1. macOS（v1 仅支持 macOS — Linux 待测）

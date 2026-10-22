@@ -1808,8 +1808,11 @@ export function createOrchestrator(
       if (started) throw new Error('createOrchestrator: already started');
       started = true;
       await opts.cliAdapter.start(cliHandler);
+      if (!started) return;
       await opts.termAdapter.start({});
+      if (!started) return;
       await opts.imAdapter.start(imHandler);
+      if (!started) return;
       pendingImageSweepTimer = setInterval(
         evictExpiredPendingImages,
         pendingImageSweepIntervalMs,

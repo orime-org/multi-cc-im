@@ -1,28 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { FSWatcher } from 'chokidar';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import chokidar, { type FSWatcher } from 'chokidar';
 import type { CLIHandler } from '@multi-cc-im/shared';
 import { createCcCliAdapter } from './adapter.js';
 
-// Capture the real chokidar watcher the adapter creates so the test can
-// emit the same 'error' event chokidar emits when the OS refuses a watch
-// (macOS FSEvents client limit → EMFILE, Linux inotify → ENOSPC).
-const captured = vi.hoisted(() => ({ watcher: undefined as FSWatcher | undefined }));
-vi.mock('chokidar', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('chokidar')>();
-  return {
-    ...actual,
-    default: {
-      ...actual.default,
-      watch: (...args: Parameters<typeof actual.default.watch>) => {
-        captured.watcher = actual.default.watch(...args);
-        return captured.watcher;
-      },
-    },
-  };
-});
+// Drive error/ready ordering without consuming the OS resource under test.
+vi.mock('chokidar', () => ({ default: { watch: vi.fn() } }));
+
+class TestWatcher extends EventEmitter {
+  close = vi.fn(async () => {});
+}
 
 const noopHandler: CLIHandler = {
   async onPreToolUse() {},
@@ -38,27 +25,65 @@ function emfileError(): NodeJS.ErrnoException {
 }
 
 describe('createCcCliAdapter — watcher errors', () => {
-  let stateDir: string;
+  const stateDir = '/test/state';
+  let watcher: TestWatcher;
 
-  beforeEach(async () => {
-    stateDir = await mkdtemp(join(tmpdir(), 'cli-cc-watcher-error-'));
-    captured.watcher = undefined;
-  });
-
-  afterEach(async () => {
-    await rm(stateDir, { recursive: true, force: true });
+  beforeEach(() => {
+    watcher = new TestWatcher();
+    vi.mocked(chokidar.watch).mockReset();
+    vi.mocked(chokidar.watch).mockReturnValue(watcher as unknown as FSWatcher);
   });
 
   it('passes a watcher error emitted after ready to onWatcherError', async () => {
     const onWatcherError = vi.fn();
     const adapter = createCcCliAdapter({ stateDir, onWatcherError });
-    await adapter.start(noopHandler);
+    const starting = adapter.start(noopHandler);
+    watcher.emit('ready');
+    await starting;
 
     const err = emfileError();
-    expect(() => captured.watcher!.emit('error', err)).not.toThrow();
+    expect(() => watcher.emit('error', err)).not.toThrow();
     expect(onWatcherError).toHaveBeenCalledTimes(1);
     expect(onWatcherError).toHaveBeenCalledWith(err);
 
+    await adapter.stop();
+  });
+
+  it('reports a synchronous watch failure to the caller', async () => {
+    const err = emfileError();
+    vi.mocked(chokidar.watch).mockImplementationOnce(() => { throw err; });
+    const onWatcherError = vi.fn();
+    const adapter = createCcCliAdapter({ stateDir, onWatcherError });
+    await expect(adapter.start(noopHandler)).rejects.toBe(err);
+    expect(onWatcherError).toHaveBeenCalledOnce();
+    expect(onWatcherError).toHaveBeenCalledWith(err);
+    await adapter.stop();
+  });
+
+  it('rejects startup and closes the watcher when an error precedes ready', async () => {
+    const onWatcherError = vi.fn();
+    const adapter = createCcCliAdapter({ stateDir, onWatcherError });
+    const err = emfileError();
+    const starting = adapter.start(noopHandler);
+    const rejected = expect(starting).rejects.toBe(err);
+    watcher.emit('error', err);
+    await rejected;
+    expect(onWatcherError).toHaveBeenCalledOnce();
+    expect(onWatcherError).toHaveBeenCalledWith(err);
+    expect(watcher.close).toHaveBeenCalledOnce();
+    expect(watcher.listenerCount('ready')).toBe(0);
+    await adapter.stop();
+    expect(watcher.close).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a startup error without an optional runtime error callback', async () => {
+    const adapter = createCcCliAdapter({ stateDir });
+    const err = emfileError();
+    const starting = adapter.start(noopHandler);
+    const rejected = expect(starting).rejects.toBe(err);
+    expect(() => watcher.emit('error', err)).not.toThrow();
+    await rejected;
+    expect(watcher.close).toHaveBeenCalledOnce();
     await adapter.stop();
   });
 });

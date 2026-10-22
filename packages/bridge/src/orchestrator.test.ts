@@ -269,6 +269,33 @@ beforeEach(async () => {
 // ============================================================================
 
 describe('createOrchestrator — start/stop lifecycle', () => {
+  it.each(['cli', 'term'] as const)('stopping during %s startup prevents remaining adapters from starting', async (phase) => {
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const startingPhase = new Promise<void>((resolve) => { entered = resolve; });
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm();
+    const imStart = vi.spyOn(im, 'start');
+    const termStart = vi.spyOn(term, 'start');
+    vi.spyOn(phase === 'cli' ? cli : term, 'start').mockImplementation(async () => {
+      entered();
+      await pending;
+    });
+    const orch = createOrchestrator({
+      stateDir: testStateDir, imAdapter: im, termAdapter: term,
+      cliAdapter: cli, state: memState(), aiRouter: null,
+    });
+    const starting = orch.start();
+    await startingPhase;
+    await orch.stop();
+    release();
+    await starting;
+    expect(imStart).not.toHaveBeenCalled();
+    if (phase === 'cli') expect(termStart).not.toHaveBeenCalled();
+  });
+
   it('start() subscribes IM + CLI + Term handlers', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();

@@ -2,11 +2,10 @@
  * Build the user-facing message shown when the state-dir watcher fails and
  * the daemon has to stop.
  *
- * `EMFILE` / `ENOSPC` from a watch call mean the OS-wide file-watch budget is
- * used up by other processes: on macOS fseventsd allows 1024 clients in the
- * whole system and libuv reports a refused `FSEventStreamStart` as `EMFILE`;
- * on Linux the inotify limits report `ENOSPC` / `EMFILE`. For those codes the
- * message names the limit and gives a platform-specific check command.
+ * `EMFILE` can indicate exhausted file descriptors or file-watch resources;
+ * it does not identify which process consumed them. macOS can report it when
+ * FSEvents refuses a client; Linux inotify also has watch and instance limits.
+ * The message gives platform-specific checks before suggesting recovery.
  *
  * @param err - The error chokidar emitted.
  * @param stateDir - Absolute path of the watched state directory.
@@ -28,10 +27,13 @@ export function formatStateWatcherError(
   const lines = [
     `  ✗ cannot watch the state directory ${stateDir}: ${detail}`,
     `    multi-cc-im stopped: without this watcher, cc replies and permission requests cannot reach IM.`,
+    `    multi-cc-im does not stop your Claude Code / Codex sessions or other development processes.`,
   ];
   if (code === 'EMFILE' || code === 'ENOSPC') {
     lines.push(
-      `    The OS file-watch limit is used up by other processes (dev servers such as \`tsx watch\` / vite, editors).`,
+      code === 'EMFILE'
+        ? `    The OS could not allocate file descriptors or file-watch resources. EMFILE alone does not identify the exhausted limit or the process responsible.`
+        : `    The OS file-watch limit has been reached. Check the limit and current usage before changing it.`,
     );
     if (platform === 'darwin') {
       lines.push(
@@ -42,8 +44,11 @@ export function formatStateWatcherError(
         `    Check: sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances`,
       );
     }
+    if (code === 'EMFILE') {
+      lines.push(`    Check open-file limits: ulimit -n (the daemon's effective limit can differ from this shell).`);
+    }
     lines.push(
-      `    Fix: stop watchers you don't need (or reboot), then run \`multi-cc-im start\` again.`,
+      `    Fix: review watcher/open-file usage (for example \`tsx watch\`, vite, or editors). Close only processes you no longer need, or adjust the confirmed configurable limit, then run \`multi-cc-im start\` again.`,
     );
   } else {
     lines.push(`    Fix the error above, then run \`multi-cc-im start\` again.`);

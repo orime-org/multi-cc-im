@@ -783,10 +783,21 @@ export async function runStartCommand(
     }
   };
 
-  await orchestrator.start();
+  try {
+    await Promise.race([orchestrator.start(), failure]);
+  } catch (err) {
+    // Watch creation and pre-ready errors reject adapter.start(). Keep the
+    // same readable fatal path as asynchronous watcher errors.
+    if (watcherFailure === undefined) throw err;
+  }
   if (watcherFailure !== undefined) {
-    await orchestrator.stop();
-    await closeLogStream();
+    try {
+      await orchestrator.stop();
+    } catch (err) {
+      log(`  ⚠️  cleanup after watcher failure: ${formatErrorWithCause(err)}`);
+    } finally {
+      await closeLogStream();
+    }
     return { exitCode: 1, stderr: watcherFailure };
   }
   log(`  ✓ orchestrator started — bridge running. Ctrl+C to stop.`);
