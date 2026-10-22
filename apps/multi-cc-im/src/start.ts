@@ -19,6 +19,7 @@ import {
   isDaemonAlive,
   readDaemonPidFile,
   writeDaemonPidFile,
+  type CreateCcCliAdapterOpts,
 } from '@multi-cc-im/cli-cc';
 import { createCodexCliAdapter } from '@multi-cc-im/cli-codex';
 import { createConfigStore } from '@multi-cc-im/storage-files';
@@ -81,12 +82,12 @@ export interface RunStartCommandOpts {
   /**
    * Override CLI adapter construction. Default builds the cc or codex
    * state-dir watcher adapter. Tests inject a stub and keep the passed
-   * `onWatcherError` to simulate the watcher failing at startup or while
-   * running.
+   * error callbacks to exercise handler diagnostics and watcher failures.
    */
   buildCliAdapter?: (opts: {
     stateDir: string;
     onWatcherError: (err: unknown) => void;
+    onHandlerError: NonNullable<CreateCcCliAdapterOpts['onHandlerError']>;
   }) => CLIAdapter;
   /**
    * Skip the auto-`setup-hooks` step at the top of `start`. Default `false`:
@@ -719,6 +720,10 @@ export async function runStartCommand(
   };
   const cliAdapterOpts = {
     stateDir: paths.stateDir, onWatcherError,
+    onHandlerError: ((err, context) => {
+      const pane = context.paneId === undefined ? '' : ` paneId=${context.paneId}`;
+      log(`[CLI handler] kind=${context.kind} sessionId=${context.sessionId}${pane}: ${formatErrorWithCause(err)}`);
+    }) satisfies NonNullable<CreateCcCliAdapterOpts['onHandlerError']>,
     nativeQuestions: enabledCLIs.includes('codex') ? {
       terminalId: termId,
       listPanes: () => termAdapter.listPanes(),

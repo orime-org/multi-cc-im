@@ -1,4 +1,4 @@
-import { parseHookPayload, resolveCodexHookOrigin, runHookReceiver, type HookReceiverOutput } from '@multi-cc-im/cli-codex';
+import { parseHookPayload, resolveCodexHookOrigin, resolveCodexSessionName, runHookReceiver, type HookReceiverOutput } from '@multi-cc-im/cli-codex';
 import { createConfigStore } from '@multi-cc-im/storage-files';
 import { createWezTermAdapter, resolveWezTermPath } from '@multi-cc-im/term-wezterm';
 import { createITerm2Adapter, resolvePython3Path } from '@multi-cc-im/term-iterm2';
@@ -6,7 +6,7 @@ import { resolveIterm2HelperPath } from './start.js';
 import { resolveAppPaths, type AppPaths } from './config-paths.js';
 
 /**
- * Dispatch a native hook using the daemon-selected terminal and official title id.
+ * Dispatch native Stop replies by session name and permission hooks by pane origin.
  * @param rawStdin Native hook JSON; SessionStart remains a side-effect-free no-op.
  * @param opts Paths and diagnostics, injectable to avoid real dotfiles in tests.
  * @returns Native hook output, or no opinion when identity cannot be established.
@@ -23,6 +23,12 @@ export async function runCodexHookCommand(rawStdin: string, opts: {
   const config = await createConfigStore({ filePath: paths.configToml }).load();
   if (!config.cli.enabled.includes('codex')) return;
   const terminalId = config.terminal.type;
+  if (payload.hook_event_name === 'Stop') {
+    return runHookReceiver({ stateDir: paths.stateDir, payload,
+      stop: { termId: terminalId,
+        resolveSessionName: threadId => resolveCodexSessionName(threadId, { onError: opts.onError }) },
+    });
+  }
   // Bound only the owned listing subprocess; never signal a user terminal/TUI.
   const term = terminalId === 'wezterm'
     ? createWezTermAdapter({ wezterm: { path: await resolveWezTermPath({ cachedPath: config.external_paths.wezterm }) }, listTimeoutMs: 600 })

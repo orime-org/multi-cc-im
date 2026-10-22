@@ -763,6 +763,33 @@ describe('runStartCommand — state watcher errors', () => {
     expect(lines.some((l) => l.includes('orchestrator started'))).toBe(false);
   });
 
+  it.each(['cc', 'codex'] as const)('logs handler errors from the configured %s adapter startup wiring', async cli => {
+    const { opts } = baseOpts();
+    const lines: string[] = [];
+    let report: import('@multi-cc-im/cli-cc').CreateCcCliAdapterOpts['onHandlerError'];
+    const result = await runStartCommand({
+      ...opts,
+      selectCLIs: stubSelectCLIs([cli]),
+      selectAIRouter: stubSelectAIRouter(cli),
+      buildCliAdapter: adapterOpts => {
+        report = adapterOpts.onHandlerError;
+        return { name: cli, start: async () => {}, stop: async () => {}, enqueueInjection: async () => {} };
+      },
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: line => lines.push(line),
+    });
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(report).toBeTypeOf('function');
+      report!(new Error('Invalid session reply'), { kind: 'SessionReply', sessionId: 'native-thread' });
+      report!('pane failure', { kind: 'Stop', sessionId: 'cc-session', paneId: 'pane-42' });
+      expect(lines).toContain('[CLI handler] kind=SessionReply sessionId=native-thread: Invalid session reply');
+      expect(lines).toContain('[CLI handler] kind=Stop sessionId=cc-session paneId=pane-42: pane failure');
+    } finally {
+      await result.shutdown?.();
+    }
+  });
+
   it('watcher error while running → failure resolves with the readable message', async () => {
     const { fire, opts } = baseOpts();
     const result = await runStartCommand({
