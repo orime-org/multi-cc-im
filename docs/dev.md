@@ -201,8 +201,8 @@ pinned to 0.163.0 and a single shared `CODEX_HOME`; arbitrary home scans are for
 pnpm install
 
 # 2. 全量验证
-pnpm typecheck                       # 8 workspaces tsc --noEmit
-pnpm test                            # 58 文件 / 821 单测
+pnpm typecheck                       # 各 workspace 执行 tsc --noEmit
+pnpm test                            # 全量 Vitest 单元测试
 pnpm test:coverage                   # 同上 + v8 coverage（80% 阈值）
 
 # 3. 构建生产 bundle（hook 冷启动从 ~1s 降到 ~50ms — 实际部署必跑）
