@@ -171,6 +171,13 @@ Codex hook 安装会保留 `hooks.state` 中的信任／禁用状态和第三方
 IM 模式由 `/start`（自动允许）和 `/start off`（询问）控制；Codex 审批回复按原生
 `PermissionRequest` 协议返回单次允许／拒绝，不增加会话级权限规则。
 
+向导 W2 选择 Codex 后，普通消息、权限回复和已有 Claude 提问的自然语言解释都使用
+Codex，无需额外安装 Claude 作为解释后端。每次路由在独立临时目录运行，使用
+`--disable hooks`、`--ephemeral` 和 read-only sandbox；不会修改用户全局配置。
+这与 Codex 自己的 `request_user_input` 提问转发是两件事：后者尚未接入 IM，
+[本机 App Server 方案](docs/superpowers/specs/2026-10-22-codex-question-bridge-dd.md) 已完成通道实测，待架构决定。
+
+
 
 > ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
 >

@@ -3,6 +3,7 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CLIAdapter, IMAdapter } from '@multi-cc-im/shared';
+import * as bridge from '@multi-cc-im/bridge';
 import {
   defaultResolvePython3,
   resolveIterm2HelperPath,
@@ -155,6 +156,34 @@ describe('runStartCommand — pre-flight failures', () => {
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(/wezterm.*not found/i);
+  });
+
+  it.each(['cc', 'codex'] as const)('wires every interpretation path to the selected %s backend', async (backend) => {
+    const factory = vi.spyOn(bridge, 'createOrchestrator').mockReturnValue({ start: async () => {}, stop: async () => {} });
+    try {
+      const result = await runStartCommand({
+        skipSetupHooks: true, root,
+        selectTerminal: stubSelectTerminal(), selectCLIs: stubSelectCLIs([backend]),
+        selectAIRouter: stubSelectAIRouter(backend),
+        setupHooksCodex: async () => ({ changed: false, configPath: '/dev/null' }),
+        resolveWezTerm: async () => '/fixture/wezterm',
+        buildCliAdapter: () => ({ name: 'fixture', start: async () => {}, stop: async () => {}, enqueueInjection: async () => {} }),
+        selectAdapter: stubSelectAdapter(), log: () => {},
+      });
+      try {
+        expect(result.exitCode).toBe(0);
+        const options = factory.mock.calls[0]![0];
+        if (backend === 'codex') {
+          expect(options.aiRouter).toBe(bridge.routeViaCodex);
+          expect(options.aiAskUserQuestionRouter).toBe(bridge.routeAskUserQuestionViaCodex);
+          expect(options.aiPermissionRequestRouter).toBe(bridge.routePermissionRequestViaCodex);
+        } else {
+          expect(options.aiRouter).toBeUndefined();
+          expect(options.aiAskUserQuestionRouter).toBeUndefined();
+          expect(options.aiPermissionRequestRouter).toBeUndefined();
+        }
+      } finally { await result.shutdown?.(); }
+    } finally { factory.mockRestore(); }
   });
 
   it('happy path: returns shutdown handle and starts orchestrator', async () => {

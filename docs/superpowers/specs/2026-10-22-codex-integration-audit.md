@@ -1,7 +1,7 @@
 # Codex integration audit
 
-Date: 2026-10-22. Status: protocol/configuration repair approved and implemented;
-other findings and permission-policy changes remain outside this implementation. Baseline: the current working tree and official
+Date: 2026-10-22. Status: protocol/configuration and selected-backend routing repairs implemented;
+new question transport and permission-policy changes remain outside implementation. Baseline: the current working tree and official
 Codex `rust-v0.163.0` source/schema. No real IM messages were sent and no user
 session was restarted, interrupted, or given a new prompt during this audit.
 
@@ -128,9 +128,9 @@ transport, dependency, approval policy, or cross-package state protocol.
   response handling, missing/subagent metadata, third-party/state preservation,
   backup contents, stable handler positions, and a byte-stable second install.
 
-The routing subprocess trust bypass, implicit Claude dependency, question
-bridge, title normalization, and older restart-warning wording are still
-separate findings. Existing timeout behavior is preserved, not newly selected.
+The routing subprocess trust bypass and implicit Claude dependency were
+subsequently repaired as described below. The question bridge, title
+normalization, and older restart-warning wording remain separate findings. Existing timeout behavior is preserved, not newly selected.
 No user-global settings were rewritten and no real IM messages were sent.
 
 
@@ -143,6 +143,38 @@ bundle builds and `./bin/multi-cc-im --version` loads as 0.2.3. An isolated
 built-CLI smoke passes auto/ask × allow/deny through the downloaded official
 0.163.0 input/output schemas and confirms the old top-level decision is
 rejected. The user's Claude settings compare byte-identical before/after.
+
+## Routing repair after #247
+
+After #247 merged, the user requested continuing the remaining work. W2's
+selected backend now supplies all three orchestrator interpretation callbacks.
+Codex uses the existing question/permission prompts and shared output schemas;
+Claude remains the default only when the user selects cc. No model/approval
+policy or native question answering behavior was changed.
+
+The shared Codex executor uses a fresh temporary cwd, disables hooks with the
+native per-invocation `--disable hooks` flag, retains user model/provider/auth,
+removes terminal-origin environment variables, and cleans per-call files.
+It no longer bypasses hook trust or inherits the daemon project directory.
+Timeout, missing binary, process failure, missing output, malformed output,
+and shared answer validation are covered by executable-fixture tests.
+
+A real Codex 0.163.0 smoke against a localhost fake provider verified a positive
+control (the old trust-bypass invocation executes an inert marker hook), then
+all three corrected routes (valid outputs, marker absent). The provider also
+validated the submitted structured-output schemas against its fixture answers.
+The isolated smoke sends no real model/IM traffic or user configuration writes.
+
+The [question-bridge DD](2026-10-22-codex-question-bridge-dd.md) separately records
+actual two-client native request probes (first answer wins, both clients see
+resolved, disconnect, pending replay, and interruption). Its recommended new
+product transport and authoritative thread/pane registration await a user
+architecture decision. The observational plan panel still never answers.
+
+Verification: typecheck; 1,265 full polling tests with coverage thresholds
+(87.33% lines / 83.07% branches); 89.95% lines / 81.03% branches for the Codex
+router; build + bin version 0.2.3. Native mode still has 10 existing live-event
+failures / 14 EMFILE errors. User Claude settings compared unchanged.
 
 ## Verification required for implementation
 
