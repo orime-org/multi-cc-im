@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CLIAdapter, IMAdapter } from '@multi-cc-im/shared';
+import type { CLIAdapter, IMAdapter, PaneId } from '@multi-cc-im/shared';
 import * as bridge from '@multi-cc-im/bridge';
 import {
   defaultResolvePython3,
@@ -782,7 +782,7 @@ describe('runStartCommand — state watcher errors', () => {
       expect(result.exitCode).toBe(0);
       expect(report).toBeTypeOf('function');
       report!(new Error('Invalid session reply'), { kind: 'SessionReply', sessionId: 'native-thread' });
-      report!('pane failure', { kind: 'Stop', sessionId: 'cc-session', paneId: 'pane-42' });
+      report!('pane failure', { kind: 'Stop', sessionId: 'cc-session', paneId: 'pane-42' as PaneId });
       expect(lines).toContain('[CLI handler] kind=SessionReply sessionId=native-thread: Invalid session reply');
       expect(lines).toContain('[CLI handler] kind=Stop sessionId=cc-session paneId=pane-42: pane failure');
     } finally {
