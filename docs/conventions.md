@@ -18,6 +18,8 @@
 
 ### 修订记录
 
+- 2026-10-22 PR #249 主线同步：#248 已 squash 合并至 main。核对主线文件树与 #249 原基础完全相同后，将 main 合入 #249，解决历史差异引起的 8 处冲突；保留已验收的原生提问、统一线程身份及分诊隔离行为，无产品代码变更；复验 1,313 项测试、覆盖率、typecheck、frozen install、build 与 bin smoke 通过。
+
 - 2026-10-22 Codex 原生提问与官方线程身份：按用户锁定方案，终端暴露原始标题并用当前 loaded IDs 严格唯一匹配；Stop／权限 hook 也改用相同来源，删除继承 pane 环境变量的默认路径。提问经本机 UDS 转发，`/answer`／引用回复返回原生 request；auto 不代答、secret 留终端、断连／切换暂停、迟到回复不生成新任务。安装保留标题项并追加 thread-id、备份、幂等，提示 `/hooks` 与 `/terminal-title` 原生入口。真实双 TUI 共用服务器与真实原生问题／模型输入、产品 IM fixture、全量回归已验收；iTerm2 为真实 Python helper 契约验证，未运行真实 iTerm2 窗口。见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md) 与 [提问 DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)。
 
 

@@ -202,3 +202,12 @@ and 14 EMFILE errors as the clean implementation baseline. No native watcher
 policy was changed. Build/bin and a clean offline production-only deployment
 both loaded version 0.2.3, including the direct ws dependency. Existing Claude
 settings compare byte-for-byte unchanged; AGENTS.md and CLAUDE.md are untouched.
+
+Mainline integration: after #248 was squash-merged as `7b21696`, #249 was
+retargeted to main. The merged main tree equals the original #248 base tree;
+all eight conflicts therefore concern already-incorporated content. Integrating
+main preserves the tested #249 product tree exactly, including native question
+identity, hook origin and mixed-CLI routing tests. No protocol or architecture
+decision changed. Revalidation passed: 1,313 tests with test-only polling,
+87.96% line / 83.50% branch coverage, typecheck, frozen install, build and bin
+smoke (0.2.3). Claude settings remain byte-for-byte unchanged.
