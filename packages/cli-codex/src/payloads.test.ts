@@ -178,6 +178,20 @@ describe('PermissionRequestPayloadSchema', () => {
   });
 });
 
+describe.each([PRE_TOOL_USE, PERMISSION_REQUEST])('$hook_event_name optional agent context', (payload) => {
+  it('accepts a main-session payload with absent agent fields', () => {
+    const { agent_id: _id, agent_type: _type, ...mainSession } = payload;
+    const parsed = parseHookPayload(JSON.stringify(mainSession));
+    expect(parsed).toEqual(mainSession);
+  });
+
+  it('preserves subagent context and rejects invalid agent types', () => {
+    const subagent = { ...payload, agent_id: 'agent-1', agent_type: 'reviewer' };
+    expect(parseHookPayload(JSON.stringify(subagent))).toEqual(subagent);
+    expect(() => parseHookPayload(JSON.stringify({ ...payload, agent_id: 42 }))).toThrow();
+  });
+});
+
 describe('StopPayloadSchema', () => {
   it('accepts the source-verified shape verbatim', () => {
     const parsed = StopPayloadSchema.parse(STOP);

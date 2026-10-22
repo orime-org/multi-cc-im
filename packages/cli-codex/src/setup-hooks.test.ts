@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse as parseToml } from 'smol-toml';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import {
   runCodexSetupHooks,
-  pruneExistingHooks,
+  mergeCodexHooks,
   buildMultiCcImHookGroups,
   defaultCodexConfigPath,
   WARN_CODEX_RESTART_LINE,
@@ -73,56 +73,40 @@ describe('buildMultiCcImHookGroups', () => {
   });
 });
 
-describe('pruneExistingHooks', () => {
-  it('returns empty for non-object input', () => {
-    expect(pruneExistingHooks(null)).toEqual({ hooks: {}, removed: 0 });
-    expect(pruneExistingHooks('string' as unknown)).toEqual({ hooks: {}, removed: 0 });
+describe('mergeCodexHooks', () => {
+  it('treats missing or non-table input as an empty hooks table', () => {
+    expect(mergeCodexHooks(null, {})).toEqual({});
+    expect(mergeCodexHooks('invalid', {})).toEqual({});
   });
 
-  it('removes only multi-cc-im-tagged entries; keeps user entries', () => {
+  it('preserves state, group metadata, and complete third-party definitions without moving entries', () => {
     const input = {
-      Stop: [
-        {
-          hooks: [
-            { type: 'command', command: 'echo ours', statusMessage: 'multi-cc-im hook (Stop)' },
-            { type: 'command', command: 'echo user', statusMessage: 'user-tool' },
-          ],
-        },
-      ],
+      state: { 'config:PreToolUse:0:1': { enabled: false, trusted_hash: 'reviewed-hash' } },
+      PreToolUse: [{
+        matcher: 'Bash',
+        description: 'User-owned group metadata',
+        hooks: [
+          { type: 'command', command: 'audit', async: true, additionalContextLimit: 4096 },
+          { type: 'prompt', prompt: 'Review', custom: { enabled: true } },
+          { type: 'command', command: 'old', statusMessage: 'multi-cc-im hook (PreToolUse)' },
+        ],
+      }],
+      FutureEvent: [{ custom: true }],
+      EmptyEvent: [],
     };
-    const { hooks, removed } = pruneExistingHooks(input);
-    expect(removed).toBe(1);
-    expect(hooks['Stop']?.[0]?.hooks).toEqual([
-      { type: 'command', command: 'echo user', statusMessage: 'user-tool' },
-    ]);
+    const before = structuredClone(input);
+    const desired = buildMultiCcImHookGroups(BIN, 600)['PreToolUse']!;
+    expect(mergeCodexHooks(input, { PreToolUse: desired })).toEqual({
+      ...before,
+      PreToolUse: [{ ...before.PreToolUse[0], hooks: [...before.PreToolUse[0]!.hooks.slice(0, 2), desired[0]!.hooks[0]] }],
+    });
+    expect(input).toEqual(before);
   });
 
-  it('drops an event entirely when all its entries were ours', () => {
-    const input = {
-      Stop: [
-        {
-          hooks: [
-            { type: 'command', command: 'x', statusMessage: 'multi-cc-im hook (Stop)' },
-          ],
-        },
-      ],
-    };
-    const { hooks, removed } = pruneExistingHooks(input);
-    expect(removed).toBe(1);
-    expect(hooks['Stop']).toBeUndefined();
-  });
-
-  it('preserves matcher on kept groups', () => {
-    const input = {
-      PreToolUse: [
-        {
-          matcher: 'Bash',
-          hooks: [{ type: 'command', command: 'user-bash-hook', statusMessage: 'user' }],
-        },
-      ],
-    };
-    const { hooks } = pruneExistingHooks(input);
-    expect(hooks['PreToolUse']?.[0]?.matcher).toBe('Bash');
+  it('appends missing handlers without claiming a third-party status mentioning multi-cc-im', () => {
+    const input = { Stop: [{ hooks: [{ type: 'command', command: 'notify', statusMessage: 'Notify multi-cc-im observer' }] }] };
+    const desired = buildMultiCcImHookGroups(BIN, 600)['Stop']!;
+    expect(mergeCodexHooks(input, { Stop: desired })).toEqual({ Stop: [...input.Stop, ...desired] });
   });
 });
 
@@ -210,6 +194,62 @@ statusMessage = "user-tool"
     const raw = await readFile(configPath, 'utf8');
     expect(raw).toContain('user-bash-hook');
     expect(raw).toContain('multi-cc-im hook');
+  });
+
+  it('preserves trust/disabled state and third-party fields through installation and a byte-stable rerun', async () => {
+    const configPath = join(sandboxRoot, 'config.toml');
+    const existing = {
+      approval_policy: 'on-request',
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'user-audit', async: true, additionalContextLimit: 4096 }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'old', statusMessage: 'multi-cc-im hook (Stop)' }] }],
+        state: {
+          'user-audit': { enabled: false, trusted_hash: 'reviewed-user-hash' },
+          'bridge-stop': { enabled: true, trusted_hash: 'reviewed-bridge-hash' },
+        },
+      },
+    };
+    const original = stringifyToml(existing);
+    await writeFile(configPath, original);
+    const first = await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    expect(first.changed).toBe(true);
+    expect(first.handlerCount).toBe(5);
+    expect(await readFile(first.backupPath!, 'utf8')).toBe(original);
+    const installed = await readFile(configPath, 'utf8');
+    const parsed = parseToml(installed) as Record<string, unknown>;
+    expect(parsed['approval_policy']).toBe('on-request');
+    expect(parsed['hooks']).toMatchObject({
+      state: existing.hooks.state,
+      PreToolUse: [existing.hooks.PreToolUse[0], ...buildMultiCcImHookGroups(BIN, 600)['PreToolUse']!],
+    });
+    const second = await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    expect(second.changed).toBe(false);
+    expect(second.backupPath).toBeUndefined();
+    expect(await readFile(configPath, 'utf8')).toBe(installed);
+    expect((await readdir(sandboxRoot)).filter(name => name.includes('.bak.'))).toHaveLength(1);
+  });
+
+  it('updates owned handlers in place so positional trust/disabled keys keep their meaning', async () => {
+    const configPath = join(sandboxRoot, 'config.toml');
+    const firstUser = { type: 'command', command: 'audit-one', async: true };
+    const secondUser = { type: 'command', command: 'audit-two', additionalContextLimit: 2048 };
+    const state = { 'position-0-1': { enabled: false, trusted_hash: 'user-one' }, 'position-1-0': { enabled: true, trusted_hash: 'user-two' } };
+    const config = { hooks: {
+      Stop: [
+        { hooks: [{ type: 'command', command: 'old', statusMessage: 'multi-cc-im hook (Stop)' }, firstUser] },
+        { hooks: [secondUser] },
+      ],
+      state,
+    } };
+    await writeFile(configPath, stringifyToml(config));
+    await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    const parsed = parseToml(await readFile(configPath, 'utf8')) as unknown as { hooks: { Stop: { hooks: unknown[] }[]; state: unknown } };
+    expect(parsed.hooks.Stop).toHaveLength(2);
+    expect(parsed.hooks.Stop[0]!.hooks[0]).toEqual(buildMultiCcImHookGroups(BIN, 600)['Stop']![0]!.hooks[0]);
+    expect(parsed.hooks.Stop[0]!.hooks[1]).toEqual(firstUser);
+    expect(parsed.hooks.Stop[1]!.hooks[0]).toEqual(secondUser);
+    expect(parsed.hooks.state).toEqual(state);
+    expect((await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot })).changed).toBe(false);
   });
 
   it('honors custom timeoutSec on all handlers', async () => {

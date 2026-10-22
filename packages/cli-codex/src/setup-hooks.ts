@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
 /**
@@ -44,9 +45,9 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
  *   });
  */
 
-const HOOK_TAG = 'multi-cc-im';
 const STATUS_MSG = 'multi-cc-im hook';
 
+/** Command handler generated and owned by the multi-cc-im installer. */
 export interface CodexHookEntry {
   type: 'command';
   command: string;
@@ -54,12 +55,17 @@ export interface CodexHookEntry {
   statusMessage?: string;
 }
 
+/** Matcher group generated for a subscribed event. */
 export interface CodexHookGroup {
   matcher?: string;
   hooks: CodexHookEntry[];
 }
 
+/** Event-only map of generated handlers, excluding user hook state. */
 export type CodexHooksMap = Record<string, CodexHookGroup[]>;
+
+/** Complete hooks table; unowned data must survive installation unchanged. */
+export type CodexHooksConfig = Record<string, unknown>;
 
 export interface RunCodexSetupHooksOpts {
   /** Absolute path to the multi-cc-im binary the hook subprocess invokes. */
@@ -126,62 +132,8 @@ async function atomicWrite(filePath: string, content: string): Promise<void> {
   await rename(tmp, filePath);
 }
 
-/**
- * Strip any `[[hooks.<Event>.hooks]]` entry the daemon previously
- * installed (identified by `statusMessage` containing the HOOK_TAG).
- * Returns the cleaned hooks map plus a removed-count for the installer
- * log. Leaves user-authored entries untouched (entries without the tag).
- */
-export function pruneExistingHooks(rawHooks: unknown): {
-  hooks: CodexHooksMap;
-  removed: number;
-} {
-  if (rawHooks === null || typeof rawHooks !== 'object') {
-    return { hooks: {}, removed: 0 };
-  }
-  const out: CodexHooksMap = {};
-  let removed = 0;
-  for (const [event, groupsRaw] of Object.entries(rawHooks as Record<string, unknown>)) {
-    if (!Array.isArray(groupsRaw)) continue;
-    const groups: CodexHookGroup[] = [];
-    for (const grpRaw of groupsRaw) {
-      if (grpRaw === null || typeof grpRaw !== 'object') continue;
-      const grp = grpRaw as { matcher?: unknown; hooks?: unknown };
-      const handlersRaw = grp.hooks;
-      if (!Array.isArray(handlersRaw)) continue;
-      const kept: CodexHookEntry[] = [];
-      for (const h of handlersRaw) {
-        if (h === null || typeof h !== 'object') continue;
-        const handler = h as Partial<CodexHookEntry>;
-        const isOurs =
-          typeof handler.statusMessage === 'string' &&
-          handler.statusMessage.includes(HOOK_TAG);
-        if (isOurs) {
-          removed += 1;
-        } else if (handler.type === 'command' && typeof handler.command === 'string') {
-          kept.push({
-            type: 'command',
-            command: handler.command,
-            ...(typeof handler.timeout === 'number' ? { timeout: handler.timeout } : {}),
-            ...(typeof handler.statusMessage === 'string'
-              ? { statusMessage: handler.statusMessage }
-              : {}),
-          });
-        }
-      }
-      if (kept.length > 0) {
-        const matcher = typeof grp.matcher === 'string' ? grp.matcher : undefined;
-        groups.push({
-          ...(matcher !== undefined ? { matcher } : {}),
-          hooks: kept,
-        });
-      }
-    }
-    if (groups.length > 0) {
-      out[event] = groups;
-    }
-  }
-  return { hooks: out, removed };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -208,29 +160,50 @@ export function buildMultiCcImHookGroups(
   };
 }
 
-function mergeHooks(existing: CodexHooksMap, ours: CodexHooksMap): CodexHooksMap {
-  const out: CodexHooksMap = { ...existing };
-  for (const [event, groups] of Object.entries(ours)) {
-    out[event] = [...(existing[event] ?? []), ...groups];
+/**
+ * Update installer-owned handlers in place and append only missing events.
+ * Codex trust keys include group/handler positions, so neither users' handlers
+ * nor existing generated handlers may move. Exposed for isolated merge tests.
+ * @param rawHooks Complete parsed hooks table, including persisted state.
+ * @param generated Event handlers produced by this installer.
+ * @returns A new table preserving unowned data and all existing positions.
+ * @example
+ * const hooks = mergeCodexHooks(parsed.hooks, buildMultiCcImHookGroups(path, 600));
+ */
+export function mergeCodexHooks(rawHooks: unknown, generated: CodexHooksMap): CodexHooksConfig {
+  const existing = isRecord(rawHooks) ? rawHooks : {};
+  const out: CodexHooksConfig = { ...existing };
+  for (const [event, generatedGroups] of Object.entries(generated)) {
+    const desired = generatedGroups[0]?.hooks[0];
+    if (!desired) continue;
+    let found = false;
+    const current = existing[event];
+    const groups: unknown[] = Array.isArray(current) ? current : [];
+    const updated = groups.map(group => {
+      if (!isRecord(group) || !Array.isArray(group['hooks'])) return group;
+      const handlers: unknown[] = group['hooks'];
+      return { ...group, hooks: handlers.map(handler => {
+        if (isRecord(handler) && handler['statusMessage'] === desired.statusMessage) {
+          found = true;
+          return desired;
+        }
+        return handler;
+      }) };
+    });
+    out[event] = found ? updated : [...updated, ...generatedGroups];
   }
   return out;
 }
 
-function countHandlers(hooks: CodexHooksMap): number {
-  let n = 0;
+function countHandlers(hooks: CodexHooksConfig): number {
+  let count = 0;
   for (const groups of Object.values(hooks)) {
-    for (const g of groups) n += g.hooks.length;
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      if (isRecord(group) && Array.isArray(group['hooks'])) count += group['hooks'].length;
+    }
   }
-  return n;
-}
-
-/**
- * Compare two hooks maps for installer idempotency. JSON.stringify
- * round-trip is sufficient: TOML round-tripping the same content via
- * smol-toml is byte-stable for the subset of TOML we write.
- */
-function hooksMapsEqual(a: CodexHooksMap, b: CodexHooksMap): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return count;
 }
 
 /**
@@ -279,21 +252,14 @@ export async function runCodexSetupHooks(
       ? (existingConfig['hooks'] as Record<string, unknown>)
       : {};
 
-  const { hooks: cleanedHooks, removed } = pruneExistingHooks(existingHooksRaw);
-  if (removed > 0) {
-    log(`  - pruned ${removed} pre-existing multi-cc-im handler(s) for re-install`);
-  }
+  const merged = mergeCodexHooks(
+    existingHooksRaw,
+    buildMultiCcImHookGroups(opts.binaryPath, timeoutSec),
+  );
 
-  const ours = buildMultiCcImHookGroups(opts.binaryPath, timeoutSec);
-  const merged = mergeHooks(cleanedHooks, ours);
-
-  // Idempotency check: compare the merged result (`merged`) against the
-  // hooks block we would have produced from a no-op pass (the `cleanedHooks`
-  // alone is wrong — that omits ours; we want `merged === existingHooks`
-  // up to the parts we own). Equivalent test: are `existingHooks` minus
-  // our own entries the same as cleaned, AND does merged equal what was
-  // already there?
-  const alreadyInstalled = hooksMapsEqual(existingHooksRaw as CodexHooksMap, merged);
+  // TOML can reorder tables. Structural equality avoids rewriting reviewed
+  // config merely because object keys have a different insertion order.
+  const alreadyInstalled = isDeepStrictEqual(existingHooksRaw, merged);
 
   // UX防呆: codex unlike cc does NOT hot-reload its hooks config. Per
   // [[reference_codex_hook_no_hot_reload_cc_does]] — cc has a file
@@ -340,7 +306,7 @@ export async function runCodexSetupHooks(
   const out = stringifyToml(nextConfig);
   await atomicWrite(configPath, out);
 
-  log(`  ✓ wrote ${countHandlers(merged)} handlers across ${Object.keys(merged).length} events.`);
+  log(`  ✓ wrote ${countHandlers(merged)} handlers across ${Object.values(merged).filter(Array.isArray).length} events.`);
   log(WARN_CODEX_RESTART_LINE);
 
   return {

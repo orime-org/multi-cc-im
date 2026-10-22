@@ -74,16 +74,9 @@ import {
  *   `{hookSpecificOutput: {permissionDecision: 'allow'|'deny',
  *    permissionDecisionReason?: string, updatedInput?: {...}}}`.
  * - PermissionRequest branch returns
- *   `{decision: {behavior: 'allow'|'deny', message?: string}}`.
+ *   `{hookSpecificOutput: {hookEventName: 'PermissionRequest',
+ *    decision: {behavior: 'allow'|'deny', message?: string}}}`.
  *
- * **Incremental rollout note (2026-05-22)**: this commit lands the
- * full Stop + SessionStart paths and the dispatch frame for
- * PreToolUse / PermissionRequest. The latter two currently silent-exit
- * — codex falls through to its native TUI approval, preserving the
- * user's ability to use codex normally while multi-cc-im learns
- * codex's response shape via real-account smoke. The next commit on
- * this same branch wires IM forward + poll for those two events,
- * fully replacing native TUI approval with IM-side cards.
  */
 
 /**
@@ -121,13 +114,16 @@ export type PreToolUseHookOutput = {
 
 /**
  * PermissionRequest stdout shape per codex docs (event
- * "PermissionRequest"). `decision.behavior` is the codex spec — distinct
- * from cc which uses `permissionDecision`. Either `allow` or `deny`.
+ * "PermissionRequest"). The event-specific decision must be nested under
+ * `hookSpecificOutput` and tagged with its event name.
  */
 export type PermissionRequestHookOutput = {
-  decision: {
-    behavior: 'allow' | 'deny';
-    message?: string;
+  hookSpecificOutput: {
+    hookEventName: 'PermissionRequest';
+    decision: {
+      behavior: 'allow' | 'deny';
+      message?: string;
+    };
   };
 };
 
@@ -423,8 +419,7 @@ interface HandlePermissionRequestOpts {
 /**
  * PermissionRequest — codex-native escalation dialog. Mirrors cli-cc
  * PermissionRequest dispatch but emits codex's stdout shape:
- * `{decision: {behavior: 'allow'|'deny', message?}}` (cc uses
- * `hookSpecificOutput: {decision: ...}` — extra wrapper level).
+ * `{hookSpecificOutput: {hookEventName: 'PermissionRequest', decision: ...}}`.
  *
  * Gate sequence identical to PreToolUse (IMWork / IMOrigin /
  * daemon-alive). Forwards via the `PermissionDialogRequest` /
@@ -494,15 +489,21 @@ async function handlePermissionRequest(
         if (resp && resp.requestId === requestId) {
           if (resp.decision.behavior === 'allow') {
             hookOutput = {
-              decision: { behavior: 'allow' },
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: { behavior: 'allow' },
+              },
             };
           } else {
             hookOutput = {
-              decision: {
-                behavior: 'deny',
-                ...(resp.decision.message !== undefined
-                  ? { message: resp.decision.message }
-                  : {}),
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: {
+                  behavior: 'deny',
+                  ...(resp.decision.message !== undefined
+                    ? { message: resp.decision.message }
+                    : {}),
+                },
               },
             };
           }
@@ -526,7 +527,10 @@ async function handlePermissionRequest(
   // suggestions so codex proceeds with the tool but no session rule).
   trace(`PermissionRequest timeout (${timeoutMs}ms): default-allow`);
   return {
-    decision: { behavior: 'allow' },
+    hookSpecificOutput: {
+      hookEventName: 'PermissionRequest',
+      decision: { behavior: 'allow' },
+    },
   };
 }
 

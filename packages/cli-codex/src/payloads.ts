@@ -27,8 +27,8 @@ import { z } from 'zod';
  * - `session_id` is a plain string (codex ThreadId), not a UUID v4 (cc rule).
  * - `transcript_path` is `string | null` (codex NullableString), not a
  *   required string (cc rule).
- * - PreToolUse + PermissionRequest carry `agent_id` / `agent_type`
- *   (empty strings outside subagent context); cc has no subagent concept.
+ * - PreToolUse + PermissionRequest optionally carry `agent_id` / `agent_type`;
+ *   the main session may omit them (verified against Codex 0.163.0 schemas).
  * - PreToolUse / PermissionRequest / Stop carry a `turn_id` codex
  *   extension that cc has no equivalent for; multi-cc-im uses it for
  *   per-turn debug log correlation but not for routing decisions.
@@ -84,8 +84,8 @@ export const PreToolUsePayloadSchema = z.object({
   ...baseCodexPayload,
   hook_event_name: z.literal('PreToolUse'),
   turn_id: z.string().min(1),
-  agent_id: z.string(),
-  agent_type: z.string(),
+  agent_id: z.string().optional(),
+  agent_type: z.string().optional(),
   tool_name: z.string().min(1),
   tool_input: z.unknown(),
   tool_use_id: z.string().min(1),
@@ -102,8 +102,8 @@ export const PermissionRequestPayloadSchema = z.object({
   ...baseCodexPayload,
   hook_event_name: z.literal('PermissionRequest'),
   turn_id: z.string().min(1),
-  agent_id: z.string(),
-  agent_type: z.string(),
+  agent_id: z.string().optional(),
+  agent_type: z.string().optional(),
   tool_name: z.string().min(1),
   tool_input: z.unknown(),
 });

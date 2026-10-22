@@ -1,6 +1,6 @@
 # 架构与数据存储
 
-> CLAUDE.md 的硬约束补充。本文记录架构图、包依赖、目录结构、数据存储 schema、关键数据流、外部 CLI 工具路径策略。任何与 CLAUDE.md「核心约束」「关键规范」冲突的实现 = 违规，回 CLAUDE.md 处置。
+> AGENTS.md 的硬约束补充。本文记录架构图、包依赖、目录结构、数据存储 schema、关键数据流、外部 CLI 工具路径策略。任何与 AGENTS.md「核心约束」「关键规范」冲突的实现 = 违规，回 AGENTS.md 处置。
 >
 > **版本状态**：本文反映 **v0.1.0** (2026-05-14) — iTerm2 第二终端落地 + 真账号 smoke 暴露的根因修。当前状态总表 + 完整修订记录见 [`conventions.md`](conventions.md)。
 
@@ -46,12 +46,33 @@
                             (iterm2)
 ```
 
-**核心约束实现**（CLAUDE.md「不破坏现有 cc 进程」）：
+**核心约束实现**（AGENTS.md「不破坏现有 cc 进程」）：
 - bridge 不 spawn 用户 cc；cc 继续在用户 WezTerm tab / iTerm2 tab 里以 TUI 形式跑
 - bridge 只通过 (a) cc 原生 hook 事件（出站 + permission gate） + (b) 终端的 send-text 子命令（wezterm cli / iTerm2 Python API） 跟 cc 通信
 - **唯一例外**：daemon 自起一次性 `claude --print` 子进程做 IM 路由 triage（[DD: AI-routed IM dispatch](superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)），独立 session、headless、`--disable-slash-commands`、不沾用户 tab
 
+### Codex hook 协议与配置保留
+
+`cli-codex/setup-hooks.ts` 将完整 hooks 配置与生成的事件列表分开处理：
+按精确 `statusMessage` 标识原位置更新自身 handler，仅追加缺失事件，保留 `hooks.state`、未知字段、
+第三方 handler/group 及所有既有位置（Codex 状态 key 包含 group/handler index）；
+结构相等即跳过备份和写入。内容变化仍由 Codex 原生信任校验处理。
+
+`PreToolUse` / `PermissionRequest` 的 agent 字段可省略，主会话因此可直接进入处理。
+`PermissionDialogResponse` 的单次 allow/deny 结果输出为
+`hookSpecificOutput: {hookEventName: "PermissionRequest", decision: {...}}`；
+允许、拒绝、超时三条路径均使用此结构。原有 IMWork auto/ask、gate、清理和超时策略保持原设计。
+
 ## 包依赖方向
+
+开发用 Codex 任务面板独立于 bridge：本机 App Server 的 `turn/plan/updated`
+→ `scripts/task-panel-events.mjs`（Unix socket / ws + zod）
+→ `$CODEX_HOME/task-panel/<thread-id>.json` → Python 下方终端 pane。
+显示缓存原子替换 / 0600，按 thread 隔离；每秒读取，无文件监听器。
+观察连接只附加已加载线程，断连后重试；不启动回合、不发送用户输入、不答审批、
+不接管 TUI，不增加任何外部服务请求。重开面板先读缓存并标记为保存的清单。
+原来的任务 hook 已移除，全局 hook 配置不变，操作见
+[开发指南](dev.md#codex-terminal-task-panel)。
 
 ```
 shared（接口类型 + zod schema，零运行时依赖）
@@ -82,6 +103,8 @@ files                                                    ↑
 
 ```
 multi-cc-im/
+├── AGENTS.md                  # Shared project rules for Codex and Claude Code
+├── CLAUDE.md                  # Claude Code entry importing @AGENTS.md
 ├── apps/
 │   └── multi-cc-im/             # CLI binary
 │       ├── src/                 # cli.ts / start.ts / hook.ts / config-paths.ts /
@@ -102,6 +125,7 @@ multi-cc-im/
 │   └── bridge/                  # orchestrator + router (4 级 fallback) + matcher +
 │                                #   ai-router（IM 自然语言 → 路由决策）+ parser
 ├── docs/
+│   ├── agent-context.md         # Memory discovery + dated handoff + host workflows
 │   ├── architecture.md          # 本文
 │   ├── conventions.md           # 状态总表 + 修订记录 + 项目特定技术规范
 │   ├── competitors.md           # 不直接采用的端到端项目（决策记录）
@@ -303,7 +327,7 @@ daemon reaper：每个 chokidar add(PermissionRequest) 都 schedule 一个 `setT
 
 ## PaneOrigin / TerminalId 端到端传递（issue 378 根因 framing）
 
-**事实信息**（来自哪个终端）必须随 payload 端到端流动，**不许**下游用 `typeof paneId` 反推（数字 = wezterm？UUID = iterm2？—— 这种 hack 加任何新终端就撞）。详见 [memory: feedback_carry_facts_dont_infer](.claude/projects/.../memory/feedback_carry_facts_dont_infer.md)。
+**事实信息**（来自哪个终端）必须随 payload 端到端流动，**不许**下游用 `typeof paneId` 反推（数字 = wezterm？UUID = iterm2？—— 这种 hack 加任何新终端就撞）。详见 [memory: feedback_carry_facts_dont_infer](agent-context.md#claude-code-memories)。
 
 ```
 cc hook 子进程入口
@@ -471,7 +495,7 @@ daemon SIGKILL (kill -9 / OOM):
 4. trimmed === startedAt → alive；不等 → false
 ```
 
-**为什么 pin LC_TIME=C**：`ps -o lstart=` 输出是 locale-dependent。daemon 写盘时用 user shell locale（en_US: `Thu May 14...`），cc spawn 的 hook 子进程 env 里 LC_TIME 可能不同（zh_CN: `四 5月/14...`），字符串比较失败 → silent skip → cc 回复永远到不了 IM。pin C 让两侧确定性匹配。详见 [memory: feedback_lc_time_pin_when_persisting_ps](.claude/projects/.../memory/feedback_lc_time_pin_when_persisting_ps.md)。
+**为什么 pin LC_TIME=C**：`ps -o lstart=` 输出是 locale-dependent。daemon 写盘时用 user shell locale（en_US: `Thu May 14...`），cc spawn 的 hook 子进程 env 里 LC_TIME 可能不同（zh_CN: `四 5月/14...`），字符串比较失败 → silent skip → cc 回复永远到不了 IM。pin C 让两侧确定性匹配。详见 [memory: feedback_lc_time_pin_when_persisting_ps](agent-context.md#claude-code-memories)。
 
 `multi-cc-im cleanup` 命令也走同样的 sweep，**安全跑在 daemon 跑着的状态下** —— 当时 daemon.pid 是合法的，sweep 不删它。
 

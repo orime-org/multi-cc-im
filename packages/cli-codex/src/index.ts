@@ -55,7 +55,7 @@ export type {
 export {
   runCodexSetupHooks,
   defaultCodexConfigPath,
-  pruneExistingHooks,
+  mergeCodexHooks,
   buildMultiCcImHookGroups,
   WARN_CODEX_RESTART_LINE,
 } from './setup-hooks.js';
@@ -65,6 +65,7 @@ export type {
   CodexHookEntry,
   CodexHookGroup,
   CodexHooksMap,
+  CodexHooksConfig,
 } from './setup-hooks.js';
 
 // Daemon-side CLIAdapter — thin re-export wrapper over cli-cc's

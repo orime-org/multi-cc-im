@@ -23,6 +23,12 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)
+      ws:
+        specifier: 8.20.0
+        version: 8.20.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   apps/multi-cc-im:
     dependencies:

@@ -1,11 +1,12 @@
 # 项目技术规范与状态
 
-> 本文是 [`CLAUDE.md`](../CLAUDE.md) 的技术补充。
+> 本文是 [`AGENTS.md`](../AGENTS.md) 的技术补充。
 >
-> - **CLAUDE.md** = AI 干活纪律（找根因 / DD 流程 / 编码行为准则 / 通用工程规范）
+> - **CLAUDE.md** = Claude Code 入口，通过 `@AGENTS.md` 导入共同规则
+> - **AGENTS.md** = AI 干活纪律（找根因 / DD 流程 / 编码行为准则 / 通用工程规范）
 > - **本文（conventions.md）** = 项目特定的技术实现规范、状态总表、修订记录、参考资料
 >
-> CLAUDE.md 没有的项目特定规则（hook timeout / send-text 两步法 / 路由 key 选择 / 禁止 `#$<paneId>` / etc.）都在本文。CLAUDE.md 引用本文为「依赖文档」。
+> AGENTS.md 没有的项目特定规则（hook timeout / send-text 两步法 / 路由 key 选择 / 禁止 `#$<paneId>` / etc.）都在本文。AGENTS.md 引用本文为「依赖文档」。
 
 ---
 
@@ -16,6 +17,11 @@
 > **状态**：v1.12 P1-P7 主线落地（2026-05-13）—— [v1.12 PermissionRequest hook IM bridge DD](superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md) 9 维度全 user-locked + 实施完成。订阅 cc 内部 `PermissionRequest` hook event 把 `.claude/* / .git/* / .env*` 等 cc hard-coded sensitive path TUI dialog forward 到 IM。`/start auto` 自动 allow 一次 + IM 发审计提示 (D2-A + D5-B 单次允许不偷写 session rule)；`/start off` 把 cc's `permission_suggestions` 渲染成 numbered options forward IM (D3-A + D4)，user 在 IM 选 1 (single-yes) / N+1 (始终允许...) / N+2 (拒绝) — 选始终允许时 daemon 解析 cc 自己提供的 PermissionUpdate 写回 `decision.updatedPermissions` 注入 `alwaysAllowRules.session` (D6-A 只能选 cc 给的，不许 AI 自创)。**真账号 smoke + P8/P9 docs 本 PR 落地**。v1.9 D5-D 重构落地（2026-05-12）—— [v1.9 AskUserQuestion IM bridge DD §9](superpowers/specs/2026-05-12-askuserquestion-im-bridge-dd.md#9-revision-d5-retracted--allow--updatedinputanswers-is-the-correct-channel) R1-R10 单 PR 完成：D5 通道由 `deny + reason` 改为 `allow + updatedInput.answers`（官方 [agent-sdk/user-input docs](https://code.claude.com/docs/en/agent-sdk/user-input#handle-clarifying-questions) documented 路径）。hook 写 `{permissionDecision: 'allow', updatedInput: {questions, answers}}`，daemon 查 `options[index-1].label` 组装 answers map（option/multi-select/text 三态），timeout 110s 后 hook 自构造空字符 answers；timeouts 同步缩到 110s hook / 120s matcher / 130s reaper；late-reply hook 已退情况 IM 提示「⏱ cc 已超时，本轮不再等待」。原 v1.10 force-deny override + v1.11 reaper 30s bump 一并清理。v1.9 P1-P4 + P6 原方案已主线落地（PR #131-#135 + #139/#140 v1.10/v1.11 polish）。原方案 user-locked D1-D4 + D6 不变（IMWork on 总 forward、hook hold、numbered IM 格式、AI 自然语言分诊、free text 支持）。v1.8 全实施完成（2026-05-12）—— 路由前缀 `@` → `#` 硬切换（[DD 2026-05-12](superpowers/specs/2026-05-12-routing-symbol-change-dd.md)）：飞书 (以及多数现代 IM) 把 `@` 字符在客户端层 rewrite 为 mention object，bridge parser 拿不到字面 `@<tab>` 字符串；改用 `#` 后零 IM 层 rewrite、跟 Slack/Discord/IRC channel 约定一致、各端键盘易输入。Hard cutover 无 compat / dual-syntax / escape。v1.7 全实施完成（2026-05-11）—— v1.6 wizard + DD #86 §11.4 全 milestones 之上接续完成 [v1.7 natural-language IM permission replies](superpowers/specs/2026-05-11-im-permission-natural-language-dd.md) P1-P6。**M5 interactive cards ❌ 已取消**（2026-05-11，DD #86 §11.5）。当前 packages：shared / storage-files / im-lark / term-wezterm / cli-cc / bridge。架构 → [`architecture.md`](architecture.md)；DD → [`superpowers/specs/`](superpowers/specs/)；用户上手 → [`../README.md`](../README.md) Quick Start；开发命令 → [`dev.md`](dev.md)。Follow-up：Lark intl WSClient 真账号 smoke / 后续 tg IM adapter / analytics package / **v1.9 AskUserQuestion IM bridge P5 真账号 smoke pending**（P1-P4 + P6 已合并主线，C2 keystone 风险待 user 真账号验证：cc 是否真把 deny+reason 当 user answer 解读 / AI prompt 对实际 widget 内容是否能正确匹配 option label / 自然语言回复在 v1.7 ai-router infrastructure 上下文是否稳定）。**Lark group-chat 支持 ❌ 永久不做**（[DD 2026-05-12](superpowers/specs/2026-05-12-lark-group-chat-support-dd.md) D1-1 锁定：privacy creep / state 复杂度 / scope drift / owner-only ACL 脆弱 / 个人 use case 没真实需求 — 详见 DD §6.x）。**Lark audio msg 处理 ❌ 永久不做**（[DD 2026-05-12](superpowers/specs/2026-05-12-lark-audio-msg-handling-dd.md) D1-1 锁定：飞书手机键盘 🎤 已是 system-level STT，99% 真实使用走 text 即可；adapter 收到 audio msg 改回友好提示「请用键盘麦克风转文字」替代之前 silent drop）。
 
 ### 修订记录
+
+- 2026-10-22 Codex 协议与配置保留修复（用户认可审计建议后实施）：`PermissionRequest` allow/deny/timeout 全部改为官方 `hookSpecificOutput` 包装；agent 字段按官方可选字段接收。hook 安装在原位置更新自身 handler，仅追加缺失事件，保留信任／禁用状态、位置对应关系及第三方完整配置，结构比较保证重复安装不写文件。沿用既有 auto/ask 和超时策略；路由隔离、Claude 隐式依赖、提问转发仍待处理。见 [审计实施记录](superpowers/specs/2026-10-22-codex-integration-audit.md#approved-protocol-and-configuration-repair)。
+
+- 2026-10-22 Codex 开发任务面板：用户选定 A 方案后，改用本机 App Server 的 `turn/plan/updated` 官方事件，下方终端 pane 已实测显示真实计划；移除未收到事件的项目计划 hook。按 thread 保存私有缓存，支持断连重试和重开恢复，不改变 bridge / IM 审批策略。另确认 macOS 减弱动态效果会关闭 Codex 标题转圈，需重新启动 TUI 才读取更改。详见 [开发指南](dev.md#codex-terminal-task-panel)。
+- 2026-10-22 Codex 集成审计：确认 hook 安装器丢失信任状态/第三方属性、审批回复结构不符当前 schema、可选 agent 字段被误设必填、路由子进程 hook 隔离及 Claude 隐式依赖等缺口；[审计报告](superpowers/specs/2026-10-22-codex-integration-audit.md) 已记录证据和候选；协议与配置保留修复见上条，其余产品缺口尚未实施。
 
 - 2026-04-26 v0.1（初稿）→ v0.2（撤回 share 假设）
 - 2026-04-27 v0.3（cc hook + wezterm cli 实测完成，6 项假设升 ✓）
@@ -103,6 +109,7 @@
 - 2026-05-30 v0.2.3（已发布）— 飞书消息顺序乱根治：cc 回复改用 CardKit 流式卡片（一条回复 = 一张卡 = 一条消息）：**根因**（用户实测 + 官方文档坐实）—— 旧 `send` 用 `splitMarkdownByTableCapacity` 把含 >3 表格的 cc 回复拆成多条飞书消息（旧 `mdToCard` 把每表格转 `column_set`，当年飞书卡片无 native table 组件、一张卡 ≤3 表格组件，超限 230099 被迫拆），而飞书对多条独立 text/interactive 消息**不保证接收端顺序**（按 create_time 毫秒排，连发乱序，时好时坏）；统一解释「audit 与工作回复顺序反」+「单条回复多表格 4/5/6 先到 1/2/3 后」两现象。**方案**（[DD 2026-05-30](superpowers/specs/2026-05-30-feishu-message-ordering-cardkit-dd.md)，用户拍 A）—— `send` 主路径改 `cardkit.v1.card.create`（整条回复塞 1 个 markdown 组件，实测一张卡 6 表格 OK，突破旧 3 限制）+ `im.v1.message.create` `msg_type:'interactive'` content=`{type:'card',data:{card_id}}`，**一条消息 = 卡内组件顺序结构写死 = 无跨消息排序 = 根治**；fallback：cardkit 失败退 `msg_type:'text'` + stripMarkdown。**附带改进**：markdown 原生渲染（标题/列表/加粗/代码/引用/表格）替代旧 stripMarkdown `▌「」` 凑合。**废弃**：`md-to-card.ts`（mdToCard + splitMarkdownByTableCapacity + FEISHU_CARD_TABLE_LIMIT，乱序根源）整模块 + 测试删除。**新 scope**：`cardkit:card:write` **应用身份**（daemon 用 tenant_access_token；用户身份版不工作，实测 99991672）— README Part 1.1 step 2c 加（四部分重组后，PR #240）。**真账号实测**（2026-05-30）：cardkit create 6 表格卡 code=0（突破 3 限制）+ 完整 markdown 卡（标题/列表/加粗/代码/表格/引用）飞书端渲染正常 + 顺序 1→6 正确。**TDD 红→绿**：adapter.test.ts 删 9 旧测试（拆分/column_set/marker）+ 加 4 新（单卡 6 表格 / 原生 markdown / fallback / sourceTag 前缀）；删 md-to-card.test.ts。**验证**：im-lark 126 + 全量 1214 tests 绿 + 10 包 typecheck 绿。**Lockstep 11 处 version bump** 0.2.2 → 0.2.3。**真账号端到端 smoke verified**（2026-05-30，飞书手机端截图）：单条回复 4 表格混排 = 一张卡 / 表格原生渲染（非 column_set 字符）/ 顺序 1→4 正确 / 标题·加粗·行内代码·列表全 native；长文 + 多表混排（audit 摘要那条）同样单卡有序。**发布**（2026-05-30）：发布前 typecheck + test 1214 + build + `bin --version`=0.2.3 + frozen-lockfile 全绿 → `npm publish` multi-cc-im@0.2.3（`npm view` dist-tags `latest=0.2.3` verified）+ GitHub release [v0.2.3](https://github.com/orime-org/multi-cc-im/releases/tag/v0.2.3)（target 81fc97b）；README 四部分重组同批 [PR #240]。
 - 2026-10-17 fix — state 目录 watcher 出错时 daemon 给出可读提示并正常退出：用户实测 `multi-cc-im start` 崩出 Node 原始栈 `EMFILE: too many open files, watch`。**根因**（本机 fseventsd 日志 + libuv 源码坐实）—— macOS fseventsd 全系统只给 1024 个客户端（日志 `too many clients in system (limit 1024)`），被多套 `tsx watch` dev server 占满（tsx 4.23 加载原生 `fsevents`，每个监听路径单独占一个）；libuv 在 `FSEventStreamStart` 失败时统一返回 `UV_EMFILE`。chokidar 的 `'error'` 没有监听 → 进程崩溃；真机复现确认挂上监听后 `ready` 照常触发但新文件事件不再到达，所以 watcher 出错必须当致命错误处理。**改动**：`cli-cc` `createCcCliAdapter` 新增 `onWatcherError`（codex adapter 继承）；`apps/multi-cc-im/src/watcher-error.ts` 生成提示（EMFILE/ENOSPC 给出 macOS fseventsd / Linux inotify 的确认命令）；`start.ts` 启动期出错 → 写 daemon.log、`orchestrator.stop()`、exit 1，运行期出错 → `StartCommandResult.failure`，`cli.ts` 打印后 shutdown + exit 1。README 两份 2.3 排障表加一行。
 
+- 2026-10-22 agent instructions — Moved shared rules from CLAUDE.md to AGENTS.md; CLAUDE.md now imports @AGENTS.md. Added docs/agent-context.md for local Claude memory discovery, host tool differences, and instruction-loading verification. Updated contributor navigation; private memories and runtime hook configuration remain local.
 - 2026-10-22 EMFILE handling — Closed startup gaps for synchronous watch failures, errors before ready, and watcher failures while another adapter is still connecting. Watcher failures use the same readable fatal path, close the failed watcher, stop partial startup, and exit 1. Startup does not continue launching adapters after stop. Recovery text explains the bridge/IM state, distinguishes descriptor and watch-resource exhaustion, and leaves decisions about other development processes to the user. No automatic process termination or watcher fallback was added.
 
 ---
@@ -113,6 +120,8 @@
 
 | 维度 | 状态 | 详情 |
 |---|---|---|
+| Codex 审批协议与 hook 配置保留 | ✓ | 三条审批输出路径符合 0.163.0 原生结构；主会话可省略 agent 字段；安装保留状态和第三方字段、备份原文、重复安装不写入。真实 IM 账号验证尚未执行，路由/提问范围另行推进。见 [审计](superpowers/specs/2026-10-22-codex-integration-audit.md) |
+| Codex 开发任务面板 | ✓ | 用户选定本机官方事件方案；真实 `update_plan` 已在下方面板刷新，6 项 socket/恢复测试 + 4 项 viewer 测试通过。按 thread 私有缓存，断连重试，不回答审批、不启动回合；关闭整个终端后需重开面板。见 [开发指南](dev.md#codex-terminal-task-panel) |
 | 协议层（飞书 IM）| ✓ | npm depend `@larksuiteoapi/node-sdk@^1.63.1`（官方 Bytedance 维护，MIT，月下载 4M+）；WSClient 长连接 = no-public-IP；IM v1 messaging covers text + image + file + interactive cards。**已删**：v1.4 时代 wechat / iLink vendored OpenClaw（PR #76/78/82 多次踩 undici 升级 instability，DD #86 §11.2 决定整包删）。[DD #86: Lark IM adapter](superpowers/specs/2026-05-09-lark-im-adapter-dd.md) + [历史 DD: iLink 选型](superpowers/specs/2026-04-26-ilink-library-dd.md)（保留作 wechat 时代决策记录）|
 | Adapter 接口（IM/Term/CLI 事件流）| ✓ | TS-first hybrid（callback inject + extends-based 编译时 capability + type guard narrow）；[DD: adapter 接口](superpowers/specs/2026-04-29-adapter-interface-dd.md) |
 | Storage（持久化策略）| ✓ | **无 SQL DB**：cc transcript 只读 cc jsonl，按需 tail；自身仅 cursor / friendly_name / ACL / pending msg buffer 4 项落 toml + JSONL；[DD: 持久化策略](superpowers/specs/2026-04-29-storage-strategy-dd.md) |
@@ -136,7 +145,7 @@
 
 ## 项目特定技术规范
 
-CLAUDE.md 包含跨项目通用的工程纪律（TS strict / no `any` / no 裸 catch / 凭据 0600 / TDD 节奏 / etc.）。本节是 multi-cc-im **特定** 实现规范 —— 写跟 cc hook / wezterm cli / IM adapter / IPC 文件相关的代码时**必须**遵守。
+AGENTS.md 包含跨项目通用的工程纪律（TS strict / no `any` / no 裸 catch / 凭据 0600 / TDD 节奏 / etc.）。本节是 multi-cc-im **特定** 实现规范 —— 写跟 cc hook / wezterm cli / IM adapter / IPC 文件相关的代码时**必须**遵守。
 
 | 规范 | 备注 |
 |---|---|
@@ -149,13 +158,13 @@ CLAUDE.md 包含跨项目通用的工程纪律（TS strict / no `any` / no 裸 c
 | **路由 visible echo 必须有** | bot 把消息派给 cc 前后必须给 IM 端可见反馈（`→ frontend received` / `📌 current = frontend` / `⚠️ frontend disconnected, current cleared`），否则 last-explicit-mention 粘性的 current_session 状态跟用户脑模型会错配（[DD: 路由语法](superpowers/specs/2026-05-04-routing-syntax-dd.md) 第 4 步理由 3） |
 | **路由 key 用 `CLAUDE_PROJECT_DIR` 或 `stdin.cwd`** | 已 realpath；不要用 `PWD` env（macOS `/tmp` vs `/private/tmp` 不一致） |
 | **不修改 cc 自己的 jsonl** | `~/.claude/projects/**/*.jsonl` 只读；任何写入都是 bug |
-| **凭据落本地路径约定** | `~/.multi-cc-im/credentials/<im>.json` (mode 0600) — 通用规则在 CLAUDE.md「凭据 0600 落盘」；具体 schema (`{appId, appSecret, savedAt}` 等) 见 [`packages/im-lark/src/credentials.ts`](../packages/im-lark/src/credentials.ts) |
+| **凭据落本地路径约定** | `~/.multi-cc-im/credentials/<im>.json` (mode 0600) — 通用规则在 AGENTS.md「凭据 0600 落盘」；具体 schema (`{appId, appSecret, savedAt}` 等) 见 [`packages/im-lark/src/credentials.ts`](../packages/im-lark/src/credentials.ts) |
 
 ---
 
 ## 项目特定禁止清单
 
-通用禁令（TS `any` / shell 字符串拼接 / 动态代码求值 / 凭据明文 / 同步阻塞 hook / 跳过 DD / etc.）见 [`CLAUDE.md`](../CLAUDE.md)「禁止清单」。下列是 multi-cc-im **特定** 禁令（绑 cc / wezterm / IM 协议 / IPC 文件）：
+通用禁令（TS `any` / shell 字符串拼接 / 动态代码求值 / 凭据明文 / 同步阻塞 hook / 跳过 DD / etc.）见 [`AGENTS.md`](../AGENTS.md)「禁止清单」。下列是 multi-cc-im **特定** 禁令（绑 cc / wezterm / IM 协议 / IPC 文件）：
 
 - 托管 / spawn cc 进程（用户的 cc TUI 实例）
 - 修改 cc 的 jsonl（`~/.claude/projects/**/*.jsonl`）
@@ -190,7 +199,9 @@ CLAUDE.md 包含跨项目通用的工程纪律（TS strict / no `any` / no 裸 c
 - [`architecture.md`](architecture.md) — 架构图 / 包依赖 / 目录结构 / 数据存储（toml + 0600 凭据 + state files）/ 外部 CLI 路径策略
 - [`competitors.md`](competitors.md) — 不直接采用的端到端项目
 - [`dev.md`](dev.md) — 开发命令 / TDD 节奏 / 调试技巧
-- [`../CLAUDE.md`](../CLAUDE.md) — AI 干活纪律（找根因 / DD 流程 / 编码行为准则）
+- [`../AGENTS.md`](../AGENTS.md) — AI 干活纪律（找根因 / DD 流程 / 编码行为准则）
+- [`../CLAUDE.md`](../CLAUDE.md) — Claude Code 入口，导入 AGENTS.md
+- [`agent-context.md`](agent-context.md) — 记忆读取 / 历史进度 / 两端工作流差异
 
 ### 上游文档
 

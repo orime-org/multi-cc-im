@@ -164,6 +164,14 @@ pnpm --filter multi-cc-im build     # 编译出 dist/
 
 完成 = daemon 前台跑 + WS 连飞书 ready + 监控 dashboard 在 `http://127.0.0.1:40719`。
 
+Codex hook 安装会保留 `hooks.state` 中的信任／禁用状态和第三方 hook 的完整字段；
+既有 handler 在原位置更新，避免位置变化让状态对应到其他 hook；
+已有配置写入前创建 `.bak.<ISO>` 备份，配置未变时不写文件、不新增备份。
+首次出现的 hook 或内容改变的 hook 仍需在 Codex 的 `/hooks` 中审核；安装器不会替你授予信任。
+IM 模式由 `/start`（自动允许）和 `/start off`（询问）控制；Codex 审批回复按原生
+`PermissionRequest` 协议返回单次允许／拒绝，不增加会话级权限规则。
+
+
 > ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
 >
 > Ctrl+C 停 daemon。一台机器只能一个 daemon。
@@ -228,10 +236,16 @@ multi-cc-im/
 │   └── bridge/              — Router + orchestrator + AI-routed dispatch
 ├── bin/multi-cc-im          — bash wrapper
 ├── docs/                    — architecture / dev / conventions / DD specs
-└── CLAUDE.md                — 项目纪律（贡献前必读）
+├── AGENTS.md                — 共同项目规则（贡献前必读）
+└── CLAUDE.md                — Claude Code 入口，导入 AGENTS.md
 ```
 
 ## 4.3 dev 命令
+
+需要在终端下方常驻显示 Codex 的每项任务时，见
+[Codex 任务面板](docs/dev.md#codex-terminal-task-panel)。面板通过本机 Unix socket
+订阅 Codex 的计划事件，显示数据按 session 保存在 `~/.codex/task-panel/`。
+启动命令为 `node scripts/task-panel-events.mjs --session <thread-id>`，无需任务 hook。
 
 | 命令 | 用途 |
 |---|---|
@@ -246,7 +260,7 @@ multi-cc-im/
 
 ## 4.4 TDD 节奏
 
-红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) + [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md)。
+红 → 绿 → 蓝。先写失败 test 锁目标行为 → 最少代码让它过 → 重构 + 覆盖 ≥ 80%。test 无论如何写不通过 → 停下来重做 DD，**不在错假设上打补丁**。详见 [`AGENTS.md`](https://github.com/orime-org/multi-cc-im/blob/main/AGENTS.md) + [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md)。
 
 ## 4.5 加一个 IM adapter（Telegram / Slack / 等）
 
@@ -280,17 +294,19 @@ multi-cc-im/
 
 **已落地（v0.2.0）**：`@multi-cc-im/cli-cc` (Claude Code) + `@multi-cc-im/cli-codex` (OpenAI Codex) 两个 adapter 都在仓库里，向导第 1 步多选哪个或都勾。本节描述如何再添加第三个（gemini / aider / 等）。
 
-需求：新 CLI 必须有等价扩展点（hook lifecycle：tool-use 拦截 / 会话结束 / 权限请求等）。codex 接入是个参考——见 [`docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md) 的 5 步 DD（候选枚举 / hook events source-verify / 共享 state-file 协议 / 4 步向导接入）。无等价扩展点 → 提 DD 先不动 — 见 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「不破坏现有 cc 进程」。
+需求：新 CLI 必须有等价扩展点（hook lifecycle：tool-use 拦截 / 会话结束 / 权限请求等）。codex 接入是个参考——见 [`docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md) 的 5 步 DD（候选枚举 / hook events source-verify / 共享 state-file 协议 / 4 步向导接入）。无等价扩展点 → 提 DD 先不动 — 见 [`AGENTS.md`](https://github.com/orime-org/multi-cc-im/blob/main/AGENTS.md)「不破坏现有 cc 进程」。
 
 ## 4.8 重大决策（DD）流程
 
-凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md)「重大决策 DD 流程」。
+凡影响安全模型 / 长期维护 / 跨包接口 / 「用现有 SDK」原则的改动必走 5 步 DD：候选枚举（必含「不做 X」）→ 每候选尽调 → 对比矩阵（证据可引用）→ 推荐+理由 → 用户拍板。DD 落 `docs/superpowers/specs/<date>-<topic>-dd.md`。详细规则 [`AGENTS.md`](https://github.com/orime-org/multi-cc-im/blob/main/AGENTS.md)「重大决策 DD 流程」。
 
 ## 4.9 文档导航
 
 | 文档 | 何时读 |
 |---|---|
-| [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) | AI 干活纪律（根因 / DD / 编码准则）|
+| [`AGENTS.md`](https://github.com/orime-org/multi-cc-im/blob/main/AGENTS.md) | AI 干活纪律（根因 / DD / 编码准则）|
+| [`CLAUDE.md`](https://github.com/orime-org/multi-cc-im/blob/main/CLAUDE.md) | Claude Code 入口，导入共同规则 |
+| [`docs/agent-context.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/agent-context.md) | 记忆读取、历史进度与两端工作流差异 |
 | [`docs/conventions.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/conventions.md) | 状态总表 + 修订日志 + 项目特定规范 |
 | [`docs/architecture.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/architecture.md) | 架构图 + 状态 schema + 文件 IPC |
 | [`docs/dev.md`](https://github.com/orime-org/multi-cc-im/blob/main/docs/dev.md) | dev 命令 + TDD 节奏 + 调试 |
