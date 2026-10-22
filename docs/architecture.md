@@ -49,7 +49,7 @@
 **核心约束实现**（AGENTS.md「不破坏现有 cc 进程」）：
 - bridge 不 spawn 用户 cc；cc 继续在用户 WezTerm tab / iTerm2 tab 里以 TUI 形式跑
 - bridge 只通过 (a) cc 原生 hook 事件（出站 + permission gate） + (b) 终端的 send-text 子命令（wezterm cli / iTerm2 Python API） 跟 cc 通信
-- **唯一例外**：daemon 自起一次性 `claude --print` 子进程做 IM 路由 triage（[DD: AI-routed IM dispatch](superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)），独立 session、headless、`--disable-slash-commands`、不沾用户 tab
+- **唯一例外**：daemon 按 `[cli].aiRouter` 自起一次性 `claude --print` 或 `codex exec` 子进程做 IM 路由 triage（[DD: AI-routed IM dispatch](superpowers/specs/2026-05-09-ai-routed-im-dispatch-dd.md)），独立 session、headless、`--disable-slash-commands`、不沾用户 tab
 
 ### Codex hook 协议与配置保留
 
@@ -62,6 +62,17 @@
 `PermissionDialogResponse` 的单次 allow/deny 结果输出为
 `hookSpecificOutput: {hookEventName: "PermissionRequest", decision: {...}}`；
 允许、拒绝、超时三条路径均使用此结构。原有 IMWork auto/ask、gate、清理和超时策略保持原设计。
+
+### 分诊 CLI 的完整接线
+
+向导 W2 的 `[cli].aiRouter` 同时决定普通路由、AUQ 回答解释、原生权限回答解释三条 callback。
+选择 Codex 时，`start.ts` 注入 `routeViaCodex` / `routeAskUserQuestionViaCodex` /
+`routePermissionRequestViaCodex`；选择 cc 时保留原 Claude 默认实现。
+Codex 三条路径共享一次性 executor：每调用独立临时 cwd、0600 模式 schema 文件、
+`--ephemeral --disable hooks --sandbox read-only`、移除终端来源环境变量，退出清理。
+后两种结果使用 shared 中现有 zod schema 校验；daemon 的权限/回答映射不变。
+这里的 AUQ 仍指已有 Claude 提问。Codex 原生问题的 App Server 接线是
+[单独的待决策 DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)，尚未进入产品。
 
 ## 包依赖方向
 

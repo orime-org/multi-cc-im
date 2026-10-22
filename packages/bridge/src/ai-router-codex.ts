@@ -3,43 +3,27 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  AskUserQuestionAIOutputSchema,
+  PermissionDialogAIOutputSchema,
+} from '@multi-cc-im/shared';
+import {
   renderRoutingPrompt,
+  renderAskUserQuestionPrompt,
+  renderPermissionRequestPrompt,
+  type AskUserQuestionViaAIOpts,
+  type PermissionRequestViaAIOpts,
+  type AIAskUserQuestionResult,
+  type AIPermissionDialogResult,
   type AIRoutingOpts,
   type AIRoutingResult,
 } from './ai-router.js';
 
 /**
- * Routes IM messages via Codex CLI (`codex exec`) instead of Claude
- * Code (`claude --print`). Activated when the `multi-cc-im start`
- * wizard step 2 picks codex as the AI router CLI. Per
- * [DD §7.1 + 2026-05-23 revision](../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
- *
- * Why a separate router instead of one factory dispatching on cliKind:
- * codex exec exposes structurally different headless flags than cc
- * `--print` (`--output-schema <file>` + `--output-last-message <file>`
- * + `--ephemeral` + `--dangerously-bypass-hook-trust` + `--sandbox` —
- * none of which exist on cc), and the response shape on disk
- * (last-message file containing JSON the LLM wrote) is different from
- * cc's stdout JSON envelope (`{result: "<inner string>", ...}`). One
- * function per CLI keeps each invocation legible.
- *
- * Codex headless advantages over cc per DD §7.1:
- * - `--output-schema <file>`: codex constrains the model's output to a
- *   JSON Schema strictly — no prompt-engineered "please return JSON"
- *   needed, no markdown fence stripping. 100% schema-compliant output.
- * - `--output-last-message <file>`: avoid parsing JSONL event streams;
- *   codex writes the final assistant message verbatim to disk.
- * - `--ephemeral` + `--dangerously-bypass-hook-trust`: triage subprocess
- *   doesn't persist any session state nor fire user hooks. The cli-cc
- *   path uses `WEZTERM_PANE` env strip as the equivalent guard — codex
- *   exposes explicit flags so the guard is named in code, not implied
- *   by absence of a side channel.
- *
- * Sandbox: `read-only` (matches the AI router's actual needs — it only
- * reads the user's IM message + tab list; no filesystem writes).
- *
- * Default codex binary: `'codex'` (resolved via PATH). Tests stub to a
- * fixture script.
+ * Codex execution backend for plain-message, question, and permission triage.
+ * Reuses the established prompts and shared answer schemas. Each invocation
+ * has its own temporary cwd and disables hooks without bypassing trust.
+ * User model/provider/auth configuration is retained; user sessions and
+ * terminal input/output are never attached to these one-shot subprocesses.
  */
 
 const DEFAULT_CODEX_BINARY = 'codex';
@@ -54,9 +38,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 /**
  * JSON Schema that codex's `--output-schema` constrains the model
  * output against. Mirrors `AIRoutingResult` but expressed as an
- * open Draft-07 schema codex accepts. The router consumer then
- * runs zod on top defensively, but the schema should make zod
- * always pass when codex finishes successfully.
+ * Draft-07 schema Codex accepts. The result is still checked before dispatch;
+ * schema-constrained output does not replace runtime validation.
  */
 const ROUTING_OUTPUT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
@@ -85,6 +68,39 @@ const ROUTING_OUTPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const QUESTION_OUTPUT_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    target: { type: 'string', minLength: 1 }, reason: { type: ['string', 'null'] },
+    answers: { type: 'array', minItems: 1, items: { anyOf: [
+      { type: 'object', additionalProperties: false, required: ['questionIndex', 'kind', 'optionIndex'], properties: {
+        questionIndex: { type: 'integer', minimum: 0 }, kind: { type: 'string', enum: ['option'] },
+        optionIndex: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'array', minItems: 1, items: { type: 'integer', minimum: 1 } }] },
+      } },
+      { type: 'object', additionalProperties: false, required: ['questionIndex', 'kind', 'text'], properties: {
+        questionIndex: { type: 'integer', minimum: 0 }, kind: { type: 'string', enum: ['text'] }, text: { type: 'string' },
+      } },
+    ] } },
+  }, required: ['target', 'reason', 'answers'],
+} as const;
+
+const PERMISSION_OUTPUT_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    target: { type: 'string', minLength: 1 }, reason: { type: ['string', 'null'] },
+    answer: { anyOf: [
+      { type: 'object', additionalProperties: false, required: ['behavior'], properties: { behavior: { type: 'string', enum: ['allow'] } } },
+      { type: 'object', additionalProperties: false, required: ['behavior', 'appliedSuggestionIndex'], properties: {
+        behavior: { type: 'string', enum: ['allow'] }, appliedSuggestionIndex: { type: 'integer', minimum: 1 },
+      } },
+      { type: 'object', additionalProperties: false, required: ['behavior'], properties: { behavior: { type: 'string', enum: ['deny'] } } },
+      { type: 'object', additionalProperties: false, required: ['behavior', 'message'], properties: {
+        behavior: { type: 'string', enum: ['deny'] }, message: { type: 'string' },
+      } },
+    ] },
+  }, required: ['target', 'reason', 'answer'],
+} as const;
+
 function failure(reason: string): AIRoutingResult {
   return { target: null, intent: null, reason, permissionResponse: null };
 }
@@ -100,16 +116,22 @@ function runCodexExec(opts: {
   args: readonly string[];
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  cwd: string;
 }): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(opts.binary, [...opts.args], { env: opts.env });
+    const child = spawn(opts.binary, [...opts.args], { env: opts.env, cwd: opts.cwd });
 
     // Codex exec doesn't read stdin (prompt passed via argv), but close
     // stdin defensively to match the same pattern cli-cc uses for
     // claude --print (some upstream binaries probe stdin EOF before
     // proceeding). EPIPE/ECONNRESET swallow per
     // feedback_node_spawn_stdin_epipe.md.
-    child.stdin.on('error', () => {});
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE' && error.code !== 'ECONNRESET') {
+        child.kill('SIGTERM');
+        reject(error);
+      }
+    });
     child.stdin.end();
 
     let stderrBuf = '';
@@ -192,107 +214,121 @@ function parseCodexLastMessage(content: string): AIRoutingResult {
   return { target, intent, reason, permissionResponse };
 }
 
-export interface CodexRoutingOpts extends AIRoutingOpts {
-  /** Override codex binary path. Default: `'codex'` (PATH). Tests inject a stub. */
+/** Codex binary/model/deadline overrides for an isolated triage invocation. */
+interface CodexExecOpts {
   codexBinary?: string;
+  model?: string;
+  timeoutMs?: number;
 }
 
-/**
- * Codex-flavored counterpart of `routeViaAI`. Spawns `codex exec` with
- * the routing prompt, writes the model's final reply (already
- * schema-constrained by `--output-schema`) to a tempfile, parses it,
- * and returns an `AIRoutingResult`. Errors NEVER propagate — every
- * failure mode (binary missing / timeout / non-zero exit / malformed
- * JSON) returns a `failure(reason)` so the orchestrator falls back to
- * the same "AI couldn't decide" UX path it uses for cc.
- *
- * Why we don't pass `tabs` / `currentTab` / `pendingRequests` to a
- * codex-specific prompt: the prompt is rendered via the shared
- * `renderRoutingPrompt` from `ai-router.ts`, so codex sees an
- * identical user-message template to cc. The output schema constrains
- * the result — no codex-specific prompt tuning needed.
- */
-export async function routeViaCodex(
-  opts: CodexRoutingOpts,
-): Promise<AIRoutingResult> {
-  const binary = opts.codexBinary ?? DEFAULT_CODEX_BINARY;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const model = opts.model ?? DEFAULT_CODEX_MODEL;
+/** Plain routing input; the selected backend never uses claudeBinary. */
+export interface CodexRoutingOpts extends AIRoutingOpts, CodexExecOpts {}
 
-  const prompt = renderRoutingPrompt({
-    userMsg: opts.userMsg,
-    tabs: opts.tabs,
-    currentTab: opts.currentTab,
-    pendingRequests: opts.pendingRequests,
-    forcePermissionMode: opts.forcePermissionMode,
-  });
+/** Existing Claude question interpretation contract, executed by Codex. */
+export interface CodexQuestionRoutingOpts extends Omit<AskUserQuestionViaAIOpts, 'claudeBinary'>, CodexExecOpts {}
 
-  // Write schema + provision output file paths in a per-call tempdir
-  // so concurrent triage calls don't race on shared file names.
-  let tempDir: string | undefined;
+/** Existing permission interpretation contract, executed by Codex. */
+export interface CodexPermissionRoutingOpts extends Omit<PermissionRequestViaAIOpts, 'claudeBinary'>, CodexExecOpts {}
+
+function failureReason(error: unknown, opts: CodexExecOpts): string {
+  const e = error as Error & { code?: number | string | null; signal?: string | null; killed?: boolean; stderr?: string };
+  if (error instanceof SyntaxError) return 'codex output not JSON';
+  if (e.code === undefined && error instanceof Error) return error.message;
+  if (e.code === 'ENOENT') return `codex binary not found: ${opts.codexBinary ?? DEFAULT_CODEX_BINARY}`;
+  if (e.killed) return `codex timeout after ${opts.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`;
+  return `codex exec failed: code=${String(e.code)} signal=${String(e.signal)} stderr=${(e.stderr ?? '').slice(0, 200)}`;
+}
+
+async function runCodexPrompt(opts: CodexExecOpts & { prompt: string; schema: unknown }): Promise<string> {
+  const tempDir = await mkdtemp(join(tmpdir(), 'multi-cc-im-codex-'));
   try {
-    tempDir = await mkdtemp(join(tmpdir(), 'multi-cc-im-codex-'));
     const schemaPath = join(tempDir, 'schema.json');
     const outPath = join(tempDir, 'last-message.txt');
-    await writeFile(schemaPath, JSON.stringify(ROUTING_OUTPUT_SCHEMA, null, 2), {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-
-    // Strip WEZTERM_PANE / ITERM_SESSION_ID so codex's hooks (if the
-    // user installed cli-codex's setup-hooks) don't write Stop /
-    // PermissionRequest files for this triage subprocess. Same pattern
-    // ai-router.ts uses for cc.
+    await writeFile(schemaPath, JSON.stringify(opts.schema), { mode: 0o600 });
     const childEnv = { ...process.env };
     delete childEnv.WEZTERM_PANE;
     delete childEnv.ITERM_SESSION_ID;
-
-    const args: string[] = [
-      'exec',
-      '--ephemeral',
-      '--dangerously-bypass-hook-trust',
-      '--sandbox',
-      'read-only',
-      '--skip-git-repo-check',
-      '--output-schema',
-      schemaPath,
-      '--output-last-message',
-      outPath,
+    const args = [
+      'exec', '--ephemeral', '--disable', 'hooks', '--sandbox', 'read-only',
+      '--skip-git-repo-check', '--output-schema', schemaPath, '--output-last-message', outPath,
     ];
-    if (model.length > 0) {
-      args.push('--model', model);
-    }
-    args.push(prompt);
-
+    const model = opts.model ?? DEFAULT_CODEX_MODEL;
+    if (model.length > 0) args.push('--model', model);
+    args.push(opts.prompt);
+    await runCodexExec({
+      binary: opts.codexBinary ?? DEFAULT_CODEX_BINARY,
+      args,
+      env: childEnv,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      cwd: tempDir,
+    });
     try {
-      await runCodexExec({ binary, args, env: childEnv, timeoutMs });
-    } catch (err) {
-      const e = err as Error & {
-        code?: number | string | null;
-        signal?: NodeJS.Signals | null;
-        stderr?: string;
-      };
-      const detail =
-        e.code === 'ENOENT'
-          ? `codex binary not found: ${binary}`
-          : `codex exec failed: code=${String(e.code)} signal=${String(e.signal)} stderr=${(e.stderr ?? '').slice(0, 200)}`;
-      return failure(detail);
+      return await readFile(outPath, 'utf8');
+    } catch (error) {
+      throw new Error(`codex output file unreadable: ${(error as NodeJS.ErrnoException).code ?? 'unknown error'}`);
     }
-
-    let content: string;
-    try {
-      content = await readFile(outPath, 'utf8');
-    } catch (err) {
-      return failure(
-        `codex output file unreadable: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    return parseCodexLastMessage(content);
   } finally {
-    if (tempDir !== undefined) {
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {
-        /* best-effort cleanup; OS will reap tmpdir eventually */
-      });
-    }
+    await rm(tempDir, { recursive: true, force: true }).catch((error: NodeJS.ErrnoException) => {
+      process.stderr.write(`[Codex AI router] workspace cleanup failed: ${error.code ?? error.name}\n`);
+    });
+  }
+}
+
+/**
+ * Route a plain IM message with Codex using the established routing prompt.
+ * @param opts Message, visible tabs, pending tools, and optional CLI overrides.
+ * @returns A routing decision, or a classified failure without trying Claude.
+ */
+export async function routeViaCodex(opts: CodexRoutingOpts): Promise<AIRoutingResult> {
+  try {
+    const content = await runCodexPrompt({
+      ...opts, prompt: renderRoutingPrompt(opts), schema: ROUTING_OUTPUT_SCHEMA,
+    });
+    return parseCodexLastMessage(content);
+  } catch (error) {
+    return failure(failureReason(error, opts));
+  }
+}
+
+/**
+ * Interpret replies to existing Claude AskUserQuestion prompts using Codex.
+ * This does not implement Codex's own request_user_input transport.
+ * @param opts IM reply, pending questions, and optional CLI overrides.
+ * @returns Validated option/free-text answers, or null on failure.
+ */
+export async function routeAskUserQuestionViaCodex(
+  opts: CodexQuestionRoutingOpts,
+): Promise<AIAskUserQuestionResult | null> {
+  try {
+    const content = await runCodexPrompt({
+      ...opts, prompt: renderAskUserQuestionPrompt(opts), schema: QUESTION_OUTPUT_SCHEMA,
+    });
+    const parsed = AskUserQuestionAIOutputSchema.safeParse(JSON.parse(content));
+    if (!parsed.success) return null;
+    return { ...parsed.data, reason: parsed.data.reason ?? null };
+  } catch (error) {
+    process.stderr.write(`[Codex AI router] question extraction failed: ${failureReason(error, opts)}\n`);
+    return null;
+  }
+}
+
+/**
+ * Interpret native permission replies with the selected Codex backend.
+ * @param opts IM reply, pending dialogs, and optional CLI overrides.
+ * @returns A validated existing permission answer, or null on failure.
+ */
+export async function routePermissionRequestViaCodex(
+  opts: CodexPermissionRoutingOpts,
+): Promise<AIPermissionDialogResult | null> {
+  try {
+    const content = await runCodexPrompt({
+      ...opts, prompt: renderPermissionRequestPrompt(opts), schema: PERMISSION_OUTPUT_SCHEMA,
+    });
+    const parsed = PermissionDialogAIOutputSchema.safeParse(JSON.parse(content));
+    if (!parsed.success) return null;
+    return { ...parsed.data, reason: parsed.data.reason ?? null };
+  } catch (error) {
+    process.stderr.write(`[Codex AI router] permission extraction failed: ${failureReason(error, opts)}\n`);
+    return null;
   }
 }

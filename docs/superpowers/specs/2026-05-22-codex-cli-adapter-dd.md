@@ -180,6 +180,8 @@
 
 ## §7.1 AI router CLI-selectable（2026-05-22 用户新增约束）
 
+> 2026-10-22：原本把信任绕过误当 hook 禁用的参数已按 §13 更正；三条解释路径统一接线。
+
 **用户原话**：「记得 codex 的话，AI 分诊也要用 codex」— 当 user 主体 CLI 是 codex 时，daemon 的 AI router triage 子进程**也走 codex**，不依赖 cc 装机。
 
 **实证 codex headless 能力**（2026-05-22 本地 `codex exec --help`）— 比 cc 还强 4 项：
@@ -189,7 +191,7 @@
 | 结构化输出 | prompt 约定 + JSON parse | **`--json`** JSONL events 流（原生结构化）|
 | Schema 强约束 | 无 — 靠 prompt 工程 | **`--output-schema <file>`** JSON Schema 严格约束 |
 | 最后一条消息单独输出 | 无 — 整 transcript | **`-o, --output-last-message <file>`** |
-| 防自递归（子进程不触发 hook）| strip `WEZTERM_PANE` env | **`--dangerously-bypass-hook-trust` + `--ephemeral`** 显式选项 |
+| 防自递归（子进程不触发 hook）| strip `WEZTERM_PANE` env | **`--disable hooks` + `--ephemeral`** 显式选项 |
 | Sandbox 控制 | `--permission-mode bypassPermissions` | `--sandbox read-only/workspace-write/danger-full-access` + `--dangerously-bypass-approvals-and-sandbox` |
 
 **AI router 实施方案**（user CLI 是 codex 时）：
@@ -200,7 +202,7 @@ const aiRouter = createAIRouter({
   cli: 'codex',  // 用户主体 CLI（从 cli adapter name 推断）
   // codex 调用：
   // codex exec --json --output-schema <schema.json> \
-  //   --ephemeral --dangerously-bypass-hook-trust \
+  //   --ephemeral --disable hooks \
   //   --sandbox read-only "<prompt>"
 });
 ```
@@ -214,7 +216,7 @@ const aiRouter = createAIRouter({
 | # | 改动 | 文件 |
 |---|---|---|
 | 11（改）| 真账号 smoke — codex 装机已就绪（0.133.0 路径 `/opt/homebrew/bin/codex`），用户跑「wezterm tab 起 codex + 飞书 reply + Stop forward + image inbound + AskUserQuestion 等价」一气贯通 | manual |
-| **15（新增）**| **AI router CLI-selectable** — `packages/bridge/src/ai-router.ts` 加 dispatcher `if cli==='codex' → spawnCodexExec({json, output-schema, ephemeral, bypass-hook-trust})`；写 `ai-router-codex.ts` 镜像 `ai-router.ts` 现行 cc 实现 | bridge |
+| **15（新增）**| **AI router CLI-selectable** — `packages/bridge/src/ai-router.ts` 加 dispatcher `if cli==='codex' → spawnCodexExec({json, output-schema, ephemeral, hooks-disabled})`；写 `ai-router-codex.ts` 镜像 `ai-router.ts` 现行 cc 实现 | bridge |
 
 ---
 
@@ -297,3 +299,29 @@ const aiRouter = createAIRouter({
 - 路由子进程 hook 隔离、Codex-only 解释路由、问题转发和标题归一化不在本次修改范围。
 
 证据与验证矩阵见审计的 approved repair 节；不把惰性文件 fixture 当真账号 IM 验证。
+
+
+## §13 2026-10-22 路由后端与原定隔离语义修复
+
+用户在合并 #247 后要求继续已列出的 Codex 路由修复。沿用 §7.1 / §11 选定的
+独立 `codex exec` 后端，不更换 SDK、传输、依赖、认证或审批策略。
+
+当前代码仅将普通消息交给向导选定的 CLI，AUQ 和原生权限解释默认调用 Claude。
+修复为三条解释路径统一使用已选后端；现有 prompt / shared zod schema / daemon
+回答映射和失败处理继续使用。这是补全既有选择的数据流，不新增交互策略。
+
+原设计意图明确要求 triage 不运行用户 hooks、不复用用户 cwd。原来的
+`--dangerously-bypass-hook-trust` 实际含义却是允许未信任 hooks；运行目录也继承了 daemon。
+官方 [hooks](https://learn.chatgpt.com/docs/hooks#turn-hooks-off) 与
+[CLI flags](https://learn.chatgpt.com/docs/developer-commands) 明确支持
+`--disable hooks`，等价于本次调用的 `features.hooks=false`。修复用该参数替换信任绕过，
+并在每次调用独立的临时目录运行。仍使用原用户 model/provider/auth 配置及 read-only sandbox；
+不写全局配置、不修改已运行用户 session。管理员强制配置的限制由 Codex 自身执行。
+
+既有候选 DD 已选定 CLI 后端；不做修复会保留已验证缺陷，强制安装 Claude 违反已选
+Codex-only 场景，换 SDK/App Server 或自行解析终端会引入新的认证／架构且不能作为
+正确接线的替代方案。本次没有新的架构分叉。Codex 自身提问转发是另一个通道问题，
+不把 Claude AUQ 的解释后端替换误写为已支持 Codex request_user_input。
+
+验收：先红后绿覆盖三种输出、参数与 cwd、环境清理、缺失 binary、超时／失败／无输出、
+共享 schema 校验和向导装配；以隔离本地假 provider 验证当前真实 Codex 不执行 marker hook。

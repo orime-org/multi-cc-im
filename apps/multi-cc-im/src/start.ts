@@ -6,6 +6,8 @@ import {
 import {
   createOrchestrator,
   routeViaCodex,
+  routeAskUserQuestionViaCodex,
+  routePermissionRequestViaCodex,
   type BridgeOrchestrator,
 } from '@multi-cc-im/bridge';
 import type { RouterState } from '@multi-cc-im/bridge';
@@ -734,10 +736,14 @@ export async function runStartCommand(
   // headless triage subprocess. `aiRouterCLI === 'codex'` → spawn
   // `codex exec --output-schema`; `'cc'` → orchestrator's built-in
   // `routeViaAI` (spawns `claude --print`).
-  const aiRouter =
+  const codexRouters =
     aiRouterCLI === 'codex'
-      ? async (o: Parameters<typeof routeViaCodex>[0]) => routeViaCodex(o)
-      : undefined;
+      ? {
+          aiRouter: routeViaCodex,
+          aiAskUserQuestionRouter: routeAskUserQuestionViaCodex,
+          aiPermissionRequestRouter: routePermissionRequestViaCodex,
+        }
+      : {};
   // Human-readable label for daemon.log lines so operators can tell at
   // a glance which CLI ran each triage.
   const aiRouterName =
@@ -750,7 +756,7 @@ export async function runStartCommand(
         imAdapter,
         termAdapter,
         cliAdapter,
-        ...(aiRouter !== undefined ? { aiRouter } : {}),
+        ...codexRouters,
         aiRouterName,
         stateDir: paths.stateDir,
         state: routerState,

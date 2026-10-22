@@ -18,7 +18,9 @@
 
 ### 修订记录
 
-- 2026-10-22 Codex 协议与配置保留修复（用户认可审计建议后实施）：`PermissionRequest` allow/deny/timeout 全部改为官方 `hookSpecificOutput` 包装；agent 字段按官方可选字段接收。hook 安装在原位置更新自身 handler，仅追加缺失事件，保留信任／禁用状态、位置对应关系及第三方完整配置，结构比较保证重复安装不写文件。沿用既有 auto/ask 和超时策略；路由隔离、Claude 隐式依赖、提问转发仍待处理。见 [审计实施记录](superpowers/specs/2026-10-22-codex-integration-audit.md#approved-protocol-and-configuration-repair)。
+- 2026-10-22 Codex 路由接线与隔离：向导选择的 CLI 覆盖普通消息、AUQ 与原生权限三条解释路径，Codex-only 分诊不再隐式依赖 Claude；Codex 子进程改用 `--disable hooks` 并使用独立临时 cwd，沿用既有回答策略。真实 Codex + 本地假 provider 验证三条路由和 marker 隔离。另完成原生问题的双客户端请求／回答／重连／中断实测，见 [待决定的 question-bridge DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)，未安装产品回答通道。
+
+- 2026-10-22 Codex 协议与配置保留修复（用户认可审计建议后实施）：`PermissionRequest` allow/deny/timeout 全部改为官方 `hookSpecificOutput` 包装；agent 字段按官方可选字段接收。hook 安装在原位置更新自身 handler，仅追加缺失事件，保留信任／禁用状态、位置对应关系及第三方完整配置，结构比较保证重复安装不写文件。沿用既有 auto/ask 和超时策略；路由隔离与 Claude 隐式依赖见后续修订，原生提问转发仍待决定。见 [审计实施记录](superpowers/specs/2026-10-22-codex-integration-audit.md#approved-protocol-and-configuration-repair)。
 
 - 2026-10-22 Codex 开发任务面板：用户选定 A 方案后，改用本机 App Server 的 `turn/plan/updated` 官方事件，下方终端 pane 已实测显示真实计划；移除未收到事件的项目计划 hook。按 thread 保存私有缓存，支持断连重试和重开恢复，不改变 bridge / IM 审批策略。另确认 macOS 减弱动态效果会关闭 Codex 标题转圈，需重新启动 TUI 才读取更改。详见 [开发指南](dev.md#codex-terminal-task-panel)。
 - 2026-10-22 Codex 集成审计：确认 hook 安装器丢失信任状态/第三方属性、审批回复结构不符当前 schema、可选 agent 字段被误设必填、路由子进程 hook 隔离及 Claude 隐式依赖等缺口；[审计报告](superpowers/specs/2026-10-22-codex-integration-audit.md) 已记录证据和候选；协议与配置保留修复见上条，其余产品缺口尚未实施。
@@ -120,6 +122,7 @@
 
 | 维度 | 状态 | 详情 |
 |---|---|---|
+| Codex 分诊后端与隔离 | ✓ | 三条解释 callback 统一遵循向导选择；Codex executor 在临时 cwd 关闭 hooks，实际 Codex + 本地假 provider 已验证。不等于已实现 Codex 原生问题转发。见 [DD §13](superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#13-2026-10-22-路由后端与原定隔离语义修复) |
 | Codex 审批协议与 hook 配置保留 | ✓ | 三条审批输出路径符合 0.163.0 原生结构；主会话可省略 agent 字段；安装保留状态和第三方字段、备份原文、重复安装不写入。真实 IM 账号验证尚未执行，路由/提问范围另行推进。见 [审计](superpowers/specs/2026-10-22-codex-integration-audit.md) |
 | Codex 开发任务面板 | ✓ | 用户选定本机官方事件方案；真实 `update_plan` 已在下方面板刷新，6 项 socket/恢复测试 + 4 项 viewer 测试通过。按 thread 私有缓存，断连重试，不回答审批、不启动回合；关闭整个终端后需重开面板。见 [开发指南](dev.md#codex-terminal-task-panel) |
 | 协议层（飞书 IM）| ✓ | npm depend `@larksuiteoapi/node-sdk@^1.63.1`（官方 Bytedance 维护，MIT，月下载 4M+）；WSClient 长连接 = no-public-IP；IM v1 messaging covers text + image + file + interactive cards。**已删**：v1.4 时代 wechat / iLink vendored OpenClaw（PR #76/78/82 多次踩 undici 升级 instability，DD #86 §11.2 决定整包删）。[DD #86: Lark IM adapter](superpowers/specs/2026-05-09-lark-im-adapter-dd.md) + [历史 DD: iLink 选型](superpowers/specs/2026-04-26-ilink-library-dd.md)（保留作 wechat 时代决策记录）|

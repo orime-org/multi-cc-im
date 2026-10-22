@@ -94,6 +94,26 @@ exercise auto/ask with allow and deny, without sending real IM messages.
 Existing global config/trust is never a test fixture. The real-account IM
 round trip is a separate check and has not been performed for these fixes.
 
+## Codex triage backend verification
+
+`pnpm exec vitest run packages/bridge/src/ai-router-codex.test.ts
+apps/multi-cc-im/src/start.test.ts` (one line) verifies all three selected-backend
+paths, shared answer schemas, per-call working-directory isolation, hooks off,
+terminal environment removal, model selection, errors/timeouts, and cleanup.
+Tests use inert executable fixtures and never call real model services.
+
+An additional isolated real-Codex smoke used Codex 0.163.0 with a localhost
+fake Responses provider and an explicitly vetted SessionStart marker hook:
+the old trust-bypass invocation ran the marker; all three corrected routes
+returned schema-valid results without running it. Temporary CODEX_HOME and
+fixture credentials were confined to that smoke process. No global config,
+real account, existing user session, daemon restart, or IM send was involved.
+
+Question transport is separately documented in
+[the question-bridge DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md).
+The two-client probe verifies native requests; it does not claim real TUI widget
+or IM acceptance coverage, and does not install a question bridge.
+
 ## 快速跑通
 
 ```bash
