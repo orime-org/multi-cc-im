@@ -1,7 +1,9 @@
 # DD and design: Codex replies identified by session name
 
-Date: 2026-10-22. Status: user approved the session-name reply direction;
-design review pending. This document describes proposed behavior.
+Date: 2026-10-22. Status: the user approved the session-name reply direction
+and the first design review's correction. That correction is incorporated;
+the next workflow step awaits the user's decision. This document describes
+proposed behavior.
 
 ## Goal and approved contract
 
@@ -33,7 +35,7 @@ the same thread. These observations establish the erroneous prerequisite:
 sending a labeled reply currently requires locating its physical pane.
 
 Pinned official Codex 0.163.0 sources describe the metadata:
-[thread/name/set and thread/read](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs),
+[thread/name/set and thread/read](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/thread_processor.rs),
 [title rendering](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/tui/src/chatwidget/status_surfaces.rs).
 The generated `ThreadReadResponse` schema exposes `thread.id`, `thread.name`
 and `thread.source`. Local source inspection confirms project-name comes from
@@ -87,6 +89,15 @@ including handler failure, following the existing Stop queue contract.
 Startup cleanup preserves this recognized event family; watcher initial scan
 handles backlog in filename order. There remains one shared state watcher.
 
+`apps/multi-cc-im/src/start.ts` supplies the shared watcher's existing
+`onHandlerError` callback for the configured CLI adapter. Its error context
+identifies event kind and native session id; pane id is optional for session
+replies. Invalid event bodies, filename/body session mismatches and unsupported
+handlers reach the daemon log through this callback. The diagnostic describes
+the failure and event context. The existing callback is declared in
+`packages/cli-cc/src/adapter.ts:36` and invoked at line 193; the product
+dependency wiring is at `apps/multi-cc-im/src/start.ts:720`.
+
 The orchestrator uses a shared text-reply delivery function for pane Stop and
 session replies. It checks the selected terminal's `IMWork` and the latest
 validated global `IMOrigin`, skips empty messages, and passes `sessionName` as
@@ -128,7 +139,7 @@ The HTML companion demonstrates the backend data flow and failure states.
 | 3 | Production, user-level, promised reply capability | IM off, no IMOrigin, dead daemon, empty reply or active stop hook produces no delivery. | Enumerated gate tests. |
 | 4 | Production, user-level, promised reply capability | Missing name, wrong thread, unsupported server, timeout or malformed metadata supplies an actionable diagnostic; subagent Stop is excluded. | Native client fixture and receiver tests. |
 | 5 | Production, user-level, promised reply capability | Two sessions and successive queued turns retain their labels and ordering through the shared watcher. | Watcher and local end-to-end fixture. |
-| 6 | Production, internal queue contract | Malformed bodies, session-id mismatch and handler/send errors are diagnosed and consumed consistently; restart backlog is recognized. | Schema, watcher, cleanup and bridge tests. |
+| 6 | Production, internal queue contract | Malformed bodies, session-id mismatch and handler/send errors are diagnosed and consumed consistently; restart backlog is recognized. | Schema, watcher, cleanup and bridge tests, plus a product startup test that exercises the wired callback and asserts the daemon diagnostic. |
 | 7 | Existing production capabilities | Claude pane Stop and native Codex permission/question paths retain their current contracts. | Related tests and existing native question smoke. |
 | 8 | Documentation | Operators can distinguish project/session name and configure a routable session name. | README pair, architecture, dev guide, conventions and affected DD updates. |
 | 9 | Delivery | The bundled CLI loads and the PR has passing checks. | Typecheck, full tests, affected smoke, build and `./bin/multi-cc-im --version`; CI. |
@@ -136,3 +147,17 @@ The HTML companion demonstrates the backend data flow and failure states.
 Unit tests use isolated native/state directories. Local smoke connects to an
 owned native fixture and a recording IM adapter. The maintainer performs
 deployment and real Feishu-account acceptance from GitHub.
+
+## First design review and approved correction
+
+An independent reviewer inspected the design, HTML flow, hook entry and
+receiver, local client, shared watcher, startup wiring, cleanup, orchestrator
+and name matching. The reviewer returned one solution gap: the shared watcher
+has an optional error callback, while the current product startup supplies no
+callback. Source inspection confirmed both sides of that gap. The user approved
+the correction and the accompanying source-link correction.
+
+| Finding | Incorporated correction | Planned evidence |
+|---|---|---|
+| Queue diagnostics require product-entry wiring. | Explicit startup `onHandlerError` wiring, session-oriented error context and an expanded acceptance item 6. | Product startup test must invoke the actual supplied callback and inspect the daemon diagnostic. |
+| The metadata implementation citation points to a different native module. | The pinned link points to `request_processors/thread_processor.rs`, whose inspected implementation contains `thread_read` and `thread_set_name_response_inner`. | Pinned source tree entry and implementation inspection. |
