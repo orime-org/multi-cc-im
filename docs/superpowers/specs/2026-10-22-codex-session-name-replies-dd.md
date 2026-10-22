@@ -1,0 +1,138 @@
+# DD and design: Codex replies identified by session name
+
+Date: 2026-10-22. Status: user approved the session-name reply direction;
+design review pending. This document describes proposed behavior.
+
+## Goal and approved contract
+
+Deliver Codex Stop replies to the existing IM destination with the native
+session name as their source label. The user owns deployment and real-account
+acceptance. The implementation is user-level, within the promised IM reply
+capability.
+
+The user specified that Feishu addresses conversations by session name and
+approved looking up that name from the Stop event's thread id. Native
+`thread-name` is the name set by `/rename`. Native `project-name` is the
+project directory label. The former is the reply source in this design.
+
+## Current behavior and evidence
+
+| Step | Current behavior | Source inspected for this task |
+|---|---|---|
+| 1 | The bundled hook loads the selected terminal, constructs its adapter, then asks the native title resolver for an origin. | `apps/multi-cc-im/src/codex-hook.ts:24` |
+| 2 | Every non-SessionStart event requires that origin before dispatch. | `packages/cli-codex/src/hook-receiver.ts:180` |
+| 3 | The resolver intersects terminal titles with loaded thread ids; a missing title id ends forwarding. | `packages/cli-codex/src/hook-origin.ts:25` |
+| 4 | Stop writes a pane-keyed file. The watcher invokes `onStop`, which lists panes again to obtain the source label. | `packages/cli-codex/src/hook-receiver.ts:538`, `packages/cli-cc/src/adapter.ts:356`, `packages/bridge/src/orchestrator.ts:940` |
+| 5 | IM input writes global `IMOrigin`; replies read that latest validated context. | `packages/bridge/src/orchestrator.ts:418`, `packages/bridge/src/orchestrator.ts:973` |
+| 6 | Incoming `#name` matching uses the terminal adapter's cleaned title. | `packages/term-wezterm/src/tab-title.ts:128`, `packages/bridge/src/matcher.ts:67` |
+
+The observed native Stop completed successfully, while replay through the
+deployed entry reported a missing/ambiguous title identity and wrote no reply
+event. A read-only native `thread/read` query returned a nonempty name for
+the same thread. These observations establish the erroneous prerequisite:
+sending a labeled reply currently requires locating its physical pane.
+
+Pinned official Codex 0.163.0 sources describe the metadata:
+[thread/name/set and thread/read](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs),
+[title rendering](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/tui/src/chatwidget/status_surfaces.rs).
+The generated `ThreadReadResponse` schema exposes `thread.id`, `thread.name`
+and `thread.source`. Local source inspection confirms project-name comes from
+the project root/current directory and title thread-name can be truncated.
+
+## Candidates and decision
+
+| Candidate | Evidence and result | Decision |
+|---|---|---|
+| Single event plus on-demand native metadata | Stop supplies thread id and text; `thread/read` supplies the native name. A local query established availability. | User selected. |
+| Persist thread-to-pane bindings | Requires independent pane provenance and binding lifecycle; existing identity DD records the shared-server environment counterexample. | Unnecessary for the selected reply contract. |
+| Terminal title id | Existing implementation requires a visible title item; the user's deployed failure reproduced its missing-id gate. | Superseded for Stop replies by the user's name-based decision. |
+| Infer a pane from cwd or project name | Multiple sessions may share a project; project and native session names are independent. | Does not establish reply metadata. |
+| Parse transcript files | Native metadata already supplies the requested name; private-file parsing introduces an additional upstream data dependency. | Native metadata supplies the required field. |
+| Replace the TUI or fork native Codex | Project constraints preserve the user's existing TUI process. | Outside the allowed deployment model. |
+
+The event format below is a **pure internal choice**. Its precedent is the
+existing atomic hook queue and single watcher (`packages/cli-cc/src/adapter.ts:160`;
+`packages/cli-cc/src/state-files.ts:306`). It requires no new external library.
+Existing dependencies remain `ws` 8.20.0 (MIT), `zod` 3.x (MIT), `chokidar`
+4.x (MIT), and workspace atomic writes. The native local transport remains
+verified against Codex 0.163.0.
+
+## Proposed data flow
+
+The bundled Stop entry reads the configured terminal id as the IM mode gate.
+It supplies a session-name resolver directly, then invokes the Stop receiver.
+The receiver checks nonempty reply, inactive stop hook, `IMWork`, `IMOrigin`
+and daemon liveness before querying metadata.
+
+The resolver uses the existing bounded local UDS client. It requests only
+`thread/read {threadId, includeTurns:false}`, validates the response id,
+nonempty native name and source, and excludes native subagent sources.
+The whole metadata lookup has an 800 ms deadline, including initialization.
+The owned socket closes on success, timeout and failure. Missing names produce
+an actionable stderr diagnostic instructing `/rename <session-name>`; protocol,
+version and connection failures identify the local App Server dependency.
+
+The hook writes one atomic 0600 session reply event under the shared state
+directory: `SessionReply.codex.<thread-id>.<timestamp>.json`. The body contains
+`cli: 'codex'`, `sessionId`, `sessionName`, `termId` and
+`last_assistant_message`. Thread ids are validated UUIDs and timestamps use
+the existing colon-free timestamp formatter. Names occur in the JSON body.
+Events for successive turns remain distinct queue entries.
+
+The shared watcher classifies this explicit filename independently of pane
+events, validates the JSON body and filename/body session agreement, serializes
+dispatch per native session and invokes a session-reply handler capability.
+Unsupported handlers produce diagnostics. The event is deleted after dispatch,
+including handler failure, following the existing Stop queue contract.
+Startup cleanup preserves this recognized event family; watcher initial scan
+handles backlog in filename order. There remains one shared state watcher.
+
+The orchestrator uses a shared text-reply delivery function for pane Stop and
+session replies. It checks the selected terminal's `IMWork` and the latest
+validated global `IMOrigin`, skips empty messages, and passes `sessionName` as
+`sourceTag` for the named event. Pane Stop continues resolving its pane label.
+Send failures use the existing daemon error surface.
+
+Incoming name matching remains the existing terminal-title matcher. For a
+session named `frontend`, a terminal title beginning with `frontend` supports
+the existing unique-prefix `#frontend` route. The operation guide must state
+how `/rename`, `thread-name`, `project-name`, `activity` and `/list` relate.
+Native permission and question paths retain their existing pane identity
+requirements, as a separate capability from labeled Stop replies.
+
+## Queue states and invariants
+
+| State | Receive Stop | Metadata result | Watcher dispatch result | Process exit/restart |
+|---|---|---|---|---|
+| No event | Eligible Stop enters lookup; inactive/empty/gates-closed ends here. | Not applicable until lookup. | Not applicable without event. | Remains empty. |
+| Looking up | Another invocation has its own bounded lookup. | Valid root name writes event; subagent ends; missing name/error/timeout reports and ends. | Not applicable before atomic rename. | The owned connection ends; no partial event is dispatched. |
+| Queued | A later timestamp adds another event. | Lookup already complete. | Valid event invokes handler; invalid event reports; dispatch consumes the event in either case. | Complete events are initial-scan backlog on restart. |
+| Dispatching | New events queue behind this native session. | Lookup already complete. | Success or failure deletes the event; send failure is reported. | A crash before deletion may replay the event, matching existing Stop delivery semantics. |
+| Consumed | A subsequent Stop starts a new event. | Not applicable. | Further duplicate filesystem notifications find no event. | Remains consumed. |
+
+Only the hook writes reply content/name. Only the watcher consumes queue files.
+Only the orchestrator selects IMOrigin and delivers. A session reply carries
+no pane id. Native name lookup neither changes the thread nor advances a turn.
+The name is a Stop-time snapshot, so a later rename applies to later replies.
+Existing duplicate-name rejection remains applicable to incoming routing;
+an outgoing source label does not select an input destination.
+
+The HTML companion demonstrates the backend data flow and failure states.
+
+## Acceptance and verification
+
+| Item | Artifact/class | Situation and required outcome | Verification |
+|---|---|---|---|
+| 1 | Production, user-level, promised reply capability | A named root Stop with an active bridge reaches IM with exact native session name and text. | Receiver, watcher and orchestrator tests; local end-to-end fixture. |
+| 2 | Production, user-level, promised reply capability | Project title and thread name differ; the reply uses thread name. The terminal title lacks thread id. | Entry fixture and local native metadata smoke with deliberately different names. |
+| 3 | Production, user-level, promised reply capability | IM off, no IMOrigin, dead daemon, empty reply or active stop hook produces no delivery. | Enumerated gate tests. |
+| 4 | Production, user-level, promised reply capability | Missing name, wrong thread, unsupported server, timeout or malformed metadata supplies an actionable diagnostic; subagent Stop is excluded. | Native client fixture and receiver tests. |
+| 5 | Production, user-level, promised reply capability | Two sessions and successive queued turns retain their labels and ordering through the shared watcher. | Watcher and local end-to-end fixture. |
+| 6 | Production, internal queue contract | Malformed bodies, session-id mismatch and handler/send errors are diagnosed and consumed consistently; restart backlog is recognized. | Schema, watcher, cleanup and bridge tests. |
+| 7 | Existing production capabilities | Claude pane Stop and native Codex permission/question paths retain their current contracts. | Related tests and existing native question smoke. |
+| 8 | Documentation | Operators can distinguish project/session name and configure a routable session name. | README pair, architecture, dev guide, conventions and affected DD updates. |
+| 9 | Delivery | The bundled CLI loads and the PR has passing checks. | Typecheck, full tests, affected smoke, build and `./bin/multi-cc-im --version`; CI. |
+
+Unit tests use isolated native/state directories. Local smoke connects to an
+owned native fixture and a recording IM adapter. The maintainer performs
+deployment and real Feishu-account acceptance from GitHub.
