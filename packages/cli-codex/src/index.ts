@@ -75,6 +75,7 @@ export type {
 export { createCodexCliAdapter } from './adapter.js';
 export type { CreateCodexCliAdapterOpts } from './adapter.js';
 export { resolveCodexHookOrigin } from './hook-origin.js';
+export { resolveCodexSessionName } from './session-name.js';
 
 // Low-level environment detectors; native hook origins use official title ids.
 export {
