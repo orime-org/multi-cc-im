@@ -71,12 +71,14 @@ async def _list_sessions(connection):
 
                 # Working directory of the foreground process.
                 cwd = await session.async_get_variable("session.path") or ""
+                terminal_title = await session.async_get_variable("session.terminalWindowName") or ""
 
                 out.append(
                     {
                         "paneId": uuid,
                         "title": title,
                         "cwd": cwd,
+                        "terminalTitle": terminal_title,
                     }
                 )
     return out

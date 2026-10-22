@@ -9,6 +9,8 @@ import { runIterM2Helper, type IterM2RawSession } from './python-bridge.js';
 import { cleanCwd, cleanTitle } from './tab-title.js';
 
 export interface CreateITerm2AdapterOpts {
+  /** Bounded snapshot wait for short-lived native hook lookup. */
+  listTimeoutMs?: number;
   /**
    * Pre-resolved absolute path to a `python3` binary. Caller (CLI /
    * bridge core) calls `resolvePython3Path()` once at startup and caches
@@ -110,6 +112,7 @@ export function createITerm2Adapter(
         helperScript,
         log,
         request: { action: 'listSessions' },
+        timeoutMs: opts.listTimeoutMs,
       });
       // runIterM2Helper's return type is a union; narrow to the array
       // form. If someone wires the wrong action this throws clearly
@@ -123,6 +126,7 @@ export function createITerm2Adapter(
         paneId: row.paneId as unknown as PaneId,
         title: cleanTitle(row.title),
         cwd: cleanCwd(row.cwd),
+        ...(typeof row.terminalTitle === 'string' ? { terminalTitle: row.terminalTitle } : {}),
       }));
     },
 

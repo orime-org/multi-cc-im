@@ -18,7 +18,7 @@
  *
  * Daemon-side dispatch (state-file watcher + handler routing) is
  * CLI-agnostic and lives in cli-cc; cli-codex's `createCodexCliAdapter`
- * is a thin re-export wrapper that swaps the `name` field to `'codex'`.
+ * shares the hook watcher and adds the native local question capability.
  */
 
 // Hook payload zod schemas (codex stdin JSON validation).
@@ -57,7 +57,7 @@ export {
   defaultCodexConfigPath,
   mergeCodexHooks,
   buildMultiCcImHookGroups,
-  WARN_CODEX_RESTART_LINE,
+  CODEX_HOOK_REVIEW_GUIDANCE,
 } from './setup-hooks.js';
 export type {
   RunCodexSetupHooksOpts,
@@ -74,9 +74,9 @@ export type {
 // because the filename protocol is CLI-agnostic.
 export { createCodexCliAdapter } from './adapter.js';
 export type { CreateCodexCliAdapterOpts } from './adapter.js';
+export { resolveCodexHookOrigin } from './hook-origin.js';
 
-// Pane-origin detector chain — re-export from cli-cc; codex inherits
-// parent terminal env so the detectors work verbatim.
+// Low-level environment detectors; native hook origins use official title ids.
 export {
   DEFAULT_DETECTORS,
   detectIterm2PaneId,

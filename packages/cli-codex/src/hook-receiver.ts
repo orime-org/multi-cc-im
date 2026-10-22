@@ -2,8 +2,6 @@ import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
-  DEFAULT_DETECTORS,
-  runDetectors,
   type PaneOrigin,
   existsIMOriginFile,
   existsIMWorkFile,
@@ -51,10 +49,9 @@ import {
  * payload + stdout response shapes (see `payloads.ts` TSDoc for the
  * cc-vs-codex field differences).
  *
- * Codex hook subprocess inherits the parent codex process's env, so
- * `WEZTERM_PANE` / `ITERM_SESSION_ID` (set by the user's wezterm /
- * iTerm tab) are visible here exactly as they are to cli-cc — no new
- * detector logic needed; we re-export `DEFAULT_DETECTORS` from cli-cc.
+ * Native hooks may execute in a shared App Server environment. Pane identity
+ * must come from the injected official-title resolver, never inherited terminal
+ * variables. Without a resolver the native TUI retains control.
  *
  * **State file protocol parity**: codex hooks write to the same
  * `<paneId>_<sid>.Stop.<ts>` / `<paneId>_<sid>.PermissionRequest.<id>`
@@ -145,12 +142,10 @@ export interface RunHookReceiverOpts {
    */
   now?: () => Date;
   /**
-   * Override the pane-origin detector. Default re-uses cli-cc's
-   * `DEFAULT_DETECTORS` against `process.env` (codex inherits env
-   * from its parent tab; WEZTERM_PANE / ITERM_SESSION_ID flow through
-   * transparently).
+   * Resolve the native thread through fresh official terminal titles and
+   * loaded ids. Tests inject explicit origins; production uses hook-origin.
    */
-  resolvePaneOrigin?: () => PaneOrigin | undefined;
+  resolvePaneOrigin?: (threadId: string) => PaneOrigin | undefined | Promise<PaneOrigin | undefined>;
   /** Override PreToolUse poll interval (ms). Tests inject a small value. */
   permissionPollIntervalMs?: number;
   /** Override PreToolUse total wait budget (ms). Tests inject a small value. */
@@ -161,18 +156,13 @@ export interface RunHookReceiverOpts {
   trace?: (line: string) => void;
 }
 
-function defaultResolvePaneOrigin(): PaneOrigin | undefined {
-  return runDetectors(DEFAULT_DETECTORS, process.env);
-}
-
 /**
  * Process a single codex hook event. The gate sequence is parallel
  * to cli-cc's, with the only difference being which event variants
  * carry which fields (see `payloads.ts`).
  *
  * Gate ordering (cheapest first):
- *   1. Terminal detector — silent-exit when no supported terminal
- *      env (cc launched outside wezterm / iTerm; nothing to do).
+ *   1. Official title identity — defer to TUI when absent or ambiguous.
  *   2. Event-specific dispatch (Stop / SessionStart / PreToolUse /
  *      PermissionRequest).
  */
@@ -188,11 +178,10 @@ export async function runHookReceiver(
     }
   };
 
-  const resolvePaneOrigin =
-    opts.resolvePaneOrigin ?? defaultResolvePaneOrigin;
-  const origin = resolvePaneOrigin();
+  if (payload.hook_event_name === 'SessionStart') return handleSessionStart(payload, trace);
+  const origin = await opts.resolvePaneOrigin?.(payload.session_id);
   if (origin === undefined) {
-    trace(`detector: no supported terminal env, silent-exit`);
+    trace('Codex thread origin unavailable; defer to native terminal handling');
     return;
   }
   const { termId, paneId } = origin;
@@ -201,8 +190,6 @@ export async function runHookReceiver(
   );
 
   switch (payload.hook_event_name) {
-    case 'SessionStart':
-      return handleSessionStart(payload, trace);
     case 'PreToolUse':
       return handlePreToolUse({
         stateDir,
@@ -236,21 +223,14 @@ export async function runHookReceiver(
 }
 
 /**
- * SessionStart fires on startup / resume / clear / compact. multi-cc-im
- * has nothing to do here in v0.2.0 — the daemon uses `wezterm cli
- * list` polling as the live source of truth for which panes contain
- * codex, same approach as cli-cc which dropped SessionStart per DD #61.
- *
- * The hook is registered (matcher `^startup$` only — see setup-hooks)
- * solely so a future revision can hang per-startup state on it (e.g.
- * persisting pane registry across daemon restarts) without
- * requiring users to re-run setup-hooks.
+ * SessionStart is a trace-only lifecycle no-op. Discovery uses current official
+ * title ids, so no hook pane registration or cleanup is needed after restart.
  */
 function handleSessionStart(
   payload: SessionStartPayload,
   trace: (line: string) => void,
 ): void {
-  trace(`SessionStart source=${payload.source}: silent-exit (no-op in v0.2.0)`);
+  trace(`SessionStart source=${payload.source}: no pane registration`);
   return;
 }
 
@@ -604,9 +584,9 @@ async function handleStop(opts: HandleStopOpts): Promise<void> {
 
 /**
  * Convenience entry: read JSON from stdin string, parse, dispatch.
- * Caller (binary) typically does `await runFromStdin(rawStdin,
- * { stateDir })` and writes the return value (if any) as JSON to
- * stdout. Errors propagate; caller handles logging.
+ * Hosts provide a verified origin resolver; without one, native terminal
+ * handling retains control. The binary injects its selected-terminal resolver.
+ * Errors propagate; callers log diagnostics and reserve stdout for native JSON.
  */
 export async function runFromStdin(
   rawStdin: string,

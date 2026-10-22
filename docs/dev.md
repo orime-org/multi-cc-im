@@ -111,8 +111,64 @@ real account, existing user session, daemon restart, or IM send was involved.
 
 Question transport is separately documented in
 [the question-bridge DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md).
-The two-client probe verifies native requests; it does not claim real TUI widget
-or IM acceptance coverage, and does not install a question bridge.
+The original protocol probe establishes callback semantics. Product and real-TUI
+acceptance are separate reproducible checks below; real IM accounts are not used.
+
+## Codex native thread identity probe
+
+```sh
+pnpm exec tsx scripts/codex-identity-probe.mts
+```
+
+This optional research fixture requires installed Codex 0.163.0, Python 3 and
+Unix PTYs. It uses one temporary Codex home, a localhost fake Responses server,
+an owned App Server, and two owned TUI clients with distinct terminal markers.
+It verifies that hooks inherit the server's pane while the official `thread-id`
+titles identify different client threads. Trust bypass applies only to the
+private fixture. All fixture processes/files are cleaned up; no live user TUI,
+daemon, global configuration or real IM/model account is used.
+
+The probe also runs the production hook entry for replies and auto approvals
+with two actual TUI thread ids and a terminal-API fixture containing their
+captured titles, despite the shared server's wrong inherited pane. Both real
+TUIs ask native questions; the product client reads fresh captured titles and
+loaded ids, answers separately, and checks their local fake-model inputs.
+Only fixture PTYs inspect control sequences; production uses structured APIs.
+The terminal API fixture is preflighted before the sub-second hook checks.
+
+## Codex native question bridge acceptance
+
+```sh
+CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-question-smoke.mts
+pnpm exec vitest run packages/term-iterm2/src/helper-contract.test.ts
+```
+
+The first command uses a real native App Server and product adapter/orchestrator
+with a fake local model/IM/terminal snapshot. It verifies IM-first, terminal-first,
+late answers, native replay after bridge restart, default-mode questions and
+multiple questions; no answer becomes a terminal prompt. Its terminal titles
+are controlled fixtures, so use the two-TUI identity probe as separate provenance
+evidence. Both scripts clean up only processes/files they created.
+
+The second runs the actual Python helper against an isolated iTerm2 API contract
+where `autoName` and `terminalWindowName` differ. This protects the raw-title field;
+it does not establish a live iTerm2-window round trip. This host's live WezTerm
+structured API returned all title fields in about 8ms; iTerm2 was not running.
+No user daemon/TUI was restarted, no unrelated process stopped, and no real IM
+account or external model provider was contacted.
+
+Required verification also includes `pnpm typecheck`, `pnpm test`, build/bin smoke,
+`pnpm install --frozen-lockfile`, and a clean production deployment of the bundled
+CLI. On hosts with existing EMFILE watcher exhaustion, the documented test-only
+`CHOKIDAR_USEPOLLING=1` environment can run the full suite; it changes no product
+watcher behavior. Keep `~/.claude/settings.json` unchanged and compare its backup.
+
+Runtime activation: select Codex in the wizard, review hooks with native `/hooks`,
+and add `thread-id` in native `/terminal-title` for already-running TUIs. The
+installer preserves saved title items and appends only the official identity item
+(with backup); new TUIs read that selection. Missing/ambiguous ids pause native
+IM forwarding/submission and leave the TUI available. Native requests are currently
+pinned to 0.163.0 and a single shared `CODEX_HOME`; arbitrary home scans are forbidden.
 
 ## 快速跑通
 

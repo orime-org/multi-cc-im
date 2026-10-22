@@ -47,6 +47,8 @@ export interface TabInfo {
    * whitespace stripped. Empty string if user has not /rename'd.
    */
   title: string;
+  /** Unmodified pane title from the structured terminal API. */
+  terminalTitle: string;
   /** Raw value from wezterm cli (e.g. `"file:///private/tmp/cc-smoke"`). */
   cwd: string;
 }
@@ -86,10 +88,13 @@ interface RawPaneEntry {
  */
 export async function listAllTabs(opts: {
   wezterm: string;
+  /** Optional bounded snapshot wait used by native hook origin lookup. */
+  timeoutMs?: number;
 }): Promise<Map<number, TabInfo>> {
   const stdout = await runWezTermCli({
     wezterm: opts.wezterm,
     args: ['cli', 'list', '--format', 'json'],
+    ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
   });
 
   let parsed: unknown;
@@ -121,6 +126,7 @@ export async function listAllTabs(opts: {
     result.set(paneId, {
       paneId,
       title: finalTitle,
+      terminalTitle: rawTitle,
       cwd,
     });
   }

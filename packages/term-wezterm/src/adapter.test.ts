@@ -162,6 +162,7 @@ describe('createWezTermAdapter — ListPanes capability', () => {
     expect(panes).toHaveLength(2);
     expect(panes[0]?.paneId).toBe(20);
     expect(panes[0]?.title).toBe('frontend');
+    expect(panes[0]?.terminalTitle).toBe('frontend');
     expect(panes[1]?.paneId).toBe(21);
     expect(mockRunWezTermCli).toHaveBeenCalledWith(
       expect.objectContaining({

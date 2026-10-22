@@ -71,8 +71,34 @@
 Codex 三条路径共享一次性 executor：每调用独立临时 cwd、0600 模式 schema 文件、
 `--ephemeral --disable hooks --sandbox read-only`、移除终端来源环境变量，退出清理。
 后两种结果使用 shared 中现有 zod schema 校验；daemon 的权限/回答映射不变。
-这里的 AUQ 仍指已有 Claude 提问。Codex 原生问题的 App Server 接线是
-[单独的待决策 DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)，尚未进入产品。
+这里的 AUQ 回答解释器同时服务原生问题的自然语言回答；原生传输独立于权限 hook。
+
+### Codex 原生线程身份与问题通道
+
+用户锁定官方标题身份来源，见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
+终端 `PaneInfo.terminalTitle` 保存结构化 API 的原始标题：WezTerm 使用 pane `title`，
+iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用既有清理路径。
+0.163.0 的 `thread-id` 实际为 UUID 前缀加 `...`；`matchCodexThreads` 只接受验证过的
+形状，并对当前 `thread/loaded/list` 全量分页结果做唯一匹配。缺失／歧义／一线程多窗格
+不生成绑定。cwd、友好名、hook 的服务器 pane 环境变量均不能补足身份。
+
+`hook-receiver-codex` 从 daemon 配置读取所选终端，用短连接查询该 Codex home 的已加载 ID，
+结合新鲜终端快照定位 `session_id`，再处理 Stop／PreToolUse／PermissionRequest。
+身份查询最多 800ms，自己启动的终端 listing 子进程最多 600ms；无身份则输出诊断、
+回到 Codex 原生处理，不生成 IM 权限决定。SessionStart 不登记 pane。Claude 原有来源路径独立。
+
+启用 Codex 时，即使同时启用 Claude，也只创建一个既有状态文件 watcher，并附加一个
+本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它只附加唯一关联、
+已加载的根线程；`thread/read` 检查后 `thread/resume`，不创建线程、不启动回合、不覆写配置。
+验证版本为 0.163.0；只读取一个配置的 `CODEX_HOME`，不扫描 transcript 或其他 home。
+
+`item/tool/requestUserInput` → 原始 thread/turn/item/request/question IDs → IMWork/owner/chat
+门控 → 带稳定问题编号的 IM 提问 → `/answer` 或引用机器人消息 → 选定后端解释／校验
+→ 重新核对身份及原生待答状态 → native RPC response `answers[questionId].answers`。
+原生 `serverRequest/resolved`／turn completion／thread closure 清理待答；断连丢弃提交能力，
+重连根据原生 pending replay 恢复。终端与 IM 先到的回答生效；过期回答被消费并提示，
+不会走普通 prompt 路由。auto 模式不代答问题；secret 只发送终端处理提示。
+其他 App Server 审批／OAuth／验证请求不进入该问题通道。计划面板仍仅观察计划事件。
 
 ## 包依赖方向
 
@@ -107,7 +133,7 @@ files                                                    ↑
 |---|---|---|---|
 | IM | lark (`@larksuiteoapi/node-sdk` WSClient) | telegram / slack / wechat | WS 长连接 / Webhook |
 | Term | wezterm cli + iTerm2 Python API helper | tmux / kitty / Ghostty | 子命令 wrapper / API 子进程 |
-| CLI | claude-code（hook + state file IPC） | codex / aider | hook 模式 |
+| CLI | Claude Code（hook + state file IPC）／Codex（hook + 原生问题 UDS） | aider / gemini | 复用各 CLI 原生扩展点 |
 | Storage | files (toml + 0600 JSON + state file IPC) | SQLite cache（仅当 /usage 出现性能瓶颈） | small capability interfaces |
 
 ## 目录结构

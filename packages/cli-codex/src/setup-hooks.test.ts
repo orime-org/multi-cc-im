@@ -8,7 +8,7 @@ import {
   mergeCodexHooks,
   buildMultiCcImHookGroups,
   defaultCodexConfigPath,
-  WARN_CODEX_RESTART_LINE,
+  CODEX_HOOK_REVIEW_GUIDANCE,
   type CodexHooksMap,
 } from './setup-hooks.js';
 
@@ -25,6 +25,25 @@ afterEach(async () => {
 });
 
 describe('defaultCodexConfigPath', () => {
+  it('appends thread-id while preserving title order, hook trust and unrelated TUI settings', async () => {
+    const path = join(sandboxRoot, 'config.toml');
+    const config = { tui: { terminal_title: ['project-name', 'activity'], notifications: false },
+      hooks: { ...buildMultiCcImHookGroups(BIN, 600), state: { review: { enabled: false, trusted_hash: 'owner-reviewed' } } } };
+    const original = stringifyToml(config);
+    await writeFile(path, original);
+    const result = await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    expect(result.changed).toBe(true);
+    expect(await readFile(result.backupPath!, 'utf8')).toBe(original);
+    expect(parseToml(await readFile(path, 'utf8'))).toMatchObject({ ...config,
+      tui: { ...config.tui, terminal_title: ['project-name', 'activity', 'thread-id'] } });
+    expect((await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot })).changed).toBe(false);
+  });
+  it('preserves an explicitly empty title and adds only thread-id', async () => {
+    const path = join(sandboxRoot, 'config.toml');
+    await writeFile(path, stringifyToml({ tui: { terminal_title: [] } }));
+    await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
+    expect(parseToml(await readFile(path, 'utf8'))).toMatchObject({ tui: { terminal_title: ['thread-id'] } });
+  });
   it('uses explicit override when provided', () => {
     const p = defaultCodexConfigPath('/custom/codex/home');
     expect(p).toBe('/custom/codex/home/config.toml');
@@ -273,7 +292,7 @@ statusMessage = "user-tool"
     expect(lines.some((l) => l.includes('binary:'))).toBe(true);
   });
 
-  it('emits codex-restart warning on real toml write (changed=true)', async () => {
+  it('emits native hook/title review guidance on real toml write (changed=true)', async () => {
     const lines: string[] = [];
     const result = await runCodexSetupHooks({
       binaryPath: BIN,
@@ -281,16 +300,12 @@ statusMessage = "user-tool"
       log: (l) => lines.push(l),
     });
     expect(result.changed).toBe(true);
-    expect(lines.filter((l) => l === WARN_CODEX_RESTART_LINE)).toHaveLength(1);
+    expect(lines.filter((l) => l === CODEX_HOOK_REVIEW_GUIDANCE)).toHaveLength(1);
   });
 
-  it('emits codex-restart warning ALSO on idempotent rerun (changed=false)', async () => {
-    // Per user direction 2026-05-23 "需要每次启动都提醒": the warning is
-    // about pre-hook codex processes whose lifetime started before
-    // hook reached the toml — those tabs need a manual restart regardless
-    // of whether the current daemon invocation rewrites the toml. So
-    // every runCodexSetupHooks call MUST emit the warning, including
-    // idempotent reruns.
+  it('emits native hook/title review guidance ALSO on idempotent rerun (changed=false)', async () => {
+    // Even a no-op setup may be followed by a TUI that has not applied the
+    // reviewed hooks or the saved title selection. Keep the native guidance.
     await runCodexSetupHooks({ binaryPath: BIN, codexHome: sandboxRoot });
     const lines: string[] = [];
     const result = await runCodexSetupHooks({
@@ -299,7 +314,7 @@ statusMessage = "user-tool"
       log: (l) => lines.push(l),
     });
     expect(result.changed).toBe(false);
-    expect(lines.filter((l) => l === WARN_CODEX_RESTART_LINE)).toHaveLength(1);
+    expect(lines.filter((l) => l === CODEX_HOOK_REVIEW_GUIDANCE)).toHaveLength(1);
   });
 
   it('atomic write: no temp file lingers after write', async () => {

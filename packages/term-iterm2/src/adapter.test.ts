@@ -55,7 +55,7 @@ describe('createITerm2Adapter', () => {
     // and a default-cc title that should coalesce to empty.
     stub = await writeStub(
       `cat > /dev/null; echo '{"ok":true,"result":[` +
-        `{"paneId":"UUID-1","title":"frontend","cwd":"/tmp/a"},` +
+        `{"paneId":"UUID-1","title":"frontend","terminalTitle":"raw native id","cwd":"/tmp/a"},` +
         `{"paneId":"UUID-2","title":"✳ backend","cwd":"  /tmp/b  "},` +
         `{"paneId":"UUID-3","title":"Claude Code","cwd":"/tmp/c"}` +
         `]}'`,
@@ -63,7 +63,7 @@ describe('createITerm2Adapter', () => {
     const adapter = adapterFor(stub);
     const panes = await adapter.listPanes();
     expect(panes).toEqual([
-      { paneId: 'UUID-1', title: 'frontend', cwd: '/tmp/a' },
+      { paneId: 'UUID-1', title: 'frontend', terminalTitle: 'raw native id', cwd: '/tmp/a' },
       { paneId: 'UUID-2', title: 'backend', cwd: '/tmp/b' },
       { paneId: 'UUID-3', title: '', cwd: '/tmp/c' },
     ]);

@@ -13,7 +13,7 @@ import { z } from 'zod';
  *
  * | Event | Why |
  * |---|---|
- * | `SessionStart` | Pane registration on `source='startup'`; ignored on resume/clear/compact |
+ * | `SessionStart` | Lifecycle no-op; pane identity comes from official native titles |
  * | `PreToolUse` | Permission gate forward (mirror cli-cc PreToolUse) |
  * | `PermissionRequest` | Codex-native permission dialog (no cc analog; cc overloads PreToolUse) |
  * | `Stop` | Forward `last_assistant_message` to IM (mirror cli-cc Stop) |
@@ -58,11 +58,8 @@ const baseCodexPayload = {
 };
 
 /**
- * `SessionStart` fires on startup / resume / clear / compact. multi-cc-im
- * only acts on `source='startup'` (pane registry registration); other
- * sources are no-ops at the hook level (the daemon's wezterm cli list
- * polling already covers resume/clear lifecycle for cli-cc, and codex
- * inherits the same WEZTERM_PANE env so the same approach works).
+ * SessionStart remains a lifecycle no-op. The native title and current loaded
+ * ids establish identity even without a new hook after resume or pane changes.
  */
 export const SessionStartPayloadSchema = z.object({
   ...baseCodexPayload,

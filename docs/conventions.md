@@ -18,6 +18,11 @@
 
 ### 修订记录
 
+- 2026-10-22 Codex 原生提问与官方线程身份：按用户锁定方案，终端暴露原始标题并用当前 loaded IDs 严格唯一匹配；Stop／权限 hook 也改用相同来源，删除继承 pane 环境变量的默认路径。提问经本机 UDS 转发，`/answer`／引用回复返回原生 request；auto 不代答、secret 留终端、断连／切换暂停、迟到回复不生成新任务。安装保留标题项并追加 thread-id、备份、幂等，提示 `/hooks` 与 `/terminal-title` 原生入口。真实双 TUI 共用服务器与真实原生问题／模型输入、产品 IM fixture、全量回归已验收；iTerm2 为真实 Python helper 契约验证，未运行真实 iTerm2 窗口。见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md) 与 [提问 DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)。
+
+
+- 2026-10-22 Codex 线程身份根因复核：用户已接受本机 App Server 提问通道，但真实双 TUI 实测证伪 hook 环境变量登记 pane 的前提（客户端 800/900 的 hook 均读到服务器 700）。已撤回该实现，未部署／提交为完成功能；官方 `thread-id` 标题实测可区分客户端，但输出截断，须严格唯一匹配。用户已选择官方 `thread-id` 标题自动识别，替代实现与所有 Codex hook 来源统一，详见 [线程身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
+
 - 2026-10-22 Codex 路由接线与隔离：向导选择的 CLI 覆盖普通消息、AUQ 与原生权限三条解释路径，Codex-only 分诊不再隐式依赖 Claude；Codex 子进程改用 `--disable hooks` 并使用独立临时 cwd，沿用既有回答策略。真实 Codex + 本地假 provider 验证三条路由和 marker 隔离。另完成原生问题的双客户端请求／回答／重连／中断实测，见 [待决定的 question-bridge DD](superpowers/specs/2026-10-22-codex-question-bridge-dd.md)，未安装产品回答通道。
 
 - 2026-10-22 Codex 协议与配置保留修复（用户认可审计建议后实施）：`PermissionRequest` allow/deny/timeout 全部改为官方 `hookSpecificOutput` 包装；agent 字段按官方可选字段接收。hook 安装在原位置更新自身 handler，仅追加缺失事件，保留信任／禁用状态、位置对应关系及第三方完整配置，结构比较保证重复安装不写文件。沿用既有 auto/ask 和超时策略；路由隔离与 Claude 隐式依赖见后续修订，原生提问转发仍待决定。见 [审计实施记录](superpowers/specs/2026-10-22-codex-integration-audit.md#approved-protocol-and-configuration-repair)。
@@ -122,7 +127,8 @@
 
 | 维度 | 状态 | 详情 |
 |---|---|---|
-| Codex 分诊后端与隔离 | ✓ | 三条解释 callback 统一遵循向导选择；Codex executor 在临时 cwd 关闭 hooks，实际 Codex + 本地假 provider 已验证。不等于已实现 Codex 原生问题转发。见 [DD §13](superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#13-2026-10-22-路由后端与原定隔离语义修复) |
+| Codex 原生提问与线程身份 | ✓ 实施／隔离验收 | 官方 thread-id + 当前 loaded IDs 唯一匹配；提问、回复、权限来源统一。本机 native request 回答支持两端抢答／重连／重启，auto 不代答问题。真实双 TUI 及产品 IM fixture 通过；iTerm2 实际窗口／真实飞书账号未测。见 [DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md) |
+| Codex 分诊后端与隔离 | ✓ | 三条解释 callback 统一遵循向导选择；Codex executor 在临时 cwd 关闭 hooks，实际 Codex + 本地假 provider 已验证。原生问题为独立的本机通道，见上行。见 [DD §13](superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#13-2026-10-22-路由后端与原定隔离语义修复) |
 | Codex 审批协议与 hook 配置保留 | ✓ | 三条审批输出路径符合 0.163.0 原生结构；主会话可省略 agent 字段；安装保留状态和第三方字段、备份原文、重复安装不写入。真实 IM 账号验证尚未执行，路由/提问范围另行推进。见 [审计](superpowers/specs/2026-10-22-codex-integration-audit.md) |
 | Codex 开发任务面板 | ✓ | 用户选定本机官方事件方案；真实 `update_plan` 已在下方面板刷新，6 项 socket/恢复测试 + 4 项 viewer 测试通过。按 thread 私有缓存，断连重试，不回答审批、不启动回合；关闭整个终端后需重开面板。见 [开发指南](dev.md#codex-terminal-task-panel) |
 | 协议层（飞书 IM）| ✓ | npm depend `@larksuiteoapi/node-sdk@^1.63.1`（官方 Bytedance 维护，MIT，月下载 4M+）；WSClient 长连接 = no-public-IP；IM v1 messaging covers text + image + file + interactive cards。**已删**：v1.4 时代 wechat / iLink vendored OpenClaw（PR #76/78/82 多次踩 undici 升级 instability，DD #86 §11.2 决定整包删）。[DD #86: Lark IM adapter](superpowers/specs/2026-05-09-lark-im-adapter-dd.md) + [历史 DD: iLink 选型](superpowers/specs/2026-04-26-ilink-library-dd.md)（保留作 wechat 时代决策记录）|

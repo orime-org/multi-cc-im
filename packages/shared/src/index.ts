@@ -66,6 +66,9 @@ export type {
 export type {
   Adapter as CLIAdapter,
   Handler as CLIHandler,
+  CLIQuestion,
+  CLIQuestionRequest,
+  CLIQuestions,
   HookPayload,
   HookDecision,
   PreToolUsePayload,

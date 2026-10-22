@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
 /**
@@ -33,7 +34,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
  *
  * | Event | matcher | Why |
  * |---|---|---|
- * | `SessionStart` | `'^startup$'` (codex matcher applies to `source`) | Register pane on real session start; skip resume/clear/compact. |
+ * | `SessionStart` | `'^startup$'` (codex matcher applies to `source`) | Lifecycle no-op; identity comes from official thread-id titles. |
  * | `PreToolUse` | `'.*'` (all tools) | Permission gate forward — daemon decides per-tool from received payload. |
  * | `PermissionRequest` | `'.*'` (all tools) | Codex-native escalation dialog — distinct from PreToolUse. |
  * | `Stop` | (matcher unsupported on Stop per docs) | Forward cc reply to IM via `last_assistant_message`. |
@@ -259,30 +260,18 @@ export async function runCodexSetupHooks(
 
   // TOML can reorder tables. Structural equality avoids rewriting reviewed
   // config merely because object keys have a different insertion order.
-  const alreadyInstalled = isDeepStrictEqual(existingHooksRaw, merged);
+  const tui = z.object({ terminal_title: z.array(z.string()).optional() }).passthrough().parse(existingConfig['tui'] ?? {});
+  // Preserve the verified native defaults when no custom selection exists.
+  const items = tui.terminal_title ?? ['activity', 'thread-name', 'project-name'];
+  const terminalTitle = items.some(item => item === 'thread-id' || item === 'session-id') ? items : [...items, 'thread-id'];
+  const nextTui = { ...tui, terminal_title: terminalTitle };
+  const alreadyInstalled = isDeepStrictEqual(existingHooksRaw, merged) && isDeepStrictEqual(existingConfig['tui'], nextTui);
 
-  // UX防呆: codex unlike cc does NOT hot-reload its hooks config. Per
-  // [[reference_codex_hook_no_hot_reload_cc_does]] — cc has a file
-  // watcher that picks up settings.json edits live; codex reads
-  // ~/.codex/config.toml once at process startup
-  // (codex-rs/core/src/config/mod.rs::Config::load_with_cli_overrides
-  // → Hooks::new(Arc<HooksConfig>), no watcher). Result: codex tabs
-  // launched BEFORE this setup-hooks run won't see the new handlers —
-  // their Stop / PreToolUse / PermissionRequest events fire silently
-  // with no hook spawn, daemon never gets a state file, IM never
-  // forwards.
-  //
-  // The deeper invariant: a codex tab launched before the hook reaches
-  // ~/.codex/config.toml is stuck without hooks for its entire lifetime,
-  // regardless of how many times the daemon restarts. So even on an
-  // idempotent rerun (changed=false) — where this run made no toml
-  // changes — the user still might have pre-hook codex tabs in their
-  // wezterm. Warn on EVERY runCodexSetupHooks call so the user always
-  // sees the reminder and never has to debug a silent failure path
-  // (2026-05-23 user direction "需要每次启动都提醒").
+  // Native /hooks reviews and refreshes hook trust; /terminal-title applies
+  // title selections to an already-running TUI. Do not require a blind restart.
   if (alreadyInstalled) {
     log(`  ✓ already up-to-date (${countHandlers(merged)} handlers); no write needed.`);
-    log(WARN_CODEX_RESTART_LINE);
+    log(CODEX_HOOK_REVIEW_GUIDANCE);
     return {
       configPath,
       changed: false,
@@ -299,15 +288,14 @@ export async function runCodexSetupHooks(
     log(`  ✓ backup: ${backupPath}`);
   }
 
-  // Write merged config back. Preserve every non-`hooks` table verbatim
-  // by passing the parsed object straight to `stringify` after swapping
-  // in the new hooks tree.
-  const nextConfig: Record<string, unknown> = { ...existingConfig, hooks: merged };
+  // Preserve unrelated configuration and TUI fields while adding native title
+  // identity and updating only the installer-owned hook definitions.
+  const nextConfig: Record<string, unknown> = { ...existingConfig, hooks: merged, tui: nextTui };
   const out = stringifyToml(nextConfig);
   await atomicWrite(configPath, out);
 
   log(`  ✓ wrote ${countHandlers(merged)} handlers across ${Object.values(merged).filter(Array.isArray).length} events.`);
-  log(WARN_CODEX_RESTART_LINE);
+  log(CODEX_HOOK_REVIEW_GUIDANCE);
 
   return {
     configPath,
@@ -317,12 +305,8 @@ export async function runCodexSetupHooks(
   };
 }
 
-/**
- * The exact warning string emitted by `runCodexSetupHooks` after a
- * successful hook write. Exported so callers (e.g. `multi-cc-im start`)
- * can echo it to the daemon console — the setup-hooks log itself goes
- * to fileOnlyLog, but users see only console output at startup.
- */
-export const WARN_CODEX_RESTART_LINE =
-  '  ⚠️ codex 不像 cc 自动热重载 hook 配置。如果你的 codex tab 在装 hook 之前就启动了，' +
-  '需要在那个 tab 里 /quit 然后重新 codex 一次才能让 IM 收到回信。新启动的 codex tab 自动生效。';
+/** Native review and live-title activation guidance, also emitted on no-op setup. */
+export const CODEX_HOOK_REVIEW_GUIDANCE =
+  '  Review bridge hooks in Codex /hooks without changing your approval policy. ' +
+  'For an already-running TUI, enable thread-id in /terminal-title; new TUIs read the saved title configuration. ' +
+  'Missing or ambiguous thread identity pauses IM forwarding; native terminal handling remains available.';

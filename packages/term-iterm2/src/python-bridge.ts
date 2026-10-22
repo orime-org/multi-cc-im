@@ -20,6 +20,8 @@ export type IterM2HelperRequest =
   | { action: 'sendKeystroke'; sessionId: string; key: string };
 
 export interface IterM2RawSession {
+  /** Original OSC 0/2 value; never use autoName for native thread identity. */
+  terminalTitle?: string;
   paneId: string;
   title: string;
   cwd: string;
