@@ -938,10 +938,12 @@ export function createOrchestrator(
   // Outbound: cc Stop → IM send via stored replyCtx
   // ============================================================================
 
-  async function handleStop(
-    p: StopPayload & { paneId: PaneId; termId?: TerminalId },
-  ): Promise<HookDecision | void> {
-    const { paneId } = p;
+  async function forwardReply(
+    p: Pick<StopPayload, 'last_assistant_message'> & { termId?: TerminalId },
+    source: { kind: 'pane'; paneId: PaneId } | { kind: 'session'; sessionId: string; sessionName: string },
+  ): Promise<void> {
+    const context = source.kind === 'pane' ? { paneId: source.paneId } : { sessionId: source.sessionId };
+    const label = source.kind === 'pane' ? `pane=${source.paneId}` : `session=${source.sessionId}`;
 
     // Per-terminal IMWork gate (issue 378). Stop files written by hook
     // subprocess carry `termId` so we don't have to re-derive it from
@@ -951,7 +953,7 @@ export function createOrchestrator(
     // missing = skip (the corresponding `IM<TermType>` file definitely
     // doesn't exist either, so the effect is identical).
     if (p.termId === undefined) {
-      log(`[Stop pane=${paneId}] legacy Stop file missing termId, skip forward`);
+      log(`[Stop ${label}] legacy Stop file missing termId, skip forward`);
       return;
     }
     if (!(await existsIMWorkFile(opts.stateDir, p.termId))) {
@@ -959,7 +961,7 @@ export function createOrchestrator(
       // log-grep dashboards + tests; appends the per-terminal filename
       // suffix for issue-378 traceability.
       log(
-        `[Stop pane=${paneId}] IMWork off (IM${p.termId[0]!.toUpperCase()}${p.termId.slice(1)}), skip forward`,
+        `[Stop ${label}] IMWork off (IM${p.termId[0]!.toUpperCase()}${p.termId.slice(1)}), skip forward`,
       );
       return;
     }
@@ -975,27 +977,30 @@ export function createOrchestrator(
     try {
       replyCtx = await readIMOriginFile(opts.stateDir);
     } catch (err) {
-      onError(err, { phase: 'readIMOrigin', paneId });
+      onError(err, { phase: 'readIMOrigin', ...context });
       return;
     }
     if (replyCtx === null) {
-      log(`[Stop pane=${paneId}] no IMOrigin, skip forward`);
+      log(`[Stop ${label}] no IMOrigin, skip forward`);
       return;
     }
 
     if (p.last_assistant_message.length === 0) {
-      log(`[Stop pane=${paneId}] empty assistant message, skip forward`);
+      log(`[Stop ${label}] empty assistant message, skip forward`);
       return;
     }
 
-    // Resolve current tab title for prefix.
-    let prefix = `(pane ${paneId})`;
-    try {
-      const panes = await opts.termAdapter.listPanes();
-      const me = panes.find((pi) => (pi.paneId) === paneId);
-      if (me && me.title.length > 0) prefix = me.title;
-    } catch (err) {
-      onError(err, { phase: 'forwardStopListPanes', paneId });
+    let prefix: string;
+    if (source.kind === 'session') prefix = source.sessionName;
+    else {
+      prefix = `(pane ${source.paneId})`;
+      try {
+        const panes = await opts.termAdapter.listPanes();
+        const me = panes.find(pi => pi.paneId === source.paneId);
+        if (me && me.title.length > 0) prefix = me.title;
+      } catch (err) {
+        onError(err, { phase: 'forwardStopListPanes', ...context });
+      }
     }
 
     log(
@@ -1010,7 +1015,7 @@ export function createOrchestrator(
         sourceTag: prefix,
       });
     } catch (err) {
-      onError(err, { phase: 'forwardStop', paneId });
+      onError(err, { phase: 'forwardStop', ...context });
     }
   }
 
@@ -1798,6 +1803,9 @@ export function createOrchestrator(
   }
 
   const cliHandler: CLIHandler = {
+    async onSessionReply(p) {
+      await forwardReply(p, { kind: 'session', sessionId: p.sessionId, sessionName: p.sessionName });
+    },
     async onQuestion() { await nativeQuestions.flush(); },
     onQuestionClosed: nativeQuestions.onQuestionClosed,
     async onPreToolUse(p): Promise<void> {
@@ -1807,7 +1815,7 @@ export function createOrchestrator(
       return handlePermissionDialog(p);
     },
     async onStop(p): Promise<HookDecision | void> {
-      return handleStop(p);
+      return forwardReply(p, { kind: 'pane', paneId: p.paneId });
     },
   };
 

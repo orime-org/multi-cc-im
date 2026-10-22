@@ -32,7 +32,7 @@ import type {
   StopPayload,
 } from './payloads.js';
 
-const SID = 'thread_01J9Z7HVQK5P3M4XYZ';
+const SID = '11111111-1111-4111-8111-111111111111';
 const TURN_ID = 'turn_01J9Z7HW2A5BCD9XYZ';
 const MODEL = 'gpt-5-codex';
 const PANE_ID = 42 as unknown as PaneId;
@@ -139,6 +139,7 @@ function baseOpts(payload: ParsedHookPayload): RunHookReceiverOpts {
     stateDir,
     payload,
     resolvePaneOrigin: () => ORIGIN,
+    stop: { termId: TERM_ID, resolveSessionName: async () => 'fixture-session' },
   };
 }
 
@@ -154,7 +155,7 @@ describe('runHookReceiver — terminal detection gate', () => {
       else process.env.WEZTERM_PANE = previous;
     }
   });
-  it('silent-exits when no terminal env detected', async () => {
+  it('leaves Stop native when no name resolver is configured', async () => {
     const result = await runHookReceiver({
       stateDir,
       payload: makeStopPayload(),
@@ -195,28 +196,25 @@ describe('runHookReceiver — Stop branch', () => {
     expect(result).toBeUndefined();
   });
 
-  it('writes Stop file with given timestamp when all gates pass', async () => {
+  it('queues a session reply with the given timestamp when all gates pass', async () => {
     await setGatesOpen();
     const fixedNow = new Date('2026-05-22T08:00:00.000Z');
     await runHookReceiver({
       ...baseOpts(makeStopPayload()),
       now: () => fixedNow,
     });
-    const fname = `${String(PANE_ID)}_${SID}.Stop.2026-05-22T08-00-00-000Z`;
+    const fname = `SessionReply.codex.${SID}.2026-05-22T08-00-00-000Z.json`;
     const st = await stat(join(stateDir, fname));
     expect(st.isFile()).toBe(true);
   });
 
-  it('serializes nullable last_assistant_message as empty string', async () => {
+  it('skips nullable assistant messages', async () => {
     await setGatesOpen();
     await runHookReceiver({
       ...baseOpts(makeStopPayload({ last_assistant_message: null })),
       now: () => new Date('2026-05-22T08:00:01.000Z'),
     });
-    const fname = `${String(PANE_ID)}_${SID}.Stop.2026-05-22T08-00-01-000Z`;
-    const raw = await readFile(join(stateDir, fname), 'utf8');
-    const parsed = JSON.parse(raw) as { last_assistant_message: string };
-    expect(parsed.last_assistant_message).toBe('');
+    expect(await listDirSuffix(stateDir, 'SessionReply.')).toEqual([]);
   });
 });
 
@@ -436,10 +434,10 @@ describe('runFromStdin', () => {
     await runFromStdin(raw, {
       stateDir,
       resolvePaneOrigin: () => ORIGIN,
+      stop: { termId: TERM_ID, resolveSessionName: async () => 'fixture-session' },
       now: () => new Date('2026-05-22T09:00:00.000Z'),
     });
-    // Stop file appeared — proves dispatch happened end-to-end
-    const remaining = await listDirSuffix(stateDir, '.Stop.');
+    const remaining = await listDirSuffix(stateDir, 'SessionReply.');
     expect(remaining.length).toBeGreaterThan(0);
   });
 

@@ -1214,6 +1214,24 @@ describe('createOrchestrator — image stash + reply-thread join (DD §6 C.1)', 
 // ============================================================================
 
 describe('createOrchestrator — outbound (cc Stop → IM)', () => {
+  it('sends a named session reply with its native name while terminal listing fails', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([]);
+    term.listPanes = vi.fn(async () => { throw new Error('terminal fixture unavailable'); });
+    const orch = createOrchestrator({ stateDir: testStateDir, imAdapter: im, cliAdapter: cli,
+      termAdapter: term, state: memState(), aiRouter: null });
+    await orch.start();
+    const replyCtx: IMReplyContext = { imType: 'lark', openId: 'owner', chatId: 'chat' };
+    await writeIMOriginFile(testStateDir, replyCtx);
+    try {
+      await cli.handler!.onSessionReply!({ cli: 'codex', sessionId: SID_A, sessionName: 'native-name',
+        termId: 'wezterm', last_assistant_message: 'native answer' });
+      expect(im.sent).toEqual([{ content: 'native answer', replyCtx, sourceTag: 'native-name' }]);
+      expect(term.listPanes).not.toHaveBeenCalled();
+    } finally { await orch.stop(); }
+  });
+
   it('cc Stop with stored IMOrigin → forward last_assistant_message', async () => {
     const im = makeMockIM();
     const cli = makeMockCLI();

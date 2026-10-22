@@ -30,6 +30,15 @@ describe('sweepStaleStateFiles', () => {
     return (await readdir(stateDir)).sort();
   }
 
+  it('preserves queued native session replies for watcher restart dispatch', async () => {
+    const name = `SessionReply.codex.${SID_A}.2026-10-22T12-00-00-000Z.json`;
+    await writeFiles({ [name]: JSON.stringify({ cli: 'codex', sessionId: SID_A,
+      sessionName: 'frontend', termId: 'wezterm', last_assistant_message: 'answer' }) });
+    const result = await sweepStaleStateFiles(stateDir, { livePaneIds: async () => [] });
+    expect(await listStateDir()).toEqual([name]);
+    expect(result).toEqual({ orphanPaneFilesCleaned: 0, legacyCleaned: 0, staleDaemonPidCleaned: 0 });
+  });
+
   // ===========================================================================
   // Pane-keyed orphan sweep — paneId not in live wezterm set → cleaned.
   // ===========================================================================

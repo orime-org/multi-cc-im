@@ -1,15 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
+import type { TerminalId } from '@multi-cc-im/shared';
 import {
   type PaneOrigin,
   existsIMOriginFile,
   existsIMWorkFile,
   formatStopTimestamp,
   isDaemonAlive,
-  listStopFiles,
-  deleteStopFile,
-  writeStopFile,
+  writeSessionReplyFile,
   readIMWorkFile,
   listPermissionRequestFiles,
   listPermissionResponseFiles,
@@ -49,16 +48,9 @@ import {
  * payload + stdout response shapes (see `payloads.ts` TSDoc for the
  * cc-vs-codex field differences).
  *
- * Native hooks may execute in a shared App Server environment. Pane identity
- * must come from the injected official-title resolver, never inherited terminal
- * variables. Without a resolver the native TUI retains control.
- *
- * **State file protocol parity**: codex hooks write to the same
- * `<paneId>_<sid>.Stop.<ts>` / `<paneId>_<sid>.PermissionRequest.<id>`
- * filenames the daemon's chokidar watcher already consumes. The daemon
- * is CLI-agnostic at this layer — Stop file body content
- * (`last_assistant_message`) is identical structure across cc and
- * codex, so dispatch downstream works without changes.
+ * Native hooks may execute in a shared App Server environment. Permission
+ * events use the injected official-title pane resolver. Stop events use native
+ * session metadata and carry their source name in the session reply queue.
  *
  * **Stdout protocol per codex docs**:
  *
@@ -146,6 +138,11 @@ export interface RunHookReceiverOpts {
    * loaded ids. Tests inject explicit origins; production uses hook-origin.
    */
   resolvePaneOrigin?: (threadId: string) => PaneOrigin | undefined | Promise<PaneOrigin | undefined>;
+  /** Selected IM gate and bounded native name lookup for Stop replies. */
+  stop?: {
+    termId: TerminalId;
+    resolveSessionName(threadId: string): Promise<string | undefined>;
+  };
   /** Override PreToolUse poll interval (ms). Tests inject a small value. */
   permissionPollIntervalMs?: number;
   /** Override PreToolUse total wait budget (ms). Tests inject a small value. */
@@ -161,10 +158,8 @@ export interface RunHookReceiverOpts {
  * to cli-cc's, with the only difference being which event variants
  * carry which fields (see `payloads.ts`).
  *
- * Gate ordering (cheapest first):
- *   1. Official title identity — defer to TUI when absent or ambiguous.
- *   2. Event-specific dispatch (Stop / SessionStart / PreToolUse /
- *      PermissionRequest).
+ * Stop checks reply eligibility before native name lookup. Permission events
+ * resolve their official pane origin before the event-specific gate sequence.
  */
 export async function runHookReceiver(
   opts: RunHookReceiverOpts,
@@ -179,6 +174,11 @@ export async function runHookReceiver(
   };
 
   if (payload.hook_event_name === 'SessionStart') return handleSessionStart(payload, trace);
+  if (payload.hook_event_name === 'Stop') {
+    if (!opts.stop) { trace('Codex Stop name resolver unavailable'); return; }
+    return handleStop({ stateDir, payload, ...opts.stop,
+      now: opts.now ?? ((): Date => new Date()), trace });
+  }
   const origin = await opts.resolvePaneOrigin?.(payload.session_id);
   if (origin === undefined) {
     trace('Codex thread origin unavailable; defer to native terminal handling');
@@ -208,15 +208,6 @@ export async function runHookReceiver(
         termId,
         pollIntervalMs: opts.permissionPollIntervalMs ?? PERMISSION_POLL_INTERVAL_MS,
         timeoutMs: opts.permissionDialogTimeoutMs ?? PERMISSION_DIALOG_TIMEOUT_MS,
-        trace,
-      });
-    case 'Stop':
-      return handleStop({
-        stateDir,
-        payload,
-        paneId,
-        termId,
-        now: opts.now ?? ((): Date => new Date()),
         trace,
       });
   }
@@ -517,27 +508,24 @@ async function handlePermissionRequest(
 interface HandleStopOpts {
   stateDir: string;
   payload: StopPayload;
-  paneId: PaneOrigin['paneId'];
-  termId: PaneOrigin['termId'];
+  termId: TerminalId;
+  resolveSessionName(threadId: string): Promise<string | undefined>;
   now: () => Date;
   trace: (line: string) => void;
 }
 
 /**
- * Stop — mirror of cli-cc's Stop branch. 3-step gate then write the
- * `<paneId>_<sid>.Stop.<ts>` state file the daemon's chokidar reader
- * consumes to forward `last_assistant_message` to the IM `replyCtx`
- * recorded at inbound time.
- *
- * codex Stop payload has `last_assistant_message` as nullable string
- * (cli-cc has it as required string). When null, we serialize empty
- * string — the daemon-side dispatch treats that as a no-op forward
- * (nothing useful to send to IM), but still writes the file so
- * downstream debug logs see the event.
+ * Stop eligibility is checked before reading the native session name. The
+ * session reply queue carries the source label and text to the shared watcher.
  */
 async function handleStop(opts: HandleStopOpts): Promise<void> {
-  const { stateDir, payload, paneId, termId, now, trace } = opts;
+  const { stateDir, payload, termId, now, trace } = opts;
   const sessionId = payload.session_id;
+
+  if (payload.stop_hook_active || !payload.last_assistant_message) {
+    trace('Stop gate: active stop hook or empty assistant message');
+    return;
+  }
 
   // Gate 1: IMWork file exists (= daemon is in IM mode for this terminal)
   if (!(await existsIMWorkFile(stateDir, termId))) {
@@ -557,26 +545,16 @@ async function handleStop(opts: HandleStopOpts): Promise<void> {
     return;
   }
 
-  // Clear stale Stop files for this pane+sid before writing fresh one.
-  // Multiple Stop files for the same pane+sid would let the daemon's
-  // watcher fire forwards out of order; cleanup ensures one-file
-  // semantics per turn.
-  const stale = await listStopFiles({ stateDir, paneId, sessionId });
-  for (const path of stale) {
-    await deleteStopFile(path);
-  }
-
+  const sessionName = await opts.resolveSessionName(sessionId);
+  if (sessionName === undefined) return;
   const timestamp = formatStopTimestamp(now());
-  await writeStopFile({
-    stateDir,
-    paneId,
-    sessionId,
-    timestamp,
-    last_assistant_message: payload.last_assistant_message ?? '',
-    termId,
+  await writeSessionReplyFile({
+    stateDir, timestamp,
+    reply: { cli: 'codex', sessionId, sessionName, termId,
+      last_assistant_message: payload.last_assistant_message },
   });
   trace(
-    `Stop wrote: ${String(paneId)}_${sessionId}.Stop.${timestamp} ` +
+    `Stop wrote: SessionReply.codex.${sessionId}.${timestamp}.json ` +
       `(msg_len=${payload.last_assistant_message?.length ?? 0})`,
   );
   return;

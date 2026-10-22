@@ -13,6 +13,7 @@ import type {
   TranscriptPath,
 } from '@multi-cc-im/shared';
 import { enqueueInjection } from './injection-queue.js';
+import { parseSessionReplyFilename, readSessionReplyFile } from './session-replies.js';
 import {
   deleteStopFile,
   parsePermissionDialogFilename,
@@ -38,8 +39,8 @@ export interface CreateCcCliAdapterOpts {
   onHandlerError?: (
     err: unknown,
     context: {
-      kind: 'PreToolUse' | 'PermissionDialog' | 'Stop';
-      paneId: PaneId;
+      kind: 'PreToolUse' | 'PermissionDialog' | 'Stop' | 'SessionReply';
+      paneId?: PaneId;
       sessionId: string;
     },
   ) => void;
@@ -62,6 +63,12 @@ interface ClassifiedStopFile {
   filePath: string;
 }
 
+interface ClassifiedSessionReplyFile {
+  kind: 'SessionReply';
+  sessionId: string;
+  filePath: string;
+}
+
 interface ClassifiedPreToolUseFile {
   kind: 'PreToolUse';
   paneId: PaneId;
@@ -79,6 +86,7 @@ interface ClassifiedPermissionDialogFile {
 }
 
 type ClassifiedFile =
+  | ClassifiedSessionReplyFile
   | ClassifiedStopFile
   | ClassifiedPreToolUseFile
   | ClassifiedPermissionDialogFile;
@@ -99,6 +107,8 @@ type ClassifiedFile =
  *   - `<paneId>_<sid>.PermissionDialogRequest.<id>.json`  → ClassifiedPermissionDialogFile
  */
 function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFile | null {
+  const reply = parseSessionReplyFilename(fileBasename);
+  if (reply) return { kind: 'SessionReply', sessionId: reply.sessionId, filePath };
   const stop = parseStopFilename(fileBasename);
   if (stop) {
     return {
@@ -176,6 +186,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
   const seenFiles = new Set<string>();
 
   function chainKey(c: ClassifiedFile): string {
+    if (c.kind === 'SessionReply') return `SessionReply:${c.sessionId}`;
     return `${c.paneId}_${c.sessionId}`;
   }
 
@@ -192,7 +203,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
       } catch (err) {
         opts.onHandlerError?.(err, {
           kind: classified.kind,
-          paneId: classified.paneId,
+          ...(classified.kind === 'SessionReply' ? {} : { paneId: classified.paneId }),
           sessionId: classified.sessionId,
         });
       } finally {
@@ -304,6 +315,17 @@ async function dispatchOne(
   handler: CLIHandler,
   classified: ClassifiedFile,
 ): Promise<void> {
+  if (classified.kind === 'SessionReply') {
+    try {
+      const reply = await readSessionReplyFile(classified.filePath);
+      if (!reply) return;
+      if (!handler.onSessionReply) throw new Error('CLI handler does not support native session replies');
+      await handler.onSessionReply(reply);
+    } finally {
+      await deleteStopFile(classified.filePath);
+    }
+    return;
+  }
   switch (classified.kind) {
     case 'PreToolUse': {
       const file = await readPermissionRequestFile(classified.filePath);
