@@ -34,6 +34,9 @@ import {
  * - `<paneId>_<sid>.PermissionRequest.<id>.json`  — cc PreToolUse hook writes
  * - `<paneId>_<sid>.PermissionResponse.<id>.json` — daemon writes (mirrors Request key)
  *
+ * Native named replies use `SessionReply.codex.<sid>.<ts>.json`, implemented
+ * in `session-replies.ts` and dispatched by the same watcher.
+ *
  * **Filter-by-naming**: the `<paneId>_<sid>.<event>` format is itself the
  * proof of authenticity. Only a hook subprocess invoked by cc inside a
  * wezterm tab can construct it (paneId from `process.env.WEZTERM_PANE`,

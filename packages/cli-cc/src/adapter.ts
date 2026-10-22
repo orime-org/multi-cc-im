@@ -92,8 +92,8 @@ type ClassifiedFile =
   | ClassifiedPermissionDialogFile;
 
 /**
- * Classify a state-dir basename. Returns null for any file that's not a
- * cc-hook-fired event we route on (i.e. ignores `<paneId>.IMOrigin` /
+ * Classify pane hook events and native session replies. Returns null for
+ * other state files (i.e. ignores `<paneId>.IMOrigin` /
  * `IMWork` / `daemon.pid` / IM-adapter-owned top-level files like
  * `lark-cursor` / `<paneId>_<sid>.PermissionResponse.*` /
  * `<paneId>_<sid>.PermissionDialogResponse.*` — the daemon writes
@@ -103,6 +103,7 @@ type ClassifiedFile =
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
  * + [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
  *   - `<paneId>_<sid>.Stop.<ts>`                          → ClassifiedStopFile
+ *   - `SessionReply.codex.<sid>.<ts>.json`               → ClassifiedSessionReplyFile
  *   - `<paneId>_<sid>.PermissionRequest.<id>.json`        → ClassifiedPreToolUseFile
  *   - `<paneId>_<sid>.PermissionDialogRequest.<id>.json`  → ClassifiedPermissionDialogFile
  */
@@ -156,6 +157,8 @@ function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFi
  *   net for orphans)
  * - `<paneId>_<sid>.PermissionRequest.<id>.json` create → `Handler.onPreToolUse`
  *   (daemon does NOT unlink — hook subprocess polls Response and cleans both)
+ * - `SessionReply.codex.<sid>.<ts>.json` create → `Handler.onSessionReply`
+ *   (consumed after dispatch, including validation/handler failure)
  *
  * Per-pane+sid dispatch chain: events for the same `(paneId, sid)` pair
  * are processed serially (preserves Stop-order across multiple Stop files
@@ -175,7 +178,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
    * so the IM channel sees the assistant turns in correct order. Different
    * cc sessions are independent and dispatch in parallel.
    *
-   * Key: `<paneId>_<sid>` — same as the file prefix.
+   * Pane event key: `<paneId>_<sid>`. Native reply key: `SessionReply:<sid>`.
    */
   const sessionChains = new Map<string, Promise<void>>();
   /**

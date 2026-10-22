@@ -70,8 +70,8 @@ export type {
 
 // Daemon-side CLIAdapter — thin re-export wrapper over cli-cc's
 // adapter with the `name` field rewritten to `'codex'`. State file
-// classification + chokidar watch logic is shared with cli-cc
-// because the filename protocol is CLI-agnostic.
+// classification + chokidar watch logic handles both pane hook files and
+// native session replies in cli-cc.
 export { createCodexCliAdapter } from './adapter.js';
 export type { CreateCodexCliAdapterOpts } from './adapter.js';
 export { resolveCodexHookOrigin } from './hook-origin.js';

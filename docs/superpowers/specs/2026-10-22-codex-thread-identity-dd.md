@@ -1,5 +1,11 @@
 # DD: Codex thread identity must come from the client
 
+Current scope: the later user-approved
+[session-name reply decision](2026-10-22-codex-session-name-replies-dd.md)
+sets Stop source labels from native metadata. This identity DD governs native
+question and permission pane association. Its original Stop entry acceptance
+records the earlier title-based implementation.
+
 Date: 2026-10-22. Status: user accepted candidate E (official title identity) on 2026-10-22;
 the earlier hook-pane implementation remains withdrawn. The user-approved local App Server
 question transport remains valid. The investigation used isolated fixtures; implementation/activation followed
@@ -115,7 +121,7 @@ atomic state and owner ACL. It does not infer the current session and cannot
 automatically know that the user later switched to another thread in the same
 pane; the user must rebind. Its state/lifecycle and stale-binding UX need tests.
 
-For either viable choice, Codex hook replies/permission requests must use the
+For either viable choice, Codex permission requests must use the
 same selected identity source rather than keeping the old inherited-pane
 mapping. Otherwise question routing would improve while the same root defect
 remained in other Codex communication. Claude's existing hook-origin semantics
@@ -174,8 +180,9 @@ no config overrides or new turns. Responses recheck identity before submission.
 
 The reproducible two-TUI probe now validates the production hook entry with
 captured real native titles returned through a terminal-API fixture. Even with
-server pane 700, Stop files target 800/900 and PreToolUse auto decisions pass
-only after native identity lookup. Both actual TUIs issue request_user_input;
+server pane 700, PreToolUse auto decisions pass after native identity lookup.
+The probe's Stop entry fixture now checks session-name reply events under the
+later reply contract. Both actual TUIs issue request_user_input;
 the product client discovers their current title identities and distinct answers
 reach the correct local fake-model inputs. Fixture terminal executables are
 preflighted before the hook's sub-second deadline. The actual WezTerm structured

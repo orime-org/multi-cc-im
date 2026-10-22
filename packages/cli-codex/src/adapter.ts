@@ -10,7 +10,7 @@ export interface CreateCodexCliAdapterOpts extends CreateCcCliAdapterOpts {
 
 /**
  * Create one shared hook watcher and a native local question client when enabled.
- * Both Claude and Codex hook files retain the existing state-file protocol.
+ * The watcher dispatches pane hook events and native session-name replies.
  * @param opts State watcher and optional title-derived thread discovery dependencies.
  * @returns CLI adapter; native questions never enter permission hook responses.
  */

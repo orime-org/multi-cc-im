@@ -1,9 +1,9 @@
 # DD and design: Codex replies identified by session name
 
-Date: 2026-10-22. Status: the user approved the session-name reply direction
-and the first design review's correction. That correction is incorporated;
-the next workflow step awaits the user's decision. This document describes
-proposed behavior.
+Date: 2026-10-22. Status: user-approved design and correction implemented;
+two independent implementation reviews returned no established defects.
+Final validation and PR delivery are pending. Real-account acceptance belongs
+to the maintainer after deployment.
 
 ## Goal and approved contract
 
@@ -17,7 +17,7 @@ approved looking up that name from the Stop event's thread id. Native
 `thread-name` is the name set by `/rename`. Native `project-name` is the
 project directory label. The former is the reply source in this design.
 
-## Current behavior and evidence
+## Baseline behavior and evidence (f298ed1)
 
 | Step | Current behavior | Source inspected for this task |
 |---|---|---|
@@ -28,6 +28,9 @@ project directory label. The former is the reply source in this design.
 | 5 | IM input writes global `IMOrigin`; replies read that latest validated context. | `packages/bridge/src/orchestrator.ts:418`, `packages/bridge/src/orchestrator.ts:973` |
 | 6 | Incoming `#name` matching uses the terminal adapter's cleaned title. | `packages/term-wezterm/src/tab-title.ts:128`, `packages/bridge/src/matcher.ts:67` |
 
+Historical deployment logs confirm successful replies labeled `(pane N)`.
+After PR #249 introduced the title-id prerequisite for Stop, the deployed
+version failed to forward from an existing TUI whose title contained its name.
 The observed native Stop completed successfully, while replay through the
 deployed entry reported a missing/ambiguous title identity and wrote no reply
 event. A read-only native `thread/read` query returned a nonempty name for
@@ -59,7 +62,7 @@ Existing dependencies remain `ws` 8.20.0 (MIT), `zod` 3.x (MIT), `chokidar`
 4.x (MIT), and workspace atomic writes. The native local transport remains
 verified against Codex 0.163.0.
 
-## Proposed data flow
+## Implemented data flow
 
 The bundled Stop entry reads the configured terminal id as the IM mode gate.
 It supplies a session-name resolver directly, then invokes the Stop receiver.
@@ -161,3 +164,36 @@ the correction and the accompanying source-link correction.
 |---|---|---|
 | Queue diagnostics require product-entry wiring. | Explicit startup `onHandlerError` wiring, session-oriented error context and an expanded acceptance item 6. | Product startup test must invoke the actual supplied callback and inspect the daemon diagnostic. |
 | The metadata implementation citation points to a different native module. | The pinned link points to `request_processors/thread_processor.rs`, whose inspected implementation contains `thread_read` and `thread_set_name_response_inner`. | Pinned source tree entry and implementation inspection. |
+
+## Implementation review record
+
+Two independent reviewers inspected implementation commit `ce6564e` against
+baseline `f298ed1`. One reran 285 affected tests; the other reran 126 targeted
+tests. Their working-tree checks were clean. The primary agent rechecked the
+dispatch, validation, source-label and error-wiring evidence and the execution
+records. Both reviews returned zero established defects.
+
+| Concern | Established result and evidence | Ownership | Class | Root cause or target gap | Action and basis |
+|---|---|---|---|---|---|
+| Stop still depends on title id. | Ruled out: `codex-hook.ts` and `hook-receiver.ts` dispatch Stop before pane resolution; entry tests cover both configured terminals. | Review hypothesis | User-level reply capability | The prerequisite regression is removed from Stop. | Existing name-based entry and native smoke verify delivery. |
+| Source shape may misclassify subagents. | Ruled out: generated 0.163.0 SessionSource/SubAgentSource matches the resolver schema; tests include each supported variant. | Review hypothesis | Internal protocol | No established gap. | Existing schema validation and source tests retained. |
+| Timeout leaves a native connection running. | Ruled out: one deadline spans initialization/read, and `finally` closes the socket; fixture verifies closed peers. | Review hypothesis | Internal lifecycle | No established gap. | Existing bounded connection lifecycle retained. |
+| Malformed queued events are consumed silently. | Ruled out: validation errors reach the shared watcher callback; startup wires it to the daemon log and tests execute that callback. | Review hypothesis | Internal queue | Approved design correction is implemented. | Existing callback wiring and event-error tests retained. |
+| Pane Stop fallback is lost. | Ruled out: `forwardReply` keeps pane-title lookup and `(pane N)` fallback; orchestrator regression cases pass. | Review hypothesis | User-level existing reply capability | No established gap. | Existing source-tag contract retained. |
+| Missing native name is an implementation omission. | Ruled out: the approved contract specifies an actionable `/rename` diagnostic; resolver tests cover missing/null/empty names. | Review hypothesis | User-level reply capability | Required naming precondition is explicit. | Existing diagnostic and operation guide document the contract. |
+| Same-millisecond files could replace one another. | The writer's filename can collide for a repeated session/timestamp; reviewers found no reachable native same-session turn completion path within that interval. No defect was established. | Review hypothesis | Internal queue | No established native trigger. | Existing synchronous native Stop lifecycle and per-session queue tests retained. |
+| Native smoke is merely injected Stop JSON. | Ruled out for the new smoke: actual native turns fire hooks invoking the CLI bundle, followed by watcher, bridge and recording IM. The older identity probe still uses entry fixtures for Stop/PreToolUse. | Evidence boundary | Developer verification | Evidence must distinguish these two fixtures. | Development guide records each boundary. |
+| Codex never supported replies before this repair. | False: historical messages reached IM. This repair addresses the prerequisite regression introduced by PR #249 and source labeling. | Historical finding | User-level reply capability | Earlier reporting overstated the failure scope. | Baseline/history description corrected using deployment logs and original messages. |
+
+| Review round | Promised capability defects | Outside-contract defects | Improper-use defects | Developer/operations defects | Code-quality defects |
+|---|---|---|---|---|---|
+| 1 | 0 | 0 | 0 | 0 | 0 |
+
+The actual native Stop smoke passed for two same-project roots and a later
+rename with a deliberately unavailable terminal API. The full isolated unit
+suite passed 1,383 tests; coverage was 88.13% lines and 83.87% branches.
+The CLI bundle built and `./bin/multi-cc-im --version` returned `0.2.3`.
+The dual-TUI probe passed the retained permission/question identity checks.
+Feishu source tags use the existing CardKit rendering in
+`packages/im-lark/src/adapter.ts`; real-account rendering and deployment
+acceptance remain with the maintainer.

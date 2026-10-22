@@ -110,9 +110,8 @@ export interface HookDecision {
  * and trusts user-side knowledge from the IM `/start` listing for cc
  * lifecycle.
  *
- * Adapter passes `paneId` (parsed from `<paneId>_<sid>.<event>` filename)
- * into each handler call so bridge orchestrator can route without
- * maintaining its own paneId↔sid map.
+ * Pane hook handlers receive `paneId` parsed from `<paneId>_<sid>.<event>`.
+ * Native session replies carry their session name in `onSessionReply`.
  */
 export interface Handler {
   /** Deliver a native session reply carrying its own source name. */

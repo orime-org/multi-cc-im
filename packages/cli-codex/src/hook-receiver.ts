@@ -562,8 +562,8 @@ async function handleStop(opts: HandleStopOpts): Promise<void> {
 
 /**
  * Convenience entry: read JSON from stdin string, parse, dispatch.
- * Hosts provide a verified origin resolver; without one, native terminal
- * handling retains control. The binary injects its selected-terminal resolver.
+ * Hosts supply native name lookup for Stop and pane origin lookup for
+ * permission events. The binary injects its configured capabilities.
  * Errors propagate; callers log diagnostics and reserve stdout for native JSON.
  */
 export async function runFromStdin(

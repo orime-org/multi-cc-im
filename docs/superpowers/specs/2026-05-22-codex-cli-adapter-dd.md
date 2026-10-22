@@ -333,4 +333,4 @@ Codex-only 场景，换 SDK/App Server 或自行解析终端会引入新的认�
 等于客户端 pane 的假设。两个客户端启动变量不同，服务器执行的 SessionStart
 都读到了服务器 pane。该前提下的产品实现已撤回，不把单元测试和协议可行当成
 正确的会话登记。完整证据、复现脚本与用户已选的官方标题来源见
-[线程身份 DD](2026-10-22-codex-thread-identity-dd.md)。后续实现已统一 Codex Stop／权限事件与原生提问的身份来源：当前 loaded IDs 与官方 `thread-id` 原始标题严格唯一匹配，不保留继承 pane 环境变量的默认路径。真实双 TUI、产品 hook 入口和独立 native question 回答均已验证。
+[线程身份 DD](2026-10-22-codex-thread-identity-dd.md)。权限事件与原生提问的身份来源为当前 loaded IDs 与官方 `thread-id` 原始标题严格唯一匹配。Stop 按后续用户确认的 [会话名回信 DD](2026-10-22-codex-session-name-replies-dd.md)，通过本机 `thread/read` 获取完整会话名，再由共享 watcher 分派回信事件。真实双 TUI、产品 hook 入口和独立 native question 回答均已验证；实际原生 Stop 经过 CLI bundle 至测试 IM 的验证见回信 DD。
