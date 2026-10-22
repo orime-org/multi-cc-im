@@ -190,10 +190,12 @@ native disconnects, pagination, RPC timeout, owner/chat/IM mode and sensitive
 input gates. Global Claude settings compare unchanged. Title activation backs
 up the existing Codex config and adds only the explicitly approved field.
 
-The actual iTerm2 helper contract passes; no live iTerm2 window was running, so
-that platform round trip and real Lark account acceptance are not claimed.
-The PR contains the implementation and these explicit verification boundaries;
-it does not silently install a daemon or restart a user's terminal session.
+The iTerm2 helper contract passes. The deployment terminal is WezTerm; a live
+WezTerm/Codex TUI acceptance now verifies native title identity, prompt submission,
+production hook entry fixtures and the product-bridge/test-IM answer return.
+Hook identity lookup took 6ms. The model endpoint is a localhost fixture.
+Real Lark account acceptance belongs to the maintainer's GitHub deployment.
+See the [execution record](2026-10-22-codex-wezterm-acceptance.md).
 
 Final checks: typecheck passed; frozen install passed; the full test-only polling
 coverage run passed **1,313 tests** (87.96% lines, 83.50% branches). The unmodified

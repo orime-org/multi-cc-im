@@ -100,6 +100,10 @@ iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用�
 不会走普通 prompt 路由。auto 模式不代答问题；secret 只发送终端处理提示。
 其他 App Server 审批／OAuth／验证请求不进入该问题通道。计划面板仍仅观察计划事件。
 
+WezTerm 实机验收已覆盖真实 TUI 标题、输入提交和原生问题经产品 bridge、测试 IM 返回
+模型输入；Stop／PreToolUse 使用生产入口的事件 fixture 验证。详见
+[验收记录](superpowers/specs/2026-10-22-codex-wezterm-acceptance.md)。真实飞书验收由部署者执行。
+
 ## 包依赖方向
 
 开发用 Codex 任务面板独立于 bridge：本机 App Server 的 `turn/plan/updated`

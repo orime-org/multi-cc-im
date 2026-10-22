@@ -152,6 +152,9 @@ questions. Neither fixture sends real IM or calls an external model provider.
 The current supported protocol is pinned to 0.163.0 and the selected single
 Codex home. The native APIs remain private local socket operations; the existing
 enabled owner IM workflow carries question content. Secret questions remain
-terminal-only. Live iTerm2-window and real Lark account acceptance have not been
-run on this host; the actual iTerm2 Python helper is covered by a raw-title API
-contract fixture. See identity DD and developer instructions for reproduction.
+terminal-only. Live WezTerm acceptance verifies prompt submission, native title
+identity and a question through the product bridge/test IM back to native model
+input. The actual iTerm2 Python helper has a separate raw-title API contract
+fixture. Real Lark account acceptance belongs to the maintainer's GitHub
+deployment. See the [WezTerm execution record](2026-10-22-codex-wezterm-acceptance.md)
+and developer instructions for verification.

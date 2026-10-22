@@ -151,11 +151,15 @@ are controlled fixtures, so use the two-TUI identity probe as separate provenanc
 evidence. Both scripts clean up only processes/files they created.
 
 The second runs the actual Python helper against an isolated iTerm2 API contract
-where `autoName` and `terminalWindowName` differ. This protects the raw-title field;
-it does not establish a live iTerm2-window round trip. This host's live WezTerm
-structured API returned all title fields in about 8ms; iTerm2 was not running.
-No user daemon/TUI was restarted, no unrelated process stopped, and no real IM
-account or external model provider was contacted.
+where `autoName` and `terminalWindowName` differ. This protects the raw-title field.
+
+The deployment acceptance target is **WezTerm**. A live WezTerm window with an
+actual Codex 0.163.0 TUI passed prompt paste/Enter, official title identity,
+Stop/PreToolUse entry fixtures and a native question through the product bridge
+and test IM back to the next model input. Hook identity lookup took 6ms. The
+model endpoint and IM adapter were local fixtures. The maintainer performs real
+Feishu acceptance after deploying from GitHub. See the
+[execution record](superpowers/specs/2026-10-22-codex-wezterm-acceptance.md).
 
 Required verification also includes `pnpm typecheck`, `pnpm test`, build/bin smoke,
 `pnpm install --frozen-lockfile`, and a clean production deployment of the bundled
