@@ -9,6 +9,8 @@ import { runWezTermCli } from './cli.js';
 import { listAllTabs } from './tab-title.js';
 
 export interface CreateWezTermAdapterOpts {
+  /** Bounded terminal snapshot for short-lived hooks; default is the CLI budget. */
+  listTimeoutMs?: number;
   /**
    * Pre-resolved absolute path to the `wezterm` binary. Caller (CLI / bridge
    * core) calls `resolveWezTermPath()` once at startup, caches in
@@ -82,13 +84,14 @@ export function createWezTermAdapter(
     },
 
     async listPanes(): Promise<readonly TermPaneInfo[]> {
-      const tabs = await listAllTabs({ wezterm });
+      const tabs = await listAllTabs({ wezterm, timeoutMs: opts.listTimeoutMs });
       const result: TermPaneInfo[] = [];
       for (const tab of tabs.values()) {
         result.push({
           paneId: tab.paneId as PaneId,
           title: tab.title,
           cwd: tab.cwd,
+          terminalTitle: tab.terminalTitle,
         });
       }
       return result;

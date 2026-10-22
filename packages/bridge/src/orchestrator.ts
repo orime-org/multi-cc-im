@@ -1,3 +1,4 @@
+import { createNativeQuestionBridge } from './native-questions.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -335,6 +336,13 @@ export function createOrchestrator(
       ? undefined
       : (opts.aiPermissionRequestRouter ?? routePermissionRequestViaAI);
 
+  const nativeQuestions = createNativeQuestionBridge({
+    stateDir: opts.stateDir, terminalId: activeTerminalId,
+    questions: opts.cliAdapter.questions, imAdapter: opts.imAdapter,
+    listPanes: () => opts.termAdapter.listPanes(), interpret: aiAskUserQuestionRouter,
+    onError: err => onError(err, { phase: 'nativeQuestions' }),
+  });
+
   // Reaper timers per (paneId, sid, requestId) tuple.
   const reaperTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -429,6 +437,8 @@ export function createOrchestrator(
         return null;
       },
     );
+    if (await nativeQuestions.handleInbound(msg)) return;
+
     const imWorkOn = imWork !== null;
     const imWorkAuto = imWork?.auto ?? false;
 
@@ -589,6 +599,8 @@ export function createOrchestrator(
         onError(err, { phase: 'deleteIMWork' });
       }
     }
+
+    if (result.imWorkAction?.kind === 'enable') await nativeQuestions.flush();
 
     // Permission response: either rigid syntax `#<tab> /1`/`/2` OR an
     // AI-matched natural-language reply (DD §9.1 P4, 2026-05-11). Same
@@ -1786,6 +1798,8 @@ export function createOrchestrator(
   }
 
   const cliHandler: CLIHandler = {
+    async onQuestion() { await nativeQuestions.flush(); },
+    onQuestionClosed: nativeQuestions.onQuestionClosed,
     async onPreToolUse(p): Promise<void> {
       return handlePreToolUse(p);
     },
@@ -1813,6 +1827,8 @@ export function createOrchestrator(
       if (!started) return;
       await opts.imAdapter.start(imHandler);
       if (!started) return;
+      await nativeQuestions.start();
+      if (!started) return;
       pendingImageSweepTimer = setInterval(
         evictExpiredPendingImages,
         pendingImageSweepIntervalMs,
@@ -1825,6 +1841,7 @@ export function createOrchestrator(
     async stop(): Promise<void> {
       if (!started) return;
       started = false;
+      await nativeQuestions.stop();
       await opts.imAdapter.stop().catch((err) => {
         onError(err, { phase: 'stop:im' });
       });

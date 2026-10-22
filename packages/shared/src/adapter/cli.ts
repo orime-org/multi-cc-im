@@ -102,6 +102,10 @@ export interface HookDecision {
  * maintaining its own paneId↔sid map.
  */
 export interface Handler {
+  /** Native question available; this is separate from command permission hooks. */
+  onQuestion?(request: CLIQuestionRequest): Promise<void>;
+  /** Native question no longer answerable, or its connection became unavailable. */
+  onQuestionClosed?(reference: string, reason: 'resolved' | 'disconnected' | 'replaced'): Promise<void>;
   /**
    * On PreToolUse: adapter sees fresh `<paneId>_<sid>.PermissionRequest.<id>.json`
    * land in state/. Daemon forwards to IM and writes a matching Response
@@ -144,6 +148,8 @@ export interface Handler {
  * Stop will return as `decision:'block'` reason.
  */
 export interface Adapter {
+  /** Optional native question transport; never simulated through hook approvals. */
+  readonly questions?: CLIQuestions;
   /** Stable identifier (e.g. `'claude-code'`). */
   readonly name: string;
   /** Subscribe to hook events from running cc processes. */
@@ -152,4 +158,35 @@ export interface Adapter {
   enqueueInjection(sessionId: SessionId, content: string): Promise<void>;
   /** Stop subscribing; release any IPC sockets. */
   stop(): Promise<void>;
+}
+
+/** A native question, retaining its ids and single-choice/free-text constraints. */
+export interface CLIQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options?: readonly { label: string; description: string }[] | null;
+  isOther?: boolean;
+  isSecret?: boolean;
+}
+
+/** Correlated native request, scoped to its uniquely identified native terminal and pane. */
+export interface CLIQuestionRequest {
+  reference: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  requestId: string | number;
+  termId: TerminalId;
+  paneId: PaneId;
+  questions: readonly CLIQuestion[];
+  isBlocking: boolean;
+}
+
+/** Native transport checks identity, liveness and completeness again before submission. */
+export interface CLIQuestions {
+  /** Current native requests, including terminal-only sensitive inputs; disconnected requests are excluded. */
+  listPending(): readonly CLIQuestionRequest[];
+  /** Submit actual user answers. `submitted` awaits native resolved confirmation. */
+  answer(reference: string, answers: Readonly<Record<string, readonly string[]>>): Promise<'submitted' | 'resolved' | 'unavailable' | 'invalid'>;
 }

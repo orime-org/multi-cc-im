@@ -48,6 +48,8 @@ export interface PaneInfo {
    * tabname.
    */
   title: string;
+  /** Raw terminal-emitted title, separate from a user-overridden display name. */
+  terminalTitle?: string;
   /** Working dir of the foreground process in the pane (as URI or path). */
   cwd: string;
 }

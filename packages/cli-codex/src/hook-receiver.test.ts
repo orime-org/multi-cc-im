@@ -143,6 +143,17 @@ function baseOpts(payload: ParsedHookPayload): RunHookReceiverOpts {
 }
 
 describe('runHookReceiver — terminal detection gate', () => {
+  it('never grants auto approval from inherited pane env without official thread identity', async () => {
+    await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
+    const previous = process.env.WEZTERM_PANE;
+    process.env.WEZTERM_PANE = '7';
+    try {
+      expect(await runHookReceiver({ stateDir, payload: makePreToolUsePayload() })).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.WEZTERM_PANE;
+      else process.env.WEZTERM_PANE = previous;
+    }
+  });
   it('silent-exits when no terminal env detected', async () => {
     const result = await runHookReceiver({
       stateDir,

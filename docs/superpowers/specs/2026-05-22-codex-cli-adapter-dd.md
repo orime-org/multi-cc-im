@@ -325,3 +325,12 @@ Codex-only 场景，换 SDK/App Server 或自行解析终端会引入新的认�
 
 验收：先红后绿覆盖三种输出、参数与 cwd、环境清理、缺失 binary、超时／失败／无输出、
 共享 schema 校验和向导装配；以隔离本地假 provider 验证当前真实 Codex 不执行 marker hook。
+
+
+## §14 2026-10-22 真实客户端身份复核
+
+本机 App Server 提问传输已获用户接受；真实双 TUI 实测随后证伪了 hook 环境变量
+等于客户端 pane 的假设。两个客户端启动变量不同，服务器执行的 SessionStart
+都读到了服务器 pane。该前提下的产品实现已撤回，不把单元测试和协议可行当成
+正确的会话登记。完整证据、复现脚本与用户已选的官方标题来源见
+[线程身份 DD](2026-10-22-codex-thread-identity-dd.md)。后续实现已统一 Codex Stop／权限事件与原生提问的身份来源：当前 loaded IDs 与官方 `thread-id` 原始标题严格唯一匹配，不保留继承 pane 环境变量的默认路径。真实双 TUI、产品 hook 入口和独立 native question 回答均已验证。

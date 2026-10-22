@@ -51,6 +51,7 @@
 | `#<tab> /clear`（或 cc 任何 `/` slash）| 转发为 cc 自己的 slash command |
 | `#<tab> /1` | ask 模式下允许 pending tool 调用 |
 | `#<tab> /2` | ask 模式下拒绝 pending tool 调用 |
+| `/answer <问题编号> <回答>` | 回答对应 Codex 原生问题；支持选项编号或文字 |
 | 发图（不带文字）| daemon 暂存图 30 min + 回 `🖼️ 图已收到` |
 | 在图上 reply `#<tab> <文字>` | image path + 文字一起投给该 cc tab；cc Read 读图 |
 | `/start` | 开 IM mode auto-approve（cc 工具调用不打扰）|
@@ -174,12 +175,24 @@ IM 模式由 `/start`（自动允许）和 `/start off`（询问）控制；Code
 向导 W2 选择 Codex 后，普通消息、权限回复和已有 Claude 提问的自然语言解释都使用
 Codex，无需额外安装 Claude 作为解释后端。每次路由在独立临时目录运行，使用
 `--disable hooks`、`--ephemeral` 和 read-only sandbox；不会修改用户全局配置。
-这与 Codex 自己的 `request_user_input` 提问转发是两件事：后者尚未接入 IM，
-[本机 App Server 方案](docs/superpowers/specs/2026-10-22-codex-question-bridge-dd.md) 已完成通道实测，待架构决定。
+Codex 原生 `request_user_input` 通过本机 App Server 转发到 IM；回复
+`/answer <问题编号> <选项编号或文字回答>`，或直接回复机器人发来的问题消息。
+多题可逐题说明，由 W2 选定的后端解释。即使 `/start auto`，问题也需要你的实际回答；
+手机和终端先到的回答生效。迟到回复不会变成新任务；断连时暂停回答，重连后核对原生待答请求。
+敏感输入只提示你去终端填写，不转发题目或把回复交给解释模型。
 
+会话归属使用官方 `thread-id` 标题项；安装器保留已有标题顺序并追加该项，写前备份。
+已运行的 Codex 在 `/terminal-title` 中勾选 `thread-id` 即可；后续新会话读取保存的配置。
+只匹配当前已加载线程的唯一 ID，标题缺失、前缀歧义、同一线程出现在多个窗格时暂停转发。
+Codex 的回复和权限 hook 共用这个身份来源，不再信任共享服务器继承的 pane 环境变量。
+当前原生协议验证版本为 **Codex 0.163.0**；daemon 与所桥接会话须使用同一个
+`CODEX_HOME`（未设时为 `~/.codex`）。只读取所选终端和该 home 的本机 Unix socket；
+问题内容仅在启用 IM 模式后发送给既有 owner 聊天。另见
+[提问通道 DD](docs/superpowers/specs/2026-10-22-codex-question-bridge-dd.md) 和
+[线程身份 DD](docs/superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
 
-
-> ⚠️ **Codex 用户必读**：codex 跟 cc 不一样，hook **不热重载** — daemon 装 hook 之前就已经在跑的 codex tab 不会自动捕获新 hook，那些 tab 的 Stop 不会转发回 IM。每次 daemon 启动都会显眼提示 ⚠️ 警告，请在已运行的 codex tab 里 `/quit` 然后重新 `codex` 一次。**新启动的 codex tab 自动生效**。cc tab 用 file watcher 热重载，无需手动重启。
+> **Codex hook**：在 `/hooks` 中审核／刷新 hook；在 `/terminal-title` 中启用线程 ID。
+> 安装器不会替你授予 hook 信任或修改 Codex 自身的审批策略。
 >
 > Ctrl+C 停 daemon。一台机器只能一个 daemon。
 > 非交互式凭据预填：`./bin/multi-cc-im login lark --app-id cli_xxx --app-secret xxx`。
@@ -195,6 +208,7 @@ Codex，无需额外安装 Claude 作为解释后端。每次路由在独立临�
 | `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
 | start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
 | daemon 退出并报 `cannot watch the state directory ... EMFILE` / `ENOSPC` | 桥接已停止，回复和权限请求暂时不能转发到 IM；不会停止 Claude Code / Codex 会话或其他开发任务。`EMFILE` 可能是文件描述符或文件监听资源耗尽，不能仅凭错误码断定哪个进程占满。按提示里的 `Check:` 命令确认：macOS 查 fseventsd 日志，Linux 查 inotify 限制；`EMFILE` 同时检查打开文件数限制。由你决定关闭哪些不再需要的进程或调整已确认的可配置限制，然后运行 `multi-cc-im start`。创建监听、等待就绪及飞书连接期间出错也会给出同样提示并以状态码 1 退出 |
+| Codex 无法识别线程／手机回答暂停 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME`、本机 App Server 连接与 Codex 0.163.0。hook 信任用 `/hooks` 审核，状态看 daemon 控制台／`daemon.log`。身份未明确时在原终端继续处理 |
 | hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 
 ---

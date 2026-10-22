@@ -359,11 +359,8 @@ export async function runStartCommand(
           binaryPath: process.argv[1] ?? 'multi-cc-im',
           log,
         });
-        // 注意：不在这里再 log(WARN_CODEX_RESTART_LINE)。
-        // runCodexSetupHooks 内部已经在 changed=true 路径用 caller
-        // 传入的 log 打过一次警告，而我们传的就是主 log sink（不是
-        // fileOnlyLog）— 历史上这里曾再 echo 一次导致控制台显示 2 次
-        // 同样的警告（2026-05-23 真账号 smoke 观察到，本次修复）。
+        // The installer emits review guidance through this same log sink;
+        // echoing it here would duplicate the startup instruction.
       } catch (err) {
         return {
           exitCode: 1,
@@ -698,8 +695,8 @@ export async function runStartCommand(
   // state-file protocol (chokidar watcher reads `<paneId>_<sid>.<event>`
   // filenames CLI-agnostically), so the daemon only needs ONE watcher
   // regardless of how many CLIs the user enabled in wizard step 1. We
-  // pick the adapter factory whose `name` field matches `enabled[0]` so
-  // monitor / log lines reflect the user's primary CLI. Per
+  // include the Codex factory whenever Codex is enabled, so its native
+  // question channel also runs in mixed CLI setups. Per
   // [DD §7 + 2026-05-23 revision](../../../docs/superpowers/specs/2026-05-22-codex-cli-adapter-dd.md).
   //
   // A watcher error is fatal: the first one is formatted, written to
@@ -720,10 +717,17 @@ export async function runStartCommand(
     fileOnlyLog(watcherFailure);
     resolveFailure(watcherFailure);
   };
-  const cliAdapterOpts = { stateDir: paths.stateDir, onWatcherError };
+  const cliAdapterOpts = {
+    stateDir: paths.stateDir, onWatcherError,
+    nativeQuestions: enabledCLIs.includes('codex') ? {
+      terminalId: termId,
+      listPanes: () => termAdapter.listPanes(),
+      onError: (err: unknown) => log(`[Codex questions] ${err instanceof Error ? err.message : String(err)}`),
+    } : undefined,
+  };
   const cliAdapter = opts.buildCliAdapter
     ? opts.buildCliAdapter(cliAdapterOpts)
-    : enabledCLIs[0] === 'codex'
+    : enabledCLIs.includes('codex')
       ? createCodexCliAdapter(cliAdapterOpts)
       : createCcCliAdapter(cliAdapterOpts);
 

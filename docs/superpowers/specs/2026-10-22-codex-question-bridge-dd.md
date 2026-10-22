@@ -1,17 +1,19 @@
 # DD: Codex question forwarding without owning the TUI
 
-Date: 2026-10-22. Status: transport feasibility verified; recommended architecture
-awaits the user's decision. No product question transport has been installed.
-The existing CLI/router backend and the completed plan viewer are separate.
+Date: 2026-10-22. Status: local App Server transport and official title identity
+accepted by the user; implemented in this change. The disproven hook-pane
+registration is withdrawn. The selected source and verification evidence live in
+[thread identity DD](2026-10-22-codex-thread-identity-dd.md).
+The existing CLI/router backend and plan viewer remain separate capabilities.
 
 ## Problem and boundaries
 
 Codex's `request_user_input` cannot be answered by Claude's
 `allow + updatedInput.answers` hook contract. Its native answer is an App Server
 response keyed by request id, with `answers[questionId].answers` string arrays.
-The current bridge only special-cases Claude `AskUserQuestion`; its Codex
-SessionStart handler is a trace-only no-op, so it also lacks an authoritative
-live Codex thread-to-terminal-pane registration. Matching by cwd/title alone
+At the start of this work the bridge only special-cased Claude `AskUserQuestion`;
+its Codex SessionStart handler was a trace-only no-op and supplied no authoritative
+live native thread-to-terminal-pane identity. Matching by cwd/title alone
 would not distinguish concurrent sessions in one project.
 
 Requirements: preserve the user's existing Codex TUI; keep IMWork/IMOrigin and
@@ -98,16 +100,17 @@ Recommend D, based on its verified native consumer contract (E1/E2), reliable
 multi-client lifecycle (E3/E5), and existing local transport (E7). It restores
 the mobile-answer capability while keeping the TUI as an equal client.
 
-Proposed product flow:
+Implemented product flow (identity source revised by the accepted identity DD):
 
-1. Add authoritative Codex thread/pane/terminal registration through supported
-   session hooks, including resume/replacement and cleanup. Validate pane
-   liveness. Never infer a unique session from cwd/title or subscribe to every
-   local user's thread indiscriminately. Daemon restart must rediscover valid
-   registration without creating or reviving sessions.
-2. A dedicated Codex client attaches only to registered loaded threads. It
-   handles only the explicit native question request shape. The separate plan
-   panel continues to observe and never answer.
+1. Use official TUI `thread-id` prefixes and structured raw terminal titles,
+   strictly and uniquely matched against current native loaded ids. Use the same
+   source for questions, Stop and permission hooks; never infer pane identity from
+   the server's inherited environment, cwd or friendly name. Reject missing,
+   ambiguous, unloaded or multiply displayed identities. No pane registration is
+   persisted; restart rediscovers live native/terminal state.
+2. A dedicated Codex client attaches only to uniquely associated loaded root
+   threads. It handles only the explicit native question shape. The independent
+   plan panel continues to observe and never answer.
 3. When IMWork and valid owner/IMOrigin gates allow forwarding, send numbered
    options/free-text instructions and record thread/turn/item/request/question
    ids. Questions require the user's actual answer even in command auto mode.
@@ -126,14 +129,29 @@ Proposed product flow:
 Acceptance matrix: terminal-first and IM-first answers; repeated/late replies;
 multiple questions and same-project sessions; auto/off IM modes; IM disabled;
 malformed answers; disconnected IM/App Server; daemon restart; native timeout;
-turn interruption; pane/thread replacement; existing sessions without fresh
-registration; default-mode non-blocking requests; full package/bundle smoke.
+turn interruption; pane/thread replacement; existing sessions without a fresh lifecycle hook; default-mode non-blocking requests; full package/bundle smoke.
 Use isolated fake providers/clients before any real-account smoke.
 
 ## 5. User decision
 
-Pending. The current user authorized continuing routing repairs and researching
-question cooperation, but did not yet select a product question transport or
-new registration interface. This document does not lock D in the status table
-or implement the new cross-package/security-relevant behavior. Obtain the
-architecture decision required by AGENTS.md before implementation.
+The user accepted the local App Server approach after clarifying the distinction
+between protocol feasibility and product implementation: “哦，明白了，那你继续工作。”
+Implementation and isolated product-chain tests followed, but those tests injected
+pane identity. A subsequent real two-TUI/native-hook test disproved the automatic
+registration premise: both hooks inherited the shared server's pane, despite two
+distinct client panes. The unsafe registration implementation was withdrawn.
+
+The user subsequently selected official `thread-id` title discovery explicitly,
+including its visible title item and pausing on ambiguity. The production hook
+origin and question client now share that matcher. The actual two-TUI probe
+checks correct hook entry routing and separate product-client answers in each
+native model input. A separate real-server/product-bridge/fake-IM smoke covers
+IM-first, terminal-first, late replies, restart replay, default-mode and multiple
+questions. Neither fixture sends real IM or calls an external model provider.
+
+The current supported protocol is pinned to 0.163.0 and the selected single
+Codex home. The native APIs remain private local socket operations; the existing
+enabled owner IM workflow carries question content. Secret questions remain
+terminal-only. Live iTerm2-window and real Lark account acceptance have not been
+run on this host; the actual iTerm2 Python helper is covered by a raw-title API
+contract fixture. See identity DD and developer instructions for reproduction.

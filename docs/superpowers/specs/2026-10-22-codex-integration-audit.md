@@ -207,3 +207,39 @@ failures / 14 EMFILE errors. User Claude settings compared unchanged.
 - [Official App Server](https://learn.chatgpt.com/docs/app-server)
 - [Official automatic review](https://learn.chatgpt.com/docs/sandboxing/auto-review)
 - [Existing adapter DD](2026-05-22-codex-cli-adapter-dd.md)
+
+
+## Real TUI identity finding and withdrawn registration
+
+After the user accepted the local native question transport, the candidate
+passed unit/model-input tests but failed an additional actual two-TUI provenance
+check. Both native hooks saw the App Server's pane (`700`), whereas client
+launch markers were `800` and `900`. This invalidates the proposed automatic
+hook-pane registration and also flags inherited-pane assumptions in other
+Codex hook paths. The candidate was withdrawn, with no user-global configuration
+change, deployment or completed-feature PR. Native transport feasibility still
+holds. See the [identity DD](2026-10-22-codex-thread-identity-dd.md) and reproducible
+probe for the official title-id alternative, its real truncation, and the
+user-approved official-title identity. The plan observer remains observational.
+
+## Approved official-title implementation
+
+The user selected official thread-id auto-discovery, accepting the visible item
+and pausing on missing/ambiguous identity. Raw terminal titles are now exposed
+separately from friendly names; current loaded native ids are the only matching
+set. All Codex Stop/permission hooks use that source, with no inherited-pane
+fallback. Native questions use a local cooperating client and correlated IM
+answers; auto mode never invents answers, secret input stays in the terminal,
+and stale replies never become chat input. Mixed Claude/Codex selection retains
+one state watcher plus the Codex question capability.
+
+Installer title updates preserve order, unrelated TUI fields, hook trust and
+third-party data, back up before edits, and remain idempotent. The guidance now
+points to native /hooks and /terminal-title instead of mandating a restart.
+No AGENTS.md/CLAUDE.md changes or user daemon/TUI restarts are part of this work.
+
+Acceptance includes the real two-TUI/shared-server probe (production hook entry,
+correct reply pane, auto gate and separate native question answers), a real native
+server/product bridge/fake-IM model-input smoke, and full unit/coverage checks.
+The actual iTerm2 Python helper has a raw-title contract fixture; live iTerm2 and
+real Lark-account round trips are not claimed. Reproduce via docs/dev.md.

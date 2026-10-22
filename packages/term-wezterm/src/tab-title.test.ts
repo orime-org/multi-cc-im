@@ -66,6 +66,7 @@ describe('listAllTabs', () => {
     expect(tabs.get(15)).toEqual({
       paneId: 15,
       title: 'frontend',
+      terminalTitle: '✳ frontend',
       cwd: 'file:///private/tmp/cc-smoke',
     });
   });

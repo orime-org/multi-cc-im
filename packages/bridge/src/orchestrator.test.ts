@@ -3763,3 +3763,34 @@ describe('createOrchestrator — handlePermissionDialog (P5)', () => {
   // Covered by real-account smoke (see PR description). Logic verified
   // by inspection: same pattern as v1.9 AUQ dead-drop already shipped.
 });
+
+describe('native question capability wiring', () => {
+  it('delivers native questions and consumes answers before terminal prompt routing', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const question = {
+      reference: 'codex-0123456789abcdef01234567', threadId: 'native-thread', turnId: 'native-turn', itemId: 'native-item', requestId: 1,
+      termId: 'wezterm' as const, paneId: FRONTEND_PANE, isBlocking: true,
+      questions: [{ id: 'pick', header: 'Pick', question: 'Which?', options: [{ label: 'One', description: 'First' }] }],
+    };
+    const answer = vi.fn(async () => 'submitted' as const);
+    await writeIMOriginFile(testStateDir, { imType: 'lark', openId: 'owner', chatId: 'chat' });
+    const orchestrator = createOrchestrator({
+      stateDir: testStateDir, imAdapter: { ...im, name: 'lark' }, termAdapter: term,
+      cliAdapter: { ...cli, questions: { listPending: () => [question], answer } },
+      state: memState(), aiRouter: null, aiAskUserQuestionRouter: null,
+    });
+    try {
+      await orchestrator.start();
+      await cli.handler?.onQuestion?.(question);
+      expect(im.sent.some(s => s.content.includes(question.reference))).toBe(true);
+      await im.handler!.onMessage({ msgId: 'reply', from: 'owner', text: `/answer ${question.reference} 1`, attachments: [], timestamp: Date.now(),
+        replyCtx: { imType: 'lark', openId: 'owner', chatId: 'chat' } });
+      expect(answer).toHaveBeenCalledWith(question.reference, { pick: ['One'] });
+      expect(term.sendTextCalls).toEqual([]);
+      await cli.handler?.onQuestionClosed?.(question.reference, 'resolved');
+      expect(im.sent.some(s => s.content.includes('该 Codex 问题已结束'))).toBe(true);
+    } finally { await orchestrator.stop(); }
+  });
+});

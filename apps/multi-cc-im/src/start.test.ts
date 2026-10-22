@@ -1,3 +1,4 @@
+import { CODEX_HOOK_REVIEW_GUIDANCE } from '@multi-cc-im/cli-codex';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -182,6 +183,21 @@ describe('runStartCommand — pre-flight failures', () => {
           expect(options.aiAskUserQuestionRouter).toBeUndefined();
           expect(options.aiPermissionRequestRouter).toBeUndefined();
         }
+      } finally { await result.shutdown?.(); }
+    } finally { factory.mockRestore(); }
+  });
+
+  it.each([['cc'], ['codex'], ['cc', 'codex']] as const)('enables native questions for CLI selection %j', async (...ids) => {
+    const factory = vi.spyOn(bridge, 'createOrchestrator').mockReturnValue({ start: async () => {}, stop: async () => {} });
+    try {
+      const result = await runStartCommand({ skipSetupHooks: true, root,
+        selectTerminal: stubSelectTerminal(), selectCLIs: stubSelectCLIs(ids), selectAIRouter: stubSelectAIRouter(ids[0]),
+        setupHooksCodex: async () => ({ changed: false, configPath: '/dev/null' }),
+        resolveWezTerm: async () => '/fixture/wezterm', selectAdapter: stubSelectAdapter(), log: () => {},
+      });
+      try {
+        expect(result.exitCode).toBe(0);
+        expect(factory.mock.calls[0]![0].cliAdapter.questions !== undefined).toBe(ids.some(id => id === 'codex'));
       } finally { await result.shutdown?.(); }
     } finally { factory.mockRestore(); }
   });
@@ -463,8 +479,8 @@ describe('runStartCommand — auto setup-hooks', () => {
     await result.shutdown!();
   });
 
-  it('codex changed=true → exactly one restart warning (no duplicate)', async () => {
-    // Real runCodexSetupHooks emits WARN_CODEX_RESTART_LINE through the
+  it('codex changed=true → exactly one hook review guidance (no duplicate)', async () => {
+    // Real runCodexSetupHooks emits CODEX_HOOK_REVIEW_GUIDANCE through the
     // log callback its caller passes in. Faithful stub must mirror that
     // behavior — otherwise the test can't catch a bug where start.ts
     // double-logs the same warning. (2026-05-23 真账号 smoke 抓到的 bug:
@@ -477,7 +493,7 @@ describe('runStartCommand — auto setup-hooks', () => {
       setupHooksCodex: async ({ log: codexLog }) => {
         // Faithful imitation of runCodexSetupHooks emitting the warning
         // via the caller-provided log on a real write.
-        codexLog?.('  ⚠️ codex 不像 cc 自动热重载 hook 配置...stub line');
+        codexLog?.(CODEX_HOOK_REVIEW_GUIDANCE);
         return { changed: true, configPath: '/dev/null' };
       },
       selectTerminal: stubSelectTerminal(),
@@ -492,18 +508,14 @@ describe('runStartCommand — auto setup-hooks', () => {
     // EXACTLY one — if start.ts ever echoes a second copy on changed=true
     // again, this assertion fires.
     const warningCount = lines.filter((l) =>
-      l.includes('codex 不像 cc 自动热重载'),
+      l === CODEX_HOOK_REVIEW_GUIDANCE,
     ).length;
     expect(warningCount).toBe(1);
     await result.shutdown!();
   });
 
-  it('codex changed=false (idempotent rerun) → STILL exactly one restart warning', async () => {
-    // Per user direction 2026-05-23 "需要每次启动都提醒": the warning is
-    // about pre-hook codex processes; daemon rerun doesn't fix them
-    // regardless of whether the toml needed a rewrite. So idempotent
-    // reruns MUST also emit the warning. The real runCodexSetupHooks
-    // emits unconditionally; this stub mirrors that behavior.
+  it('codex changed=false (idempotent rerun) → STILL exactly one hook review guidance', async () => {
+    // Review guidance also applies when the installer makes no changes.
     const lines: string[] = [];
     const result = await runStartCommand({
       root,
@@ -512,7 +524,7 @@ describe('runStartCommand — auto setup-hooks', () => {
         // Faithful imitation: real runCodexSetupHooks emits the warning
         // even on changed=false. Stub must do the same so start.test
         // can catch any future regression of the unconditional behavior.
-        codexLog?.('  ⚠️ codex 不像 cc 自动热重载 hook 配置...stub line');
+        codexLog?.(CODEX_HOOK_REVIEW_GUIDANCE);
         return { changed: false, configPath: '/dev/null' };
       },
       selectTerminal: stubSelectTerminal(),
@@ -525,7 +537,7 @@ describe('runStartCommand — auto setup-hooks', () => {
     });
     expect(result.exitCode).toBe(0);
     const warningCount = lines.filter((l) =>
-      l.includes('codex 不像 cc 自动热重载'),
+      l === CODEX_HOOK_REVIEW_GUIDANCE,
     ).length;
     expect(warningCount).toBe(1);
     await result.shutdown!();
