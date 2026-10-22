@@ -341,8 +341,9 @@ describe('runHookReceiver — PermissionRequest branch', () => {
     expect(result).toBeUndefined();
   });
 
-  it('returns allow from PermissionDialogResponse file', async () => {
+  it.each([false, true])('returns allow from PermissionDialogResponse with auto=%s', async (auto) => {
     await setGatesOpen();
+    await writeIMWorkFile(stateDir, TERM_ID, { auto });
     const hookPromise = runHookReceiver({
       ...baseOpts(makePermissionRequestPayload()),
       permissionPollIntervalMs: 20,
@@ -357,11 +358,17 @@ describe('runHookReceiver — PermissionRequest branch', () => {
       decision: { behavior: 'allow' },
     });
     const result = await hookPromise;
-    expect(result).toEqual({ decision: { behavior: 'allow' } });
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow' },
+      },
+    });
   });
 
-  it('returns deny + message from PermissionDialogResponse file', async () => {
+  it.each([false, true])('returns deny + message from PermissionDialogResponse with auto=%s', async (auto) => {
     await setGatesOpen();
+    await writeIMWorkFile(stateDir, TERM_ID, { auto });
     const hookPromise = runHookReceiver({
       ...baseOpts(makePermissionRequestPayload()),
       permissionPollIntervalMs: 20,
@@ -377,18 +384,26 @@ describe('runHookReceiver — PermissionRequest branch', () => {
     });
     const result = await hookPromise;
     expect(result).toEqual({
-      decision: { behavior: 'deny', message: 'sandbox violation' },
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'sandbox violation' },
+      },
     });
   });
 
-  it('timeout returns default allow (codex falls through to TUI)', async () => {
+  it('timeout returns a valid default allow without granting session rules', async () => {
     await setGatesOpen();
     const result = await runHookReceiver({
       ...baseOpts(makePermissionRequestPayload()),
       permissionPollIntervalMs: 30,
       permissionDialogTimeoutMs: 80,
     });
-    expect(result).toEqual({ decision: { behavior: 'allow' } });
+    expect(result).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow' },
+      },
+    });
   });
 
   it('deletes DialogRequest + DialogResponse files on timeout (delete-always)', async () => {
@@ -415,6 +430,13 @@ describe('runFromStdin', () => {
     // Stop file appeared — proves dispatch happened end-to-end
     const remaining = await listDirSuffix(stateDir, '.Stop.');
     expect(remaining.length).toBeGreaterThan(0);
+  });
+
+  it('parses a main-session PreToolUse payload and returns the auto-mode decision', async () => {
+    await writeIMWorkFile(stateDir, TERM_ID, { auto: true });
+    const { agent_id: _id, agent_type: _type, ...payload } = makePreToolUsePayload();
+    const result = await runFromStdin(JSON.stringify(payload), { stateDir, resolvePaneOrigin: () => ORIGIN });
+    expect(result).toMatchObject({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } });
   });
 
   it('throws ZodError on shape mismatch', async () => {

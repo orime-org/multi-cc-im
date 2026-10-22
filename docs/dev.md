@@ -2,6 +2,98 @@
 
 > 本文是面向开发者的真实命令 / 调试清单（飞书 Lark adapter，DD #86 M2-M7 + interactive wizard DD W1-W8）。新人 onboard 可对着跑；终端用户上手命令以 [`../README.md`](../README.md) 为准。
 
+## Agent project instructions
+
+Read [AGENTS.md](../AGENTS.md) before contributing in Codex or Claude Code.
+Claude Code imports the same file through [CLAUDE.md](../CLAUDE.md).
+Use [agent-context.md](agent-context.md) to locate existing Claude memories,
+recover the dated handoff, and map older tool names to the current host.
+Restart the host session after changing instruction entry files and verify
+which files it loaded. Keep shared rules in AGENTS.md.
+
+## Codex terminal task panel
+
+The panel subscribes to the existing local Codex App Server's
+`turn/plan/updated` notifications. The connection uses only a Unix socket:
+there is no panel-specific cloud service, model request, or external upload.
+The normal Codex model conversation still uses its configured provider.
+
+Start from the repository root in a separate terminal pane:
+
+```bash
+node scripts/task-panel-events.mjs --session "$CODEX_THREAD_ID"
+```
+
+If the new shell does not inherit `CODEX_THREAD_ID`, pass the original Codex
+thread id explicitly. In WezTerm, run from the Codex shell environment:
+
+```bash
+wezterm cli split-pane --pane-id "$WEZTERM_PANE" --bottom --cells 10 -- \
+  node "$PWD/scripts/task-panel-events.mjs" --session "$CODEX_THREAD_ID"
+wezterm cli activate-pane --pane-id "$WEZTERM_PANE"
+```
+
+The observer reads `thread/read` first and attaches with `thread/resume` only
+when that exact thread is already loaded (idle or active). It never starts or
+revives an unloaded session, sends prompts, writes configuration, or answers
+approval requests. It reconnects every two seconds if the local connection or
+session is unavailable. It does not start or restart the App Server.
+
+Display snapshots are stored at `$CODEX_HOME/task-panel/<thread-id>.json`
+(default `~/.codex/task-panel/`), directory 0700 / file 0600, using atomic
+replacement. A restarted panel restores that thread's checklist and labels it
+as saved until the next live update. A new thread has a separate cache.
+The Python viewer reads this snapshot once per second, without filesystem
+watchers. Its `--once` option prints the view without curses.
+
+Press `q` in the panel to close both the viewer and its observer. If only Codex
+is reopened while the lower pane remains open, the observer can reattach once
+the same thread is loaded again. Closing the whole terminal also closes the
+panel; rerun the entry command next time. No global auto-start hook or shell
+configuration is installed. Enlarge the pane when a truncation notice appears.
+
+The earlier project plan hook has been removed after the user selected native
+events. Existing global hooks/trust state are untouched. Do not maintain
+`docs/agent-tasks.json` as a second task source.
+
+Tests: `python3 scripts/task-panel.test.py` and
+`pnpm test scripts/task-panel-events.test.mjs`. These cover local socket
+notifications, session isolation, malformed updates, private cache mode,
+connection recovery, panel restart/cache restoration, and no approval replies.
+`ws` and `zod` are direct development dependencies, reusing versions already in
+the workspace lockfile; neither is added to the published CLI's dependencies.
+
+### Codex tab title activity
+
+Codex 0.163.0 honors the host's reduce-motion setting at TUI launch. On macOS,
+`reduceMotion = 1` suppresses the title spinner even if `activity` is selected.
+The pinned `tui/src/system_motion.rs` reads this preference once;
+`local_settings.rs` combines it with `tui.animations`, and
+`chatwidget/status_surfaces.rs` requires animations/progress effects to emit a
+spinner. A static `status` title item can display work state without animation.
+Changing the OS preference requires relaunching the TUI to change this behavior;
+this is separate from the plan panel's live event connection. Do not change the
+user's system accessibility preferences automatically.
+
+## Codex hook protocol regression checks
+
+Run `pnpm exec vitest run packages/cli-codex/src/setup-hooks.test.ts
+packages/cli-codex/src/hook-receiver.test.ts packages/cli-codex/src/payloads.test.ts`
+on one line. Fixtures use temporary Codex/state directories, never real user
+configuration. They verify trust/disabled state, full third-party fields,
+original-byte backup, stable positional hook identities, byte-stable repeat
+installation, absent agent metadata,
+and native PermissionRequest output for allow/deny/timeout.
+
+The upstream contract is pinned to `rust-v0.163.0` input/output schemas; see
+[the integration audit](superpowers/specs/2026-10-22-codex-integration-audit.md).
+For a built-CLI smoke, pass an inert main-session payload to
+`./bin/multi-cc-im hook-receiver-codex` with `MULTI_CC_IM_HOME` pointing to an
+isolated temporary fixture. Validate stdout against the official schema;
+exercise auto/ask with allow and deny, without sending real IM messages.
+Existing global config/trust is never a test fixture. The real-account IM
+round trip is a separate check and has not been performed for these fixes.
+
 ## 快速跑通
 
 ```bash
@@ -80,7 +172,7 @@ pnpm exec vitest packages/bridge/src/router.test.ts
 
 # TDD 写代码节奏（强制）
 
-CLAUDE.md「关键规范」「TDD 红→绿→蓝节奏」条的具体实施。任何业务代码（含 adapter 实现 / bridge 路由 / hook receiver）都走此节奏。
+AGENTS.md「关键规范」「TDD 红→绿→蓝节奏」条的具体实施。任何业务代码（含 adapter 实现 / bridge 路由 / hook receiver）都走此节奏。
 
 ## 三步循环
 
@@ -130,7 +222,7 @@ DD 锁定方案 → TDD 红 → TDD 绿 → TDD 蓝 → commit → CI
 
 - **先写实现再补测试**：测试覆盖代码而非行为，倾向 confirm 已有结果（confirmation bias）
 - **测试只断言 happy path**：边界 case / 错误 case 全漏，覆盖率虚高
-- **测试 mocking 一切**：测的是 mock 行为不是真实行为（CLAUDE.md memory: "execFile {input} 在 macOS 不可靠 close stdin" — 真集成跑通才能发现这种 footgun）
+- **测试 mocking 一切**：测的是 mock 行为不是真实行为（AGENTS.md memory: "execFile {input} 在 macOS 不可靠 close stdin" — 真集成跑通才能发现这种 footgun）
 - **跳过红色直接绿色**：违反"先看到失败再修"原则；可能把 setup 错误（import 错路径）误判成成功
 - **测试名描述实现而非行为**：`test('calls foo() then bar()')` ❌ → `test('routes message to active session')` ✓
 
@@ -202,7 +294,7 @@ cat ~/.multi-cc-im/hook-trace.log                # 看 hook 收到 payload + 每
 
 ## 飞书端 routing echo 看不见
 
-每条入站消息都应该有 visible echo（CLAUDE.md "routing visible echo required" 硬规则）。如果你 `#frontend hello` 发了但飞书没收到 `→ frontend received` 类反馈：
+每条入站消息都应该有 visible echo（AGENTS.md "routing visible echo required" 硬规则）。如果你 `#frontend hello` 发了但飞书没收到 `→ frontend received` 类反馈：
 
 1. 看 `~/.multi-cc-im/daemon.log` 有没有把消息路由到 `frontend` 的记录（AI 分诊路径会打 `[AI router] target=frontend` 行）
 2. 看 `wezterm cli list --format json` —— 有没有叫 `frontend` 的 tab？

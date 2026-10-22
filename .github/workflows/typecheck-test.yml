@@ -58,6 +58,9 @@ jobs:
       - name: Test with coverage
         run: pnpm test:coverage
 
+      - name: Test local Codex plan viewer
+        run: python3 scripts/task-panel.test.py
+
   bundle-smoke:
     name: bundle-smoke
     # tsup bundle + bin wrapper end-to-end —— unit tests 跑 TS source via

@@ -278,3 +278,22 @@ const aiRouter = createAIRouter({
 
 - §7.1 + 本节双锁定 → `feat/cli-codex-adapter` 分支推进，并入 v0.2.0 一次发布
 - Memory 沉淀：[[feedback_check_superset_of_existing]] 再次命中 — 「命令行二选一」是 wizard 现行流程 superset，1 处改动而非 5 候选 DD
+
+
+## §12 2026-10-22 原生协议与配置保留修订
+
+用户认可 [当前审计](2026-10-22-codex-integration-audit.md) 后，授权修复审批回复与安装器。
+这是既有独立 Codex adapter 的协议正确性／数据保留修正，不新增架构候选、不更换依赖、
+不改变 auto/ask、超时、网络或权限规则策略。
+
+- `PermissionRequest` 必须返回 `hookSpecificOutput`，内含
+  `hookEventName: "PermissionRequest"` 和 `decision.behavior`；allow/deny/timeout 一致。
+- `PreToolUse` / `PermissionRequest` 的 `agent_id` / `agent_type` 按官方 0.163.0 输入 schema
+  可省略；它们不是主会话必填字段。
+- 安装按精确生成标签在原位置更新自身 handler，仅追加缺失事件，保留 `hooks.state`、第三方属性及未知配置；
+  官方 `hook_key` 包含 group/handler index，因此不得通过删除再追加改变位置；
+  比较完整结构实现无写入重跑。原文备份和原子替换仍生效；不伪造／重算 trusted_hash。
+- 既有 CC state-file IPC、终端入站和 daemon 审批分发继续使用。
+- 路由子进程 hook 隔离、Codex-only 解释路由、问题转发和标题归一化不在本次修改范围。
+
+证据与验证矩阵见审计的 approved repair 节；不把惰性文件 fixture 当真账号 IM 验证。
