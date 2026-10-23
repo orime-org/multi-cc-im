@@ -3,10 +3,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import WebSocket from 'ws';
 import { z } from 'zod';
+import { CodexEnvelope, codexInitializeParams, validateCodexInitialization } from './app-server-protocol.js';
 
-const Envelope = z.object({ id: z.union([z.string(), z.number().int()]).optional(), method: z.string().optional(),
-  params: z.unknown().optional(), result: z.unknown().optional(), error: z.unknown().optional() });
-const Initialized = z.object({ codexHome: z.string(), userAgent: z.string(), platformFamily: z.literal('unix'), platformOs: z.string() });
 const Loaded = z.object({ data: z.array(z.string().uuid()), nextCursor: z.string().nullable().optional() });
 
 /** Local socket lifecycle; only this cooperating client's connection is owned. */
@@ -66,7 +64,7 @@ export function connectCodexLocal(opts: {
     });
   }
   ws.on('message', raw => {
-    const parsed = Envelope.safeParse(((): unknown => {
+    const parsed = CodexEnvelope.safeParse(((): unknown => {
       try { return JSON.parse(raw.toString()); }
       catch (err) { opts.onError(err); return undefined; }
     })());
@@ -87,10 +85,7 @@ export function connectCodexLocal(opts: {
       ws.once('open', accept); ws.once('error', reject);
       ws.once('close', () => reject(new Error('Codex socket closed during initialization')));
     });
-    const info = Initialized.parse(await call('initialize', { clientInfo: { name: 'multi_cc_im_bridge', version: '0.2.3' }, capabilities: { experimentalApi: true } }));
-    if (resolve(info.codexHome) !== resolve(opts.home) || !/\/0\.163\.0(?:\s|$)/.test(info.userAgent)) {
-      throw new Error('Unsupported Codex App Server version or home; use the terminal (verified: 0.163.0)');
-    }
+    validateCodexInitialization(await call('initialize', codexInitializeParams), opts.home);
     await send({ method: 'initialized' });
   })().catch(err => { ws.terminate(); disconnect(); throw err; });
   return { ready, call, respond: (id, result) => send({ id, result }), close() { ws.terminate(); disconnect(); } };

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { codexHome, connectCodexLocal, type CodexLocalClient } from './local-client.js';
+import { codexHome } from './local-client.js';
+import { readCodexThreadMetadata } from './stdio-metadata.js';
 
 const SessionSource = z.union([
   z.enum(['cli', 'vscode', 'exec', 'appServer', 'unknown']),
@@ -15,41 +16,30 @@ const ThreadMetadata = z.object({ thread: z.object({
 }) });
 
 /**
- * Read the exact native root session name for a Stop reply over the local UDS.
+ * Read the exact native root session name for a Stop reply over owned stdio.
  * @param threadId Full UUID supplied by the native Stop payload.
- * @param opts Selected native home, deadline capped at 800 ms, and diagnostic sink.
+ * @param opts Native home, deadline capped at 800 ms, diagnostics, and an optional
+ * executable override for isolated process fixtures.
  * @returns Native name, or undefined for subagents and diagnosed lookup failures.
  * @throws Diagnostic callbacks may propagate their own exceptions.
  * @example const name = await resolveCodexSessionName(threadId, { onError });
  */
 export async function resolveCodexSessionName(threadId: string, opts: {
-  home?: string; timeoutMs?: number; onError(err: unknown): void;
+  home?: string; timeoutMs?: number; executable?: string; onError(err: unknown): void;
 }): Promise<string | undefined> {
-  let client: CodexLocalClient | undefined;
-  let timer: NodeJS.Timeout | undefined;
   try {
     if (!z.string().uuid().safeParse(threadId).success) throw new Error('Invalid Codex thread id; expected the native Stop session UUID.');
     const timeoutMs = Math.min(z.number().finite().positive().parse(opts.timeoutMs ?? 800), 800);
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Codex session name lookup timed out')), timeoutMs);
-    });
-    const peer = connectCodexLocal({ home: opts.home ?? codexHome(), timeoutMs, onError: opts.onError });
-    client = peer;
-    const lookup = (async (): Promise<string | undefined> => {
-      await peer.ready;
-      const { thread } = ThreadMetadata.parse(await peer.call('thread/read', { threadId, includeTurns: false }));
-      if (thread.id !== threadId) throw new Error('Codex App Server returned a different thread id.');
-      if (typeof thread.source === 'object' && 'subAgent' in thread.source) return undefined;
-      if (!thread.name?.trim()) throw new Error('Codex session has no name; run /rename <session-name> in the terminal and retry.');
-      return thread.name;
-    })();
-    return await Promise.race([lookup, deadline]);
+    const { thread } = ThreadMetadata.parse(await readCodexThreadMetadata({
+      home: opts.home ?? codexHome(), threadId, timeoutMs, executable: opts.executable, onError: opts.onError,
+    }));
+    if (thread.id !== threadId) throw new Error('Codex App Server returned a different thread id.');
+    if (typeof thread.source === 'object' && 'subAgent' in thread.source) return undefined;
+    if (!thread.name?.trim()) throw new Error('Codex session has no name; run /rename <session-name> in the terminal and retry.');
+    return thread.name;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    opts.onError(new Error(`Codex session name lookup failed: ${detail} Check the selected Codex home and local App Server (verified: 0.163.0).`, { cause: err }));
+    opts.onError(new Error(`Codex App Server session name lookup failed: ${detail} Check the selected Codex home and run codex --version and codex app-server --help in the terminal (verified: 0.163.0).`, { cause: err }));
     return undefined;
-  } finally {
-    clearTimeout(timer);
-    client?.close();
   }
 }
