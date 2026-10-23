@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, realpath, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -10,10 +10,11 @@ import { z } from 'zod';
 import { createCodexQuestionClient } from '../packages/cli-codex/src/question-client.js';
 import type { CLIQuestionRequest } from '../packages/shared/src/index.js';
 import { resolveCodexHookOrigin } from '../packages/cli-codex/src/hook-origin.js';
+import { connectCodexLocal } from '../packages/cli-codex/src/local-client.js';
 import { runCodexHookCommand } from '../apps/multi-cc-im/src/codex-hook.js';
 import { createConfigStore } from '../packages/storage-files/src/index.js';
 import { resolveAppPaths } from '../apps/multi-cc-im/src/config-paths.js';
-import { captureProcessLstart, writeDaemonPidFile, writeIMWorkFile, writeIMOriginFile, listStopFiles } from '../packages/cli-cc/src/index.js';
+import { captureProcessLstart, writeDaemonPidFile, writeIMWorkFile, writeIMOriginFile, listStopFiles, parseSessionReplyFilename, readSessionReplyFile } from '../packages/cli-cc/src/index.js';
 import type { PaneId } from '../packages/shared/src/index.js';
 
 const Marker = z.object({ threadId: z.string().uuid(), pane: z.string(), source: z.literal('startup') });
@@ -173,19 +174,27 @@ finally:
   await writeIMOriginFile(paths.stateDir, { imType: 'lark', openId: 'fixture-owner', chatId: 'fixture-chat' });
   await writeDaemonPidFile({ stateDir: paths.stateDir, pid: process.pid, startedAt: (await captureProcessLstart(process.pid))! });
   process.env.CODEX_HOME = root; process.env.WEZTERM_PANE = '700';
+  const metadataClient = connectCodexLocal({ home: root, onError: err => { throw err; } });
+  try {
+    await metadataClient.ready;
+    for (const p of ['800', '900']) await metadataClient.call('thread/name/set', { threadId: actual[p]!, name: `fixture-${p}` });
+  } finally { metadataClient.close(); }
   for (const p of ['800', '900']) {
     const common = { session_id: actual[p]!, cwd: root, transcript_path: null, model: 'fixture', permission_mode: 'default', turn_id: 'fixture-turn' };
     const errors: unknown[] = [];
     await runCodexHookCommand(JSON.stringify({ ...common, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'fixture reply' }),
       { paths, onError: e => errors.push(e) });
-    assert.equal((await listStopFiles({ stateDir: paths.stateDir, paneId: Number(p), sessionId: actual[p]! })).length, 1, errors.map(String).join(';'));
+    const files = (await readdir(paths.stateDir)).filter(name => parseSessionReplyFilename(name)?.sessionId === actual[p]);
+    assert.equal(files.length, 1, errors.map(String).join(';'));
+    const reply = await readSessionReplyFile(join(paths.stateDir, files[0]!));
+    assert.equal(reply?.sessionName, `fixture-${p}`);
     const decision = await runCodexHookCommand(JSON.stringify({ ...common, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'fixture' }, tool_use_id: 'fixture-tool' }),
       { paths, onError: e => errors.push(e) });
     assert.deepEqual(decision, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
       permissionDecisionReason: '[multi-cc-im] IMWork auto-approve, allow without IM prompt' } });
   }
   assert.equal((await listStopFiles({ stateDir: paths.stateDir, paneId: 700, sessionId: actual['800']! })).length, 0);
-  console.log('PASS: production hook entry writes replies to panes 800/900 and scopes auto approval using native title identity despite inherited server pane 700.');
+  console.log('PASS: production Stop entry writes native session-name replies; auto approval uses the client title identity with inherited server pane 700.');
   const seen: CLIQuestionRequest[] = [], errors: unknown[] = [];
   questionClient = createCodexQuestionClient({ home: root, terminalId: 'wezterm', intervalMs: 30,
     listPanes: freshPanes, onError: e => errors.push(e) });

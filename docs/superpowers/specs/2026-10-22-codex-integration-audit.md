@@ -222,12 +222,18 @@ holds. See the [identity DD](2026-10-22-codex-thread-identity-dd.md) and reprodu
 probe for the official title-id alternative, its real truncation, and the
 user-approved official-title identity. The plan observer remains observational.
 
-## Approved official-title implementation
+## Historical official-title implementation (PR #249)
+
+The following records the implementation and acceptance at PR #249. The later
+approved [session-name reply repair](2026-10-22-codex-session-name-replies-dd.md)
+sets Stop source labels through native `thread/read` metadata and the session
+reply queue. Native question and permission pane association uses the title
+identity described here.
 
 The user selected official thread-id auto-discovery, accepting the visible item
 and pausing on missing/ambiguous identity. Raw terminal titles are now exposed
-separately from friendly names; current loaded native ids are the only matching
-set. All Codex Stop/permission hooks use that source, with no inherited-pane
+separately from friendly names; current loaded native ids were the matching
+set. At that baseline, Codex Stop/permission hooks used that source, with no inherited-pane
 fallback. Native questions use a local cooperating client and correlated IM
 answers; auto mode never invents answers, secret input stays in the terminal,
 and stale replies never become chat input. Mixed Claude/Codex selection retains

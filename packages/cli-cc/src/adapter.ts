@@ -13,6 +13,7 @@ import type {
   TranscriptPath,
 } from '@multi-cc-im/shared';
 import { enqueueInjection } from './injection-queue.js';
+import { parseSessionReplyFilename, readSessionReplyFile } from './session-replies.js';
 import {
   deleteStopFile,
   parsePermissionDialogFilename,
@@ -38,8 +39,8 @@ export interface CreateCcCliAdapterOpts {
   onHandlerError?: (
     err: unknown,
     context: {
-      kind: 'PreToolUse' | 'PermissionDialog' | 'Stop';
-      paneId: PaneId;
+      kind: 'PreToolUse' | 'PermissionDialog' | 'Stop' | 'SessionReply';
+      paneId?: PaneId;
       sessionId: string;
     },
   ) => void;
@@ -62,6 +63,12 @@ interface ClassifiedStopFile {
   filePath: string;
 }
 
+interface ClassifiedSessionReplyFile {
+  kind: 'SessionReply';
+  sessionId: string;
+  filePath: string;
+}
+
 interface ClassifiedPreToolUseFile {
   kind: 'PreToolUse';
   paneId: PaneId;
@@ -79,13 +86,14 @@ interface ClassifiedPermissionDialogFile {
 }
 
 type ClassifiedFile =
+  | ClassifiedSessionReplyFile
   | ClassifiedStopFile
   | ClassifiedPreToolUseFile
   | ClassifiedPermissionDialogFile;
 
 /**
- * Classify a state-dir basename. Returns null for any file that's not a
- * cc-hook-fired event we route on (i.e. ignores `<paneId>.IMOrigin` /
+ * Classify pane hook events and native session replies. Returns null for
+ * other state files (i.e. ignores `<paneId>.IMOrigin` /
  * `IMWork` / `daemon.pid` / IM-adapter-owned top-level files like
  * `lark-cursor` / `<paneId>_<sid>.PermissionResponse.*` /
  * `<paneId>_<sid>.PermissionDialogResponse.*` — the daemon writes
@@ -95,10 +103,13 @@ type ClassifiedFile =
  * Per [DD: pane-keyed state files](../../../docs/superpowers/specs/2026-05-08-pane-keyed-state-files-dd.md)
  * + [DD: PermissionRequest hook IM bridge](../../../docs/superpowers/specs/2026-05-13-permission-request-hook-bridge-dd.md):
  *   - `<paneId>_<sid>.Stop.<ts>`                          → ClassifiedStopFile
+ *   - `SessionReply.codex.<sid>.<ts>.json`               → ClassifiedSessionReplyFile
  *   - `<paneId>_<sid>.PermissionRequest.<id>.json`        → ClassifiedPreToolUseFile
  *   - `<paneId>_<sid>.PermissionDialogRequest.<id>.json`  → ClassifiedPermissionDialogFile
  */
 function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFile | null {
+  const reply = parseSessionReplyFilename(fileBasename);
+  if (reply) return { kind: 'SessionReply', sessionId: reply.sessionId, filePath };
   const stop = parseStopFilename(fileBasename);
   if (stop) {
     return {
@@ -146,6 +157,8 @@ function classifyStateFile(filePath: string, fileBasename: string): ClassifiedFi
  *   net for orphans)
  * - `<paneId>_<sid>.PermissionRequest.<id>.json` create → `Handler.onPreToolUse`
  *   (daemon does NOT unlink — hook subprocess polls Response and cleans both)
+ * - `SessionReply.codex.<sid>.<ts>.json` create → `Handler.onSessionReply`
+ *   (consumed after dispatch, including validation/handler failure)
  *
  * Per-pane+sid dispatch chain: events for the same `(paneId, sid)` pair
  * are processed serially (preserves Stop-order across multiple Stop files
@@ -165,7 +178,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
    * so the IM channel sees the assistant turns in correct order. Different
    * cc sessions are independent and dispatch in parallel.
    *
-   * Key: `<paneId>_<sid>` — same as the file prefix.
+   * Pane event key: `<paneId>_<sid>`. Native reply key: `SessionReply:<sid>`.
    */
   const sessionChains = new Map<string, Promise<void>>();
   /**
@@ -176,6 +189,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
   const seenFiles = new Set<string>();
 
   function chainKey(c: ClassifiedFile): string {
+    if (c.kind === 'SessionReply') return `SessionReply:${c.sessionId}`;
     return `${c.paneId}_${c.sessionId}`;
   }
 
@@ -192,7 +206,7 @@ export function createCcCliAdapter(opts: CreateCcCliAdapterOpts): CLIAdapter {
       } catch (err) {
         opts.onHandlerError?.(err, {
           kind: classified.kind,
-          paneId: classified.paneId,
+          ...(classified.kind === 'SessionReply' ? {} : { paneId: classified.paneId }),
           sessionId: classified.sessionId,
         });
       } finally {
@@ -304,6 +318,17 @@ async function dispatchOne(
   handler: CLIHandler,
   classified: ClassifiedFile,
 ): Promise<void> {
+  if (classified.kind === 'SessionReply') {
+    try {
+      const reply = await readSessionReplyFile(classified.filePath);
+      if (!reply) return;
+      if (!handler.onSessionReply) throw new Error('CLI handler does not support native session replies');
+      await handler.onSessionReply(reply);
+    } finally {
+      await deleteStopFile(classified.filePath);
+    }
+    return;
+  }
   switch (classified.kind) {
     case 'PreToolUse': {
       const file = await readPermissionRequestFile(classified.filePath);

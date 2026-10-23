@@ -86,6 +86,8 @@ export {
   PERMISSION_DIALOG_REQUEST_PREFIX,
   PERMISSION_DIALOG_RESPONSE_PREFIX,
 } from './state-files.js';
+
+export { parseSessionReplyFilename, readSessionReplyFile, writeSessionReplyFile } from './session-replies.js';
 export type {
   PerPaneIO,
   StopFile,

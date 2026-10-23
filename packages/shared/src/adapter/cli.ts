@@ -71,6 +71,19 @@ export interface StopPayload extends BaseHookPayload {
   last_assistant_message: string;
 }
 
+/**
+ * Completed native session reply with a Stop-time name snapshot.
+ * Session ids are internal native UUIDs; the name is the IM source label.
+ * The configured terminal selects the IM mode gate for this reply.
+ */
+export interface CLISessionReply {
+  cli: 'codex';
+  sessionId: string;
+  sessionName: string;
+  termId: TerminalId;
+  last_assistant_message: string;
+}
+
 /** Discriminated union of every cc hook payload multi-cc-im subscribes to. */
 export type HookPayload = PreToolUsePayload | PermissionRequestPayload | StopPayload;
 
@@ -97,11 +110,12 @@ export interface HookDecision {
  * and trusts user-side knowledge from the IM `/start` listing for cc
  * lifecycle.
  *
- * Adapter passes `paneId` (parsed from `<paneId>_<sid>.<event>` filename)
- * into each handler call so bridge orchestrator can route without
- * maintaining its own paneId↔sid map.
+ * Pane hook handlers receive `paneId` parsed from `<paneId>_<sid>.<event>`.
+ * Native session replies carry their session name in `onSessionReply`.
  */
 export interface Handler {
+  /** Deliver a native session reply carrying its own source name. */
+  onSessionReply?(reply: CLISessionReply): Promise<void>;
   /** Native question available; this is separate from command permission hooks. */
   onQuestion?(request: CLIQuestionRequest): Promise<void>;
   /** Native question no longer answerable, or its connection became unavailable. */

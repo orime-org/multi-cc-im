@@ -172,6 +172,13 @@ Codex hook 安装会保留 `hooks.state` 中的信任／禁用状态和第三方
 IM 模式由 `/start`（自动允许）和 `/start off`（询问）控制；Codex 审批回复按原生
 `PermissionRequest` 协议返回单次允许／拒绝，不增加会话级权限规则。
 
+Codex 的 Stop 回信通过本机 App Server 读取完整会话名，飞书显示为
+`[会话名]` 加回复正文。用 `/rename <name>` 设置该名称；`thread-name`
+表示会话名，`project-name` 表示项目目录名。飞书入站按 `/list` 展示的
+终端标题寻址；在 `/terminal-title` 中将 `thread-name` 放在首位，并保留
+`activity`，可用唯一前缀 `#<name>` 寻址。原生问题与权限事件的窗格定位
+使用 `thread-id`；安装器会在保存的标题配置中追加该项。
+
 向导 W2 选择 Codex 后，普通消息、权限回复和已有 Claude 提问的自然语言解释都使用
 Codex，无需额外安装 Claude 作为解释后端。每次路由在独立临时目录运行，使用
 `--disable hooks`、`--ephemeral` 和 read-only sandbox；不会修改用户全局配置。
@@ -181,10 +188,10 @@ Codex 原生 `request_user_input` 通过本机 App Server 转发到 IM；回复
 手机和终端先到的回答生效。迟到回复不会变成新任务；断连时暂停回答，重连后核对原生待答请求。
 敏感输入只提示你去终端填写，不转发题目或把回复交给解释模型。
 
-会话归属使用官方 `thread-id` 标题项；安装器保留已有标题顺序并追加该项，写前备份。
+原生问题和权限事件的窗格归属使用官方 `thread-id` 标题项；安装器保留已有标题顺序并追加该项，写前备份。
 已运行的 Codex 在 `/terminal-title` 中勾选 `thread-id` 即可；后续新会话读取保存的配置。
-只匹配当前已加载线程的唯一 ID，标题缺失、前缀歧义、同一线程出现在多个窗格时暂停转发。
-Codex 的回复和权限 hook 共用这个身份来源，不再信任共享服务器继承的 pane 环境变量。
+只匹配当前已加载线程的唯一 ID，标题缺失、前缀歧义、同一线程出现在多个窗格时暂停问题和权限转发。
+Stop 回复通过原生会话名路径交付，权限 hook 与问题通道使用上述窗格身份来源。
 当前原生协议验证版本为 **Codex 0.163.0**；daemon 与所桥接会话须使用同一个
 `CODEX_HOME`（未设时为 `~/.codex`）。只读取所选终端和该 home 的本机 Unix socket；
 问题内容仅在启用 IM 模式后发送给既有 owner 聊天。另见
@@ -212,7 +219,8 @@ WezTerm 部署验收：W3 选择 `wezterm`；部署后在飞书执行 `/start` �
 | `cannot import iterm2` | `python3 -m pip install --user --break-system-packages iterm2` |
 | start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
 | daemon 退出并报 `cannot watch the state directory ... EMFILE` / `ENOSPC` | 桥接已停止，回复和权限请求暂时不能转发到 IM；不会停止 Claude Code / Codex 会话或其他开发任务。`EMFILE` 可能是文件描述符或文件监听资源耗尽，不能仅凭错误码断定哪个进程占满。按提示里的 `Check:` 命令确认：macOS 查 fseventsd 日志，Linux 查 inotify 限制；`EMFILE` 同时检查打开文件数限制。由你决定关闭哪些不再需要的进程或调整已确认的可配置限制，然后运行 `multi-cc-im start`。创建监听、等待就绪及飞书连接期间出错也会给出同样提示并以状态码 1 退出 |
-| Codex 无法识别线程／手机回答暂停 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME`、本机 App Server 连接与 Codex 0.163.0。hook 信任用 `/hooks` 审核，状态看 daemon 控制台／`daemon.log`。身份未明确时在原终端继续处理 |
+| Codex Stop 回信缺失或会话名不可用 | 用 `/hooks` 确认 Stop 已启用并信任，运行 `/rename <name>` 设置会话名；核对 IM 模式、同一 `CODEX_HOME` 和本机 Codex 0.163.0 App Server。名称查询错误在 hook stderr 中给出下一步；队列错误写入 daemon 日志。飞书 `/list` 可核对入站名称 |
+| Codex 原生问题／权限窗格身份无法识别 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME`、本机 App Server 连接与 Codex 0.163.0。hook 信任用 `/hooks` 审核，状态看 daemon 控制台／`daemon.log`。身份未明确时在原终端继续处理 |
 | hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 
 ---

@@ -138,6 +138,21 @@ The terminal API fixture is preflighted before the sub-second hook checks.
 
 ## Codex native question bridge acceptance
 
+Codex Stop reply acceptance uses a separate bundled-entry smoke:
+
+```sh
+pnpm --filter multi-cc-im build
+CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-session-reply-smoke.mts
+```
+
+This starts a disposable Codex 0.163.0 App Server and localhost fake model.
+Actual Stop hooks execute the built CLI and pass through the shared watcher
+and orchestrator into a recording IM adapter. Two same-project sessions carry
+different source names; a subsequent rename changes the next source label.
+Its terminal API is deliberately unavailable. Hook trust is recorded from the
+native reported hash inside the disposable home. The fixture cleans its own
+processes and files. Real Feishu deployment acceptance belongs to the maintainer.
+
 ```sh
 CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-question-smoke.mts
 pnpm exec vitest run packages/term-iterm2/src/helper-contract.test.ts
@@ -167,11 +182,16 @@ CLI. On hosts with existing EMFILE watcher exhaustion, the documented test-only
 `CHOKIDAR_USEPOLLING=1` environment can run the full suite; it changes no product
 watcher behavior. Keep `~/.claude/settings.json` unchanged and compare its backup.
 
-Runtime activation: select Codex in the wizard, review hooks with native `/hooks`,
-and add `thread-id` in native `/terminal-title` for already-running TUIs. The
+Runtime activation: select Codex in the wizard and review hooks with native `/hooks`.
+Set a native session name with `/rename <name>` for Stop replies. `thread/read`
+supplies that exact name; the Stop queue is independent of terminal title items.
+For incoming `#name` routing, `/list` shows the current cleaned terminal title;
+put `thread-name` first in `/terminal-title` to support its unique-prefix match.
+`project-name` displays the project directory and is independent of the native name.
+Question/permission pane identity uses `thread-id` in `/terminal-title`. The
 installer preserves saved title items and appends only the official identity item
 (with backup); new TUIs read that selection. Missing/ambiguous ids pause native
-IM forwarding/submission and leave the TUI available. Native requests are currently
+question/permission forwarding and leave the TUI available. Native requests are currently
 pinned to 0.163.0 and a single shared `CODEX_HOME`; arbitrary home scans are forbidden.
 
 ## 快速跑通
@@ -181,8 +201,8 @@ pinned to 0.163.0 and a single shared `CODEX_HOME`; arbitrary home scans are for
 pnpm install
 
 # 2. 全量验证
-pnpm typecheck                       # 8 workspaces tsc --noEmit
-pnpm test                            # 58 文件 / 821 单测
+pnpm typecheck                       # 各 workspace 执行 tsc --noEmit
+pnpm test                            # 全量 Vitest 单元测试
 pnpm test:coverage                   # 同上 + v8 coverage（80% 阈值）
 
 # 3. 构建生产 bundle（hook 冷启动从 ~1s 降到 ~50ms — 实际部署必跑）

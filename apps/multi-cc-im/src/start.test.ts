@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CLIAdapter, IMAdapter } from '@multi-cc-im/shared';
+import type { CLIAdapter, IMAdapter, PaneId } from '@multi-cc-im/shared';
 import * as bridge from '@multi-cc-im/bridge';
 import {
   defaultResolvePython3,
@@ -761,6 +761,33 @@ describe('runStartCommand — state watcher errors', () => {
     expect(result.shutdown).toBeUndefined();
     expect(stopSpy).toHaveBeenCalledOnce();
     expect(lines.some((l) => l.includes('orchestrator started'))).toBe(false);
+  });
+
+  it.each(['cc', 'codex'] as const)('logs handler errors from the configured %s adapter startup wiring', async cli => {
+    const { opts } = baseOpts();
+    const lines: string[] = [];
+    let report: import('@multi-cc-im/cli-cc').CreateCcCliAdapterOpts['onHandlerError'];
+    const result = await runStartCommand({
+      ...opts,
+      selectCLIs: stubSelectCLIs([cli]),
+      selectAIRouter: stubSelectAIRouter(cli),
+      buildCliAdapter: adapterOpts => {
+        report = adapterOpts.onHandlerError;
+        return { name: cli, start: async () => {}, stop: async () => {}, enqueueInjection: async () => {} };
+      },
+      buildOrchestrator: () => ({ start: async () => {}, stop: async () => {} }),
+      log: line => lines.push(line),
+    });
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(report).toBeTypeOf('function');
+      report!(new Error('Invalid session reply'), { kind: 'SessionReply', sessionId: 'native-thread' });
+      report!('pane failure', { kind: 'Stop', sessionId: 'cc-session', paneId: 'pane-42' as PaneId });
+      expect(lines).toContain('[CLI handler] kind=SessionReply sessionId=native-thread: Invalid session reply');
+      expect(lines).toContain('[CLI handler] kind=Stop sessionId=cc-session paneId=pane-42: pane failure');
+    } finally {
+      await result.shutdown?.();
+    }
   });
 
   it('watcher error while running → failure resolves with the readable message', async () => {

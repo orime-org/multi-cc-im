@@ -441,7 +441,7 @@ describe('createCcCliAdapter', () => {
     it('calls onHandlerError with kind/paneId/sessionId on Stop throw', async () => {
       const errors: Array<{
         err: unknown;
-        context: { kind: string; paneId: PaneId; sessionId: string };
+        context: { kind: string; paneId?: PaneId; sessionId: string };
       }> = [];
       const adapter = createCcCliAdapter({
         stateDir,

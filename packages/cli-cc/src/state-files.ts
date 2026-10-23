@@ -34,6 +34,9 @@ import {
  * - `<paneId>_<sid>.PermissionRequest.<id>.json`  — cc PreToolUse hook writes
  * - `<paneId>_<sid>.PermissionResponse.<id>.json` — daemon writes (mirrors Request key)
  *
+ * Native named replies use `SessionReply.codex.<sid>.<ts>.json`, implemented
+ * in `session-replies.ts` and dispatched by the same watcher.
+ *
  * **Filter-by-naming**: the `<paneId>_<sid>.<event>` format is itself the
  * proof of authenticity. Only a hook subprocess invoked by cc inside a
  * wezterm tab can construct it (paneId from `process.env.WEZTERM_PANE`,
@@ -285,7 +288,7 @@ export interface StopFile {
   last_assistant_message: string;
   /**
    * Which terminal the hook subprocess detected itself in when writing
-   * this file. Daemon-side `handleStop` reads this to decide which
+   * this file. Daemon-side `forwardReply` reads this to decide which
    * `IM<TermType>` gate to apply, rather than re-inferring from
    * `typeof paneId`. Per issue 378 root-cause framing: carrying the
    * fact end-to-end is more robust than deriving it.

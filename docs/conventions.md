@@ -18,6 +18,8 @@
 
 ### 修订记录
 
+- 2026-10-22 Codex 会话名回信：核实旧部署曾成功转发并显示 `(pane N)`；PR #249 将标题 ID 作为 Stop 前置条件后，缺少 ID 的现有会话出现回信回归。按用户确认，Stop 通过本机 `thread/read` 获取完整会话名，写入独立会话回信事件并由共享 watcher 分派；Bridge 按会话名标注来源。缺名提示 `/rename`，队列错误接入产品 daemon 日志。1,383 项测试、真实原生 Stop 经 CLI bundle 至测试 IM 的双会话及改名场景、双 TUI 身份探针通过。真实部署和飞书账号验收由维护者执行。见 [会话名回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)。
+
 - 2026-10-22 Codex WezTerm 实机验收：实际 WezTerm 窗口与 Codex 0.163.0 TUI 通过输入提交、官方标题身份、Stop／PreToolUse 入口 fixture，以及原生问题经产品 bridge 和测试 IM 返回模型输入的完整链路；身份查询 6ms。部署终端锁定为 WezTerm，真实部署和飞书账号验收由维护者从 GitHub 下载后执行。见 [验收记录](superpowers/specs/2026-10-22-codex-wezterm-acceptance.md)。
 
 - 2026-10-22 PR #249 主线同步：#248 已 squash 合并至 main。核对主线文件树与 #249 原基础完全相同后，将 main 合入 #249，解决历史差异引起的 8 处冲突；保留已验收的原生提问、统一线程身份及分诊隔离行为，无产品代码变更；复验 1,313 项测试、覆盖率、typecheck、frozen install、build 与 bin smoke 通过。
@@ -131,7 +133,7 @@
 
 | 维度 | 状态 | 详情 |
 |---|---|---|
-| Codex 原生提问与线程身份 | ✓ 实施／隔离验收 | 官方 thread-id + 当前 loaded IDs 唯一匹配；提问、回复、权限来源统一。本机 native request 回答支持两端抢答／重连／重启，auto 不代答问题。真实双 TUI 及产品 IM fixture 通过；iTerm2 实际窗口／真实飞书账号未测。见 [DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md) |
+| Codex 原生提问与线程身份 | ✓ 实施／隔离验收 | 问题和权限使用官方 thread-id + 当前 loaded IDs 唯一匹配；Stop 使用本机原生会话名及会话回信事件。本机 native request 回答支持两端抢答／重连／重启，auto 不代答问题。真实双 TUI、实际原生 Stop 至测试 IM 通过；真实飞书账号验收由维护者执行。见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md) 和 [回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md) |
 | Codex 分诊后端与隔离 | ✓ | 三条解释 callback 统一遵循向导选择；Codex executor 在临时 cwd 关闭 hooks，实际 Codex + 本地假 provider 已验证。原生问题为独立的本机通道，见上行。见 [DD §13](superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#13-2026-10-22-路由后端与原定隔离语义修复) |
 | Codex 审批协议与 hook 配置保留 | ✓ | 三条审批输出路径符合 0.163.0 原生结构；主会话可省略 agent 字段；安装保留状态和第三方字段、备份原文、重复安装不写入。真实 IM 账号验证尚未执行，路由/提问范围另行推进。见 [审计](superpowers/specs/2026-10-22-codex-integration-audit.md) |
 | Codex 开发任务面板 | ✓ | 用户选定本机官方事件方案；真实 `update_plan` 已在下方面板刷新，6 项 socket/恢复测试 + 4 项 viewer 测试通过。按 thread 私有缓存，断连重试，不回答审批、不启动回合；关闭整个终端后需重开面板。见 [开发指南](dev.md#codex-terminal-task-panel) |

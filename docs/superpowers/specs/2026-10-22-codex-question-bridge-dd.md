@@ -104,10 +104,11 @@ Implemented product flow (identity source revised by the accepted identity DD):
 
 1. Use official TUI `thread-id` prefixes and structured raw terminal titles,
    strictly and uniquely matched against current native loaded ids. Use the same
-   source for questions, Stop and permission hooks; never infer pane identity from
+   source for questions and permission hooks; never infer pane identity from
    the server's inherited environment, cwd or friendly name. Reject missing,
    ambiguous, unloaded or multiply displayed identities. No pane registration is
    persisted; restart rediscovers live native/terminal state.
+   Stop replies use the later approved [native session-name contract](2026-10-22-codex-session-name-replies-dd.md).
 2. A dedicated Codex client attaches only to uniquely associated loaded root
    threads. It handles only the explicit native question shape. The independent
    plan panel continues to observe and never answer.

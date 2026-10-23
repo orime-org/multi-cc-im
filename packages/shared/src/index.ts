@@ -69,6 +69,7 @@ export type {
   CLIQuestion,
   CLIQuestionRequest,
   CLIQuestions,
+  CLISessionReply,
   HookPayload,
   HookDecision,
   PreToolUsePayload,

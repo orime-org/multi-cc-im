@@ -75,7 +75,7 @@ Codex 三条路径共享一次性 executor：每调用独立临时 cwd、0600 �
 
 ### Codex 原生线程身份与问题通道
 
-用户锁定官方标题身份来源，见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
+原生问题和权限事件使用官方标题身份来源，见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
 终端 `PaneInfo.terminalTitle` 保存结构化 API 的原始标题：WezTerm 使用 pane `title`，
 iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用既有清理路径。
 0.163.0 的 `thread-id` 实际为 UUID 前缀加 `...`；`matchCodexThreads` 只接受验证过的
@@ -83,9 +83,21 @@ iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用�
 不生成绑定。cwd、友好名、hook 的服务器 pane 环境变量均不能补足身份。
 
 `hook-receiver-codex` 从 daemon 配置读取所选终端，用短连接查询该 Codex home 的已加载 ID，
-结合新鲜终端快照定位 `session_id`，再处理 Stop／PreToolUse／PermissionRequest。
+结合新鲜终端快照定位 `session_id`，再处理 PreToolUse／PermissionRequest。
 身份查询最多 800ms，自己启动的终端 listing 子进程最多 600ms；无身份则输出诊断、
 回到 Codex 原生处理，不生成 IM 权限决定。SessionStart 不登记 pane。Claude 原有来源路径独立。
+
+Codex Stop 在终端查询之前进入会话名路径：检查正文、`stop_hook_active`、
+IMWork／IMOrigin／daemon 存活后，通过本机 `thread/read` 读取完整 `thread.name`，
+检查响应线程与 source，排除 subagent；初始化和查询合计最多 800ms。
+`thread-name` 是 `/rename` 设置的会话名，`project-name` 是目录标签。
+Stop 写 0600 原子事件 `SessionReply.codex.<thread-id>.<timestamp>.json`，正文携带
+`cli`、`sessionId`、`sessionName`、`termId`、`last_assistant_message`。
+共享 watcher 验证事件和文件名身份，按 session 串行调用 `onSessionReply`；
+Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最新 IMOrigin。
+启动入口将队列异常接入 daemon 日志；分派后消费事件。缺名时 hook stderr 提示
+`/rename <session-name>`。入站继续按 `/list` 展示的终端标题匹配。
+详见 [会话名回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)。
 
 启用 Codex 时，即使同时启用 Claude，也只创建一个既有状态文件 watcher，并附加一个
 本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它只附加唯一关联、
@@ -205,6 +217,7 @@ multi-cc-im/
 │   │                                        #   startedAt 字符串走 `ps -o lstart=` LC_TIME=C
 │   │                                        #   POSIX locale 强制锁定（issue 377 修）
 │   ├── <paneId>_<sid>.Stop.<ts>             # cc 每轮回复；JSON 含 {last_assistant_message, termId}
+│   ├── SessionReply.codex.<thread-id>.<ts>.json # Codex 回复；JSON 含完整会话名和正文
 │   │                                        #   termId 端到端传递（issue 378 修）
 │   ├── <paneId>_<sid>.PermissionRequest.<id>.json   # PreToolUse hook → daemon
 │   ├── <paneId>_<sid>.PermissionResponse.<id>.json  # daemon → PreToolUse hook
@@ -305,7 +318,7 @@ cc finishes turn → cc fires Stop hook (~/.claude/settings.json 注册)
 
 chokidar add event → cli-cc adapter.classifyStateFile (parseStopFilename)
                   → dispatchOne(StopFile{paneId, sid, termId, filePath})
-   → orchestrator.handleStop({paneId, termId, ...})
+   → orchestrator.forwardReply(payload, pane source)
        → check IM<termId> exists（payload 带 termId，不靠 typeof paneId 推）
        → read state/IMOrigin → IMReplyContext
        → imAdapter.send([prefix] + msg, replyCtx)

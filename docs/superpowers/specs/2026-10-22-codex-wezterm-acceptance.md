@@ -1,5 +1,11 @@
 # Codex and WezTerm acceptance
 
+This record covers the historical baseline listed below. Subsequent
+[session-name reply acceptance](2026-10-22-codex-session-name-replies-dd.md#implementation-review-record)
+adds actual native Stop hooks through the bundled CLI, shared watcher and
+recording IM. Question/permission identity continues using the terminal path
+verified here.
+
 ## Scope and environment
 
 The deployment terminal is WezTerm. The maintainer deploys the merged GitHub
