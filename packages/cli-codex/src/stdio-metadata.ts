@@ -21,10 +21,11 @@ export async function readCodexThreadMetadata(opts: {
     cwd: home, env: { ...process.env, CODEX_HOME: home }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const lines = createInterface({ input: child.stdout });
-  const result = await new Promise<{ value: unknown; diagnostics: Error[] }>((accept, reject) => {
+  // A stdout error also reaches readline, so diagnostics retain error identity.
+  const diagnostics = new Set<unknown>();
+  return new Promise<unknown>((accept, reject) => {
     let state: 'initializing' | 'reading' | 'closing' | 'finished' = 'initializing';
     let outcome: { value: unknown } | { error: unknown } | undefined;
-    const diagnostics: Error[] = [];
     let terminateTimer: NodeJS.Timeout | undefined, killTimer: NodeJS.Timeout | undefined;
     const reserve = Math.min(50, opts.timeoutMs / 4);
     const operationTimer = setTimeout(() => close({ error: new Error('Codex session name lookup timed out') }),
@@ -40,7 +41,8 @@ export async function readCodexThreadMetadata(opts: {
     }
 
     function fail(error: unknown): void {
-      if (state === 'closing' || state === 'finished') return;
+      if (state === 'closing') { diagnostics.add(error); return; }
+      if (state === 'finished') return;
       close({ error });
     }
 
@@ -80,12 +82,12 @@ export async function readCodexThreadMetadata(opts: {
       if (!outcome) reject(new Error(`Codex App Server metadata reader exited before its response (code=${code}, signal=${signal})`));
       else if ('error' in outcome) reject(outcome.error);
       else {
-        if (code !== 0 || signal !== null) diagnostics.push(new Error(`Codex App Server metadata reader cleanup required intervention (code=${code}, signal=${signal}); metadata was received.`));
-        accept({ value: outcome.value, diagnostics });
+        if (code !== 0 || signal !== null) diagnostics.add(new Error(`Codex App Server metadata reader cleanup required intervention (code=${code}, signal=${signal}); metadata was received.`));
+        accept(outcome.value);
       }
     });
     send({ id: 1, method: 'initialize', params: codexInitializeParams });
+  }).finally(() => {
+    for (const diagnostic of diagnostics) opts.onError(diagnostic);
   });
-  for (const diagnostic of result.diagnostics) opts.onError(diagnostic);
-  return result.value;
 }
