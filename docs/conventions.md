@@ -18,7 +18,7 @@
 
 ### 修订记录
 
-- 2026-10-23 Codex Stop 跨运行模式修复：真实 `--no-daemon` TUI 复现 #251 的共享 socket 查询失败。Stop 名称读取统一使用官方 stdio 元数据子进程，并与 UDS 共用 home／平台／版本校验；800ms 预算包含自有进程清理，有效结果在关闭异常后仍交付。1,394 项单测、两种真实 TUI 各 9 次 Stop／7 条精确名称回信、双会话改名、原生问答及分诊、构建和干净生产依赖目录加载通过。原生 watcher 的 EMFILE 在同一主线基线复现；全量使用测试进程 polling。真实部署由维护者执行。见 [跨运行模式 DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)。
+- 2026-10-23 Codex Stop 跨运行模式修复：真实 `--no-daemon` TUI 复现 #251 的共享 socket 查询失败。Stop 名称读取统一使用官方 stdio 元数据子进程，并与 UDS 共用 home／平台／版本校验；800ms 预算包含自有进程清理，有效结果在关闭异常后仍交付。清理期 IO 错误按身份去重并集中报告，成功和失败出口均有真实子进程故障注入验证。1,401 项单测、两种真实 TUI 各 9 次 Stop／7 条精确名称回信、双会话改名、原生问答及分诊、构建和干净生产依赖目录加载通过。原生 watcher 的 EMFILE 在同一主线基线复现；全量使用测试进程 polling。真实部署由维护者执行。见 [跨运行模式 DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)。
 
 - 2026-10-22 Codex 会话名回信：核实旧部署曾成功转发并显示 `(pane N)`；PR #249 将标题 ID 作为 Stop 前置条件后，缺少 ID 的现有会话出现回信回归。按用户确认，Stop 通过本机 `thread/read` 获取完整会话名，写入独立会话回信事件并由共享 watcher 分派；Bridge 按会话名标注来源。缺名提示 `/rename`，队列错误接入产品 daemon 日志。1,383 项测试、真实原生 Stop 经 CLI bundle 至测试 IM 的双会话及改名场景、双 TUI 身份探针通过。真实部署和飞书账号验收由维护者执行。见 [会话名回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)。
 

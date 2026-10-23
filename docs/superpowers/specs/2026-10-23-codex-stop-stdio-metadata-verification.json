@@ -1,13 +1,14 @@
 {
   "baseline": "7d2794d6e1f9cf8add6568a9556b5b136749d03f",
-  "implementation": "ef5cd040f3b2aa1c4d17605229151e4766087e17",
+  "implementation": "78254b22573646e471c25860eaec6ab167dc9522",
   "nativeVersion": "0.163.0",
-  "bundleSha256": "aa5894fa03feb5e97c40f9fd9ef4c42e6fd401186b3604387150a002fff3c31f",
+  "bundleSha256": "190aab01ebc1d0d051ca9718863c3c5ef20ec2d34d92c9c621f9da565faccff5",
   "fixtureDriverSha256": "db6468544c6d5c60d11a3f43d20485534c6c40875eba040186f287c20a92f351",
   "validationBoundary": "Actual native TUIs and built CLI; localhost model, disposable PTYs, normally trusted hooks and recording IM. Maintainer owns deployed WezTerm/Feishu acceptance.",
   "nativeTui": [
     {
       "mode": "default shared daemon",
+      "fixtureDirectory": "stdio-fixed-default-1792726057057",
       "nativeStopCount": 9,
       "hookExitCodes": [
         0,
@@ -90,11 +91,11 @@
           }
         }
       ],
-      "rawResultsSha256": "82bea844fb39e794bdd7a1ece5f40ff3607ce0f2a408b22fd602a0ff6689bf9a",
-      "fixtureDirectory": "stdio-fixed-default-1792724402164"
+      "rawResultsSha256": "74151f5a4263c9a729d78268af88da08df72e009fd54171f0fa1c4646b39e9de"
     },
     {
       "mode": "--no-daemon",
+      "fixtureDirectory": "stdio-fixed-embedded-1792726057342",
       "nativeStopCount": 9,
       "hookExitCodes": [
         0,
@@ -177,25 +178,24 @@
           }
         }
       ],
-      "rawResultsSha256": "ebfe7f65c4c35f8cf4ce046f317de5c55070f4b96cb6a579fecb518422ab37e4",
-      "fixtureDirectory": "stdio-fixed-embedded-1792724404625"
+      "rawResultsSha256": "4d8ae35ea4ff106cbaecfa6e64be2163ccf0aabb60b0a7a9cd894b147dcd4ebc"
     }
   ],
   "checks": [
     {
       "command": "pnpm typecheck",
       "result": "passed",
-      "log": "typecheck.log"
+      "log": "closing-io-typecheck.log"
     },
     {
       "command": "CHOKIDAR_USEPOLLING=1 pnpm test",
-      "result": "75 files / 1394 tests passed",
-      "log": "full-tests.log"
+      "result": "76 files / 1401 tests passed",
+      "log": "closing-io-full-tests.log"
     },
     {
       "command": "pnpm --filter multi-cc-im build",
       "result": "passed",
-      "log": "build.log"
+      "log": "closing-io-build.log"
     },
     {
       "command": "./bin/multi-cc-im --version",
@@ -203,7 +203,8 @@
     },
     {
       "command": "node <clean-production-directory>/dist/cli.js --version",
-      "result": "0.2.3"
+      "result": "0.2.3",
+      "log": "closing-io-production-install.log"
     },
     {
       "command": "CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-question-smoke.mts",
@@ -230,26 +231,51 @@
       "evidence": "Independent raw record/hash checks and clean worktree."
     },
     "implementation": {
+      "commit": "78254b2",
+      "establishedFindings": 0,
+      "independentlyRunTests": 96,
+      "evidence": "Real subprocess fault tests, resolver, hook receiver and CLI entry tests passed; worktree clean.",
+      "log": "cleanup-implementation-review-tests.log"
+    },
+    "visualScope": "Backend metadata transport and diagnostic logs; native TUI interaction acceptance recorded above.",
+    "initialImplementation": {
       "commit": "ef5cd04",
       "establishedFindings": 0,
       "independentlyRunTests": 79,
       "evidence": "53 resolver/process tests and 26 UDS question/identity tests passed; clean worktree."
-    },
-    "visualScope": "Backend metadata transport and diagnostic logs; native TUI interaction acceptance recorded above."
+    }
   },
   "cleanup": {
-    "record": "process-cleanup.json",
-    "recordedPidsChecked": 67,
+    "record": "closing-io-process-cleanup.json",
+    "recordedPidsChecked": 103,
     "presentPids": 0
   },
   "logDirectory": "mcim-codex-stop-stdio-validation",
   "closingIoDiagnosticProbe": {
-    "method": "A real owned fixture child returned matching metadata; the probe then injected one stdin EPIPE error event in the closing state.",
-    "injectedIoErrors": 1,
-    "recordedDiagnostics": 0,
-    "nativeResultPreserved": true,
-    "log": "late-io-probe.log",
-    "logSha256": "b2327bac286546b5ef768e54a6b6ad479b227fc673ffdac9e743987faf192c30",
-    "status": "Review confirmation pending for the diagnostic gap."
-  }
+    "beforeFix": {
+      "method": "A real owned fixture child returned matching metadata; the probe then injected one stdin EPIPE error event in the closing state.",
+      "injectedIoErrors": 1,
+      "recordedDiagnostics": 0,
+      "nativeResultPreserved": true,
+      "log": "late-io-probe.log",
+      "logSha256": "b2327bac286546b5ef768e54a6b6ad479b227fc673ffdac9e743987faf192c30"
+    },
+    "afterFix": {
+      "injectedIoErrors": 1,
+      "recordedDiagnostics": 1,
+      "nativeResultPreserved": true,
+      "log": "late-io-probe-green.log",
+      "logSha256": "3e17abd726617bbb03a13ebcc7b8cf2724962143b3f2e847183b841773a7735f"
+    },
+    "automatedRed": {
+      "failedTests": 7,
+      "log": "closing-io-red.log"
+    },
+    "automatedGreen": {
+      "passedTests": 60,
+      "log": "closing-io-green.log"
+    },
+    "status": "User-confirmed correction implemented and independently reviewed."
+  },
+  "initialImplementation": "ef5cd040f3b2aa1c4d17605229151e4766087e17"
 }

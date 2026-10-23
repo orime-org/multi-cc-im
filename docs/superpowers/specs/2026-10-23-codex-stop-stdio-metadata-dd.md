@@ -164,8 +164,9 @@ must examine those assumptions explicitly.
 single-owner subprocess cleanup and one terminal query outcome. The 18 native
 research queries verified the successful sequence. Fixture-process tests now
 verify initialization/read failures, deadlines, exit and signal transitions.
-Documentation review identified a remaining post-response IO diagnostic gap;
-its correction awaits review confirmation. See the implementation execution
+Closing-phase IO errors are retained by identity and reported after child
+cleanup for both query outcomes. Seven red-to-green process tests verify
+the user-confirmed diagnostic correction. See the implementation execution
 record below.
 
 ## Acceptance and regression map
@@ -194,16 +195,18 @@ maintainer after reviewing the PR.
 ## Required verification and delivery
 
 Design commit `107334a` received an independent design review with zero
-established findings. Implementation commit `ef5cd04` received an independent
+established findings. Implementation commit `78254b2` received an independent
 implementation review with zero established findings; that reviewer also ran
-79 focused tests. The working tree was clean after both reviews.
+96 focused tests. The working tree was clean after the reviews. The user
+confirmed the closing-state diagnostic correction found during documentation
+review; its seven fault-injection tests pass.
 
 The [implementation execution record](2026-10-23-codex-stop-stdio-metadata-verification.json)
 contains native fixture results, bundle/driver hashes, full-suite checks and
 the existing watcher failure comparison. The regression test first returned
 `undefined` where the named stdio result was required; the implemented reader
 passes that case. A second red test established canonical-home propagation.
-The current suite passes 1,394 tests, including 53 resolver/process cases.
+The current suite passes 1,401 tests, including 60 resolver/process cases.
 
 Implementation verification includes typecheck, the repository test suite,
 affected native runtime smoke, existing native question/permission and
