@@ -160,14 +160,18 @@ total budget with child cleanup. Executable injection lets process fixtures
 use the installed Node runtime; the product resolves `codex` through PATH.
 
 ```sh
-pnpm exec vitest run packages/cli-codex/src/session-name.test.ts packages/cli-codex/src/session-name-stdio.test.ts packages/cli-codex/src/stdio-metadata.test.ts
+pnpm exec vitest run packages/cli-codex/src/session-name.test.ts packages/cli-codex/src/session-name-stdio.test.ts packages/cli-codex/src/stdio-metadata.test.ts packages/cli-codex/src/__tests__/stdio-diagnostics.test.ts
 ```
 
-These 60 tests cover the no-socket regression, selected home, native identity,
-source/name validation, malformed protocol, deadline and owned-child reaping.
+These 73 tests cover the no-socket regression, selected home, native identity,
+source/name validation, malformed protocol, deadline, owned-child reaping and
+diagnostic assertion contracts.
 Valid metadata survives a subsequent nonzero exit or forced cleanup. The
 closing-phase IO tests inject errors into real owned subprocess streams,
-verify reporting after both query outcomes, and verify repeated-error identity. The
+verify reporting after both query outcomes, and verify repeated-error identity.
+Successful queries permit a cleanup-intervention warning when the child exits
+abnormally. Assertions reject that warning for clean zero exits; rejected queries require their
+exact IO diagnostics. The
 [runtime repair DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)
 records real TUI validation in both modes: nine native Stops per mode,
 seven exact-name replies and two missing-name diagnostics. The experiments

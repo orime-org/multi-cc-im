@@ -206,7 +206,13 @@ contains native fixture results, bundle/driver hashes, full-suite checks and
 the existing watcher failure comparison. The regression test first returned
 `undefined` where the named stdio result was required; the implemented reader
 passes that case. A second red test established canonical-home propagation.
-The current suite passes 1,401 tests, including 60 resolver/process cases.
+The current suite passes 1,414 tests, including 73 resolver, process and
+diagnostic assertion cases. A CI run exposed a zero-diagnostics expectation
+after a successful query that required subprocess cleanup intervention. The
+assertions now distinguish successful metadata, abnormal cleanup, clean zero
+exit and rejected queries. Twelve assertion tests and a guard-removal experiment
+verify those conditions. Test correction commit `e771197` received an independent
+implementation review with zero established findings and 73 focused tests passed.
 
 Implementation verification includes typecheck, the repository test suite,
 affected native runtime smoke, existing native question/permission and

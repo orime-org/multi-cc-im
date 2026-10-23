@@ -277,5 +277,48 @@
     },
     "status": "User-confirmed correction implemented and independently reviewed."
   },
-  "initialImplementation": "ef5cd040f3b2aa1c4d17605229151e4766087e17"
+  "initialImplementation": "ef5cd040f3b2aa1c4d17605229151e4766087e17",
+  "ciAssertionRepair": {
+    "commit": "e771197a6fd90e74a2cce72de933c4315069e3d1",
+    "classification": "Test assertion contract correction; production implementation remains 78254b2.",
+    "ciFailure": {
+      "run": "39896222349",
+      "result": "Named metadata was returned; the zero-diagnostics assertion rejected the supported cleanup intervention warning.",
+      "log": "ci-failed.log"
+    },
+    "regression": {
+      "red": "ci-diagnostic-guard-red.log",
+      "green": "ci-diagnostic-guard-green.log",
+      "focusedTestsPassed": 73,
+      "rejectedQueryMutation": "ci-rejected-query-mutation.log",
+      "guardRemovalMutation": "ci-assertion-parent-guard-mutation.log"
+    },
+    "checks": [
+      {
+        "command": "pnpm typecheck",
+        "result": "passed",
+        "log": "ci-diagnostic-guard-typecheck.log"
+      },
+      {
+        "command": "CHOKIDAR_USEPOLLING=1 pnpm test",
+        "result": "77 files / 1414 tests passed",
+        "log": "ci-diagnostic-guard-suite.log"
+      },
+      {
+        "command": "pnpm --filter multi-cc-im build",
+        "result": "passed",
+        "log": "ci-diagnostic-guard-build.log"
+      },
+      {
+        "command": "./bin/multi-cc-im --version",
+        "result": "0.2.3"
+      }
+    ],
+    "independentReview": {
+      "establishedFindings": 0,
+      "focusedTestsPassed": 73,
+      "log": "ci-assertion-rereview-focused.log",
+      "typecheckLog": "ci-assertion-rereview-typecheck.log"
+    }
+  }
 }
