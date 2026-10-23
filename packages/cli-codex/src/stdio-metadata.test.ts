@@ -83,5 +83,5 @@ it('reports closing errors and preserves the selected request failure', async ()
   injection.target = 'stdin';
   const peer = await fixture(true);
   await expect(peer.read()).rejects.toThrow('rejected the metadata request');
-  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure 0']);
+  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure 0']);
 });

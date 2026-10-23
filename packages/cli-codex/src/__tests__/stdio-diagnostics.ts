@@ -13,7 +13,9 @@ export function expectMetadataDiagnostics(errors: unknown[], expected: string[] 
   expect(cleanup.length).toBeLessThanOrEqual(1);
   for (const error of cleanup) {
     expect(error).toBeInstanceOf(Error);
-    expect(String(error)).toMatch(/^Error: Codex App Server metadata reader cleanup required intervention \(code=(?:null|-?\d+), signal=(?:null|SIG[A-Z0-9]+)\); metadata was received\.$/);
+    const status = String(error).match(/^Error: Codex App Server metadata reader cleanup required intervention \(code=(null|-?\d+), signal=(null|SIG[A-Z0-9]+)\); metadata was received\.$/);
+    expect(status).not.toBeNull();
+    expect(status?.slice(1)).not.toEqual(['0', 'null']);
   }
   expect(errors.filter(error => !cleanup.includes(error)).map(String)).toEqual(expected);
 }
