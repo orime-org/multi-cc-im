@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveCodexSessionName } from './session-name.js';
+import { expectMetadataDiagnostics } from './__tests__/stdio-diagnostics.js';
 
 let home: string | undefined;
 
@@ -33,7 +34,7 @@ lines.on('line', line => {
     home, executable: process.execPath, onError: err => errors.push(err),
   });
   expect(result, errors.map(String).join('\n')).toBe('Named in-process session');
-  expect(errors).toEqual([]);
+  expectMetadataDiagnostics(errors);
   const requests = (await readFile(join(home, 'requests.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { method: string });
   expect(requests.map(request => request.method)).toEqual(['initialize', 'initialized', 'thread/read']);
 });

@@ -3,6 +3,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readCodexThreadMetadata } from './stdio-metadata.js';
+import { expectMetadataDiagnostics } from './__tests__/stdio-diagnostics.js';
 
 const injection = vi.hoisted(() => ({
   target: 'stdin' as 'stdin' | 'stdout' | 'stderr' | 'child',
@@ -61,26 +62,26 @@ it.each(['stdin', 'stdout', 'stderr', 'child'] as const)('reports closing %s err
   injection.target = target;
   const peer = await fixture();
   expect(await peer.read()).toEqual({ thread: { name: 'Verified name' } });
-  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure 0']);
+  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure 0']);
 });
 
 it('reports each distinct closing error', async () => {
   injection.target = 'stdin'; injection.count = 2;
   const peer = await fixture();
   expect(await peer.read()).toEqual({ thread: { name: 'Verified name' } });
-  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure 0', 'Error: Late fixture IO failure 1']);
+  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure 0', 'Error: Late fixture IO failure 1']);
 });
 
 it('reports a forwarded stdout error once', async () => {
   injection.target = 'stdout'; injection.count = 2; injection.repeatedError = true;
   const peer = await fixture();
   expect(await peer.read()).toEqual({ thread: { name: 'Verified name' } });
-  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure']);
+  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure']);
 });
 
 it('reports closing errors and preserves the selected request failure', async () => {
   injection.target = 'stdin';
   const peer = await fixture(true);
   await expect(peer.read()).rejects.toThrow('rejected the metadata request');
-  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure 0']);
+  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure 0']);
 });

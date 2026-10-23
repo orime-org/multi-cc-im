@@ -4,6 +4,7 @@ import { join, relative } from 'node:path';
 import { z } from 'zod';
 import * as codex from './index.js';
 import { resolveCodexSessionName } from './session-name.js';
+import { expectMetadataDiagnostics } from './__tests__/stdio-diagnostics.js';
 
 const threadId = '019a15e0-329d-7343-9e8c-2d694c948237';
 let home: string, methods: string[], errors: unknown[], readParams: unknown[];
@@ -91,13 +92,19 @@ describe('native Codex session name', () => {
   it('reads the exact native name independently of project or terminal metadata', async () => {
     expect(await lookup()).toBe('Release review 会话');
     expect(methods).toEqual(['initialize', 'initialized', 'thread/read']);
-    expect(errors).toEqual([]);
+    expectMetadataDiagnostics(errors);
   });
 
-  it('uses the selected CODEX_HOME when no explicit home is supplied', async () => {
+  it.each(['', 'stubborn-shutdown'])('uses the selected CODEX_HOME with cleanup mode %j', async mode => {
+    fault = mode;
+    await configure();
     vi.stubEnv('CODEX_HOME', home);
     expect(await resolveCodexSessionName(threadId, { executable: process.execPath, onError: err => errors.push(err) })).toBe('Release review 会话');
-    expect(errors).toEqual([]);
+    expectMetadataDiagnostics(errors);
+    if (mode === 'stubborn-shutdown') expect(diagnostics()).toContain('metadata was received');
+    const started = z.object({ pid: z.number(), home: z.string() }).parse(JSON.parse(await readFile(join(home, 'started.json'), 'utf8')));
+    expect(started.home).toBe(home);
+    expect(() => process.kill(started.pid, 0)).toThrow(/ESRCH/);
   });
 
   it('resolves a relative selected home before setting the subprocess environment', async () => {
@@ -110,7 +117,7 @@ describe('native Codex session name', () => {
   it.each(['cli', 'vscode', 'exec', 'appServer', 'unknown', { custom: 'integration' }])('accepts root source %j', async source => {
     metadata = { thread: { id: threadId, name: '  exact name  ', source } };
     expect(await lookup()).toBe('  exact name  ');
-    expect(errors).toEqual([]);
+    expectMetadataDiagnostics(errors);
   });
 
   it.each([undefined, null, '', '  \t '])('diagnoses an unnamed thread: %j', async name => {
@@ -126,7 +133,7 @@ describe('native Codex session name', () => {
   ])('excludes native subagent source %j', async source => {
     metadata = { thread: { id: threadId, name: 'Internal task', source } };
     expect(await lookup()).toBeUndefined();
-    expect(errors).toEqual([]);
+    expectMetadataDiagnostics(errors);
   });
 
   it.each([
@@ -175,7 +182,7 @@ describe('native Codex session name', () => {
   it('consumes native notifications while reading metadata', async () => {
     fault = 'notification';
     expect(await lookup()).toBe('Release review 会话');
-    expect(errors).toEqual([]);
+    expectMetadataDiagnostics(errors);
   });
 
   it.each(['failed-shutdown', 'stubborn-shutdown'])('preserves valid metadata after %s', async value => {
