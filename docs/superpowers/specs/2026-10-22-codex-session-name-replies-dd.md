@@ -2,8 +2,10 @@
 
 Date: 2026-10-22. Status: user-approved design and correction implemented;
 two independent implementation reviews returned no established defects.
-Final validation and PR delivery are pending. Real-account acceptance belongs
-to the maintainer after deployment.
+The original implementation was merged in PR #251. The
+[runtime repair](2026-10-23-codex-stop-stdio-metadata-dd.md) covers its stdio
+metadata transport update. Real-account acceptance belongs to the maintainer
+after deployment.
 
 ## Goal and approved contract
 

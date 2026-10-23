@@ -242,5 +242,14 @@
     "recordedPidsChecked": 67,
     "presentPids": 0
   },
-  "logDirectory": "mcim-codex-stop-stdio-validation"
+  "logDirectory": "mcim-codex-stop-stdio-validation",
+  "closingIoDiagnosticProbe": {
+    "method": "A real owned fixture child returned matching metadata; the probe then injected one stdin EPIPE error event in the closing state.",
+    "injectedIoErrors": 1,
+    "recordedDiagnostics": 0,
+    "nativeResultPreserved": true,
+    "log": "late-io-probe.log",
+    "logSha256": "b2327bac286546b5ef768e54a6b6ad479b227fc673ffdac9e743987faf192c30",
+    "status": "Review confirmation pending for the diagnostic gap."
+  }
 }

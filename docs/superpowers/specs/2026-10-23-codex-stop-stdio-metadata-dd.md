@@ -160,11 +160,13 @@ The lifecycle/cleanup policy is an internal implementation decision. Its
 timing and abnormal-exit transitions require fixture-process tests; reviewers
 must examine those assumptions explicitly.
 
-**Internal transition basis:** every cell in the lifecycle table is a proposed
-implementation rule inferred from single-owner subprocess cleanup and one
-terminal query outcome. The 18 native queries verify the successful sequence;
-failure, deadline and signal transitions remain assumptions for adversarial
-review and fixture-process tests.
+**Internal transition basis:** the lifecycle table was derived from
+single-owner subprocess cleanup and one terminal query outcome. The 18 native
+research queries verified the successful sequence. Fixture-process tests now
+verify initialization/read failures, deadlines, exit and signal transitions.
+Documentation review identified a remaining post-response IO diagnostic gap;
+its correction awaits review confirmation. See the implementation execution
+record below.
 
 ## Acceptance and regression map
 
