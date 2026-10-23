@@ -153,6 +153,31 @@ Its terminal API is deliberately unavailable. Hook trust is recorded from the
 native reported hash inside the disposable home. The fixture cleans its own
 processes and files. Real Feishu deployment acceptance belongs to the maintainer.
 
+Stop metadata uses an owned `codex app-server --listen stdio://` process with
+the selected `CODEX_HOME`. Both default shared-daemon TUIs and `--no-daemon`
+TUIs use that reader. Initialization and stored `thread/read` share an 800 ms
+total budget with child cleanup. Executable injection lets process fixtures
+use the installed Node runtime; the product resolves `codex` through PATH.
+
+```sh
+pnpm exec vitest run packages/cli-codex/src/session-name.test.ts packages/cli-codex/src/session-name-stdio.test.ts packages/cli-codex/src/stdio-metadata.test.ts packages/cli-codex/src/__tests__/stdio-diagnostics.test.ts
+```
+
+These 73 tests cover the no-socket regression, selected home, native identity,
+source/name validation, malformed protocol, deadline, owned-child reaping and
+diagnostic assertion contracts.
+Valid metadata survives a subsequent nonzero exit or forced cleanup. The
+closing-phase IO tests inject errors into real owned subprocess streams,
+verify reporting after both query outcomes, and verify repeated-error identity.
+Successful queries permit a cleanup-intervention warning when the child exits
+abnormally. Assertions reject that warning for clean zero exits; rejected queries require their
+exact IO diagnostics. The
+[runtime repair DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)
+records real TUI validation in both modes: nine native Stops per mode,
+seven exact-name replies and two missing-name diagnostics. The experiments
+used normally trusted hooks, a localhost model and recording IM. Their
+execution records include bundle and fixture hashes.
+
 ```sh
 CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-question-smoke.mts
 pnpm exec vitest run packages/term-iterm2/src/helper-contract.test.ts
@@ -183,8 +208,10 @@ CLI. On hosts with existing EMFILE watcher exhaustion, the documented test-only
 watcher behavior. Keep `~/.claude/settings.json` unchanged and compare its backup.
 
 Runtime activation: select Codex in the wizard and review hooks with native `/hooks`.
-Set a native session name with `/rename <name>` for Stop replies. `thread/read`
-supplies that exact name; the Stop queue is independent of terminal title items.
+Set a native session name with `/rename <name>` for Stop replies. The stdio
+`thread/read` supplies that exact name for both supported runtime modes.
+Lookup errors identify the home/executable checks in hook stderr; verify
+`codex --version` and `codex app-server --help` in the session environment.
 For incoming `#name` routing, `/list` shows the current cleaned terminal title;
 put `thread-name` first in `/terminal-title` to support its unique-prefix match.
 `project-name` displays the project directory and is independent of the native name.

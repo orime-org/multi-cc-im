@@ -89,7 +89,12 @@ iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用�
 
 Codex Stop 在终端查询之前进入会话名路径：检查正文、`stop_hook_active`、
 IMWork／IMOrigin／daemon 存活后，通过本机 `thread/read` 读取完整 `thread.name`，
-检查响应线程与 source，排除 subagent；初始化和查询合计最多 800ms。
+检查响应线程与 source，排除 subagent。每次查询启动一个本机
+`codex app-server --listen stdio://` 子进程，选定同一 `CODEX_HOME`，完成
+`initialize`／`initialized`／`thread/read {includeTurns:false}` 后关闭 stdin。
+共享后台及 `--no-daemon` 均使用此路径。800ms 总预算包含初始化、读取和自有进程清理；
+清理超时只向该子进程发信号，已收到的有效元数据继续交付。UDS 与 stdio 共用
+原生 home、Unix 平台及 0.163.0 版本校验。
 `thread-name` 是 `/rename` 设置的会话名，`project-name` 是目录标签。
 Stop 写 0600 原子事件 `SessionReply.codex.<thread-id>.<timestamp>.json`，正文携带
 `cli`、`sessionId`、`sessionName`、`termId`、`last_assistant_message`。
@@ -97,7 +102,8 @@ Stop 写 0600 原子事件 `SessionReply.codex.<thread-id>.<timestamp>.json`，�
 Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最新 IMOrigin。
 启动入口将队列异常接入 daemon 日志；分派后消费事件。缺名时 hook stderr 提示
 `/rename <session-name>`。入站继续按 `/list` 展示的终端标题匹配。
-详见 [会话名回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)。
+详见 [会话名回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)
+与 [跨运行模式元数据查询 DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)。
 
 启用 Codex 时，即使同时启用 Claude，也只创建一个既有状态文件 watcher，并附加一个
 本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它只附加唯一关联、
