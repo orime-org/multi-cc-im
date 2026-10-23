@@ -2,7 +2,7 @@
 
 Date: 2026-10-23. Status: implemented and independently reviewed;
 documentation and delivery validation are in progress. Baseline: `7d2794d`
-(PR #251). Implementation commit: `ef5cd04`.
+(PR #251). Implementation commit: `78254b2`.
 
 ## Goal and existing contract
 
