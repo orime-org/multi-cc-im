@@ -1,0 +1,168 @@
+{
+  "nativeVersion": "0.163.0",
+  "baseline": "7d2794d6e1f9cf8add6568a9556b5b136749d03f",
+  "scope": "Research reproduction and metadata feasibility; fixed product bundle acceptance is pending.",
+  "fixture": "Actual Codex TUIs in disposable PTYs, normally persisted hook trust, localhost model, captured native titles, terminal API fixture and recording IM.",
+  "historicalBoundary": "User-provided historical named replies worked. The lab pane counterexample has no established causal link to those historical replies.",
+  "bundles": {
+    "old": {
+      "commit": "7b21696",
+      "sha256": "e4ca1c38cadb6ff5983b872547960d0557047cd0ae522b4f6a5b0476cfcb8038"
+    },
+    "pr251": {
+      "commit": "4656830ec17c864d3f2b97f2cb132e1d2e3960e7",
+      "sha256": "75320fc3a6e797c398dffde324e8a7ee589ecfe6510798cf512ef113cce78f0d"
+    }
+  },
+  "baselineRegression": {
+    "mode": "--no-daemon",
+    "normalHookTrust": true,
+    "observedNativeStopCount": 2,
+    "nativeName": "frontend",
+    "nativeStopText": "Native fixture reply 3",
+    "namedReplyDelivered": false,
+    "hookExitCode": 0,
+    "diagnostic": "connect ENOENT <fixture-home>/app-server-control/app-server-control.sock",
+    "result": "Fixture timed out waiting for delivery after the named native Stop.",
+    "sourceRecord": "trusted-current-embedded-1792719792265/results.json"
+  },
+  "historicalControl": {
+    "mode": "--no-daemon",
+    "normalHookTrust": true,
+    "namedReplies": [
+      {
+        "text": "Native fixture reply 3",
+        "source": "frontend"
+      },
+      {
+        "text": "Native fixture reply 4",
+        "source": "frontend"
+      },
+      {
+        "text": "Native fixture reply 5",
+        "source": "frontend"
+      },
+      {
+        "text": "Native fixture reply 8",
+        "source": "backend"
+      },
+      {
+        "text": "Native fixture reply 9",
+        "source": "frontend"
+      },
+      {
+        "text": "Native fixture reply 10",
+        "source": "backend"
+      }
+    ],
+    "sourceRecord": "trusted-embedded-1792719753628/results.json"
+  },
+  "liveMetadataQueries": [
+    {
+      "mode": "default shared daemon",
+      "normalHookTrust": true,
+      "queryCount": 9,
+      "threadIdMatchesAll": true,
+      "nativeExitCodes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "returnedNamesInOrder": [
+        null,
+        "frontend",
+        "frontend",
+        "frontend",
+        null,
+        "backend",
+        "frontend",
+        "backend",
+        "renamed-frontend"
+      ],
+      "nativeProcessTotalMs": [
+        23.368792000000003,
+        21.773125,
+        21.848208000000003,
+        23.247625,
+        23.072083,
+        21.776459000000003,
+        21.555417000000002,
+        21.664834,
+        21.743040999999998
+      ],
+      "timingBoundary": "Spawn to native process close; excludes outer Node helper startup.",
+      "controlSocketIdentityUnchanged": true,
+      "sharedSocketPresent": true,
+      "sourceRecord": "metadata-default-1792722364874/metadata-results.jsonl",
+      "sourceSha256": "2ade8445f1f64ee5918ffe98724fb022258383d29eff0e14d71828c648b0f312"
+    },
+    {
+      "mode": "--no-daemon",
+      "normalHookTrust": true,
+      "queryCount": 9,
+      "threadIdMatchesAll": true,
+      "nativeExitCodes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "returnedNamesInOrder": [
+        null,
+        "frontend",
+        "frontend",
+        "frontend",
+        null,
+        "backend",
+        "frontend",
+        "backend",
+        "renamed-frontend"
+      ],
+      "nativeProcessTotalMs": [
+        21.961917,
+        21.172041000000004,
+        20.606333,
+        21.262667,
+        22.183958,
+        21.158125,
+        22.672749999999997,
+        21.041625000000003,
+        20.717
+      ],
+      "timingBoundary": "Spawn to native process close; excludes outer Node helper startup.",
+      "controlSocketIdentityUnchanged": true,
+      "sharedSocketPresent": false,
+      "sourceRecord": "metadata-embedded-1792722440192/metadata-results.jsonl",
+      "sourceSha256": "70caf335228ffde0660c9c113d7cd6769c42c4e5e069c5a39d8ab28abc986358"
+    }
+  ],
+  "triageControl": {
+    "entry": "routeViaCodex from deployed packages/bridge/src/ai-router-codex.ts",
+    "nativeCommand": "codex exec --ephemeral --disable hooks --sandbox read-only --skip-git-repo-check --output-schema <fixture-schema> --output-last-message <fixture-output> <fixture-prompt>",
+    "result": {
+      "target": "frontend",
+      "intent": "Run the fixture",
+      "reason": "Fixture target",
+      "permissionResponse": null
+    },
+    "localModelRequests": 1,
+    "sharedControlSocketExists": false
+  },
+  "researchCommands": [
+    "Native TUI: codex [--no-daemon] --no-alt-screen -s read-only <fixture-initial-prompt>; send /rename frontend and later /rename renamed-frontend through its PTY.",
+    "Metadata subprocess: codex app-server --listen stdio:// with private CODEX_HOME; initialize, initialized, thread/read with includeTurns:false; end stdin and await child close.",
+    "Stop hook: built multi-cc-im hook-receiver-codex with native Stop stdin; record queue/watcher/bridge delivery."
+  ],
+  "researchArtifactRoot": "/private/tmp/mcim-app-server-evidence-k52uscbe"
+}
