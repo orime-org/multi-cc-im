@@ -1,7 +1,8 @@
 # DD and design: Codex Stop metadata across runtime modes
 
-Date: 2026-10-23. Status: the user authorized the evidenced stdio repair;
-design review and implementation are pending. Baseline: `7d2794d` (PR #251).
+Date: 2026-10-23. Status: implemented and independently reviewed;
+documentation and delivery validation are in progress. Baseline: `7d2794d`
+(PR #251). Implementation commit: `ef5cd04`.
 
 ## Goal and existing contract
 
@@ -190,9 +191,17 @@ maintainer after reviewing the PR.
 
 ## Required verification and delivery
 
-Before implementation, commit this design and obtain the independent design
-review required by the project workflow. Established review findings follow
-the user's review-confirmation gate.
+Design commit `107334a` received an independent design review with zero
+established findings. Implementation commit `ef5cd04` received an independent
+implementation review with zero established findings; that reviewer also ran
+79 focused tests. The working tree was clean after both reviews.
+
+The [implementation execution record](2026-10-23-codex-stop-stdio-metadata-verification.json)
+contains native fixture results, bundle/driver hashes, full-suite checks and
+the existing watcher failure comparison. The regression test first returned
+`undefined` where the named stdio result was required; the implemented reader
+passes that case. A second red test established canonical-home propagation.
+The current suite passes 1,394 tests, including 53 resolver/process cases.
 
 Implementation verification includes typecheck, the repository test suite,
 affected native runtime smoke, existing native question/permission and

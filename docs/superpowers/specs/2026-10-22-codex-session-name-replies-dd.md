@@ -69,13 +69,15 @@ It supplies a session-name resolver directly, then invokes the Stop receiver.
 The receiver checks nonempty reply, inactive stop hook, `IMWork`, `IMOrigin`
 and daemon liveness before querying metadata.
 
-The resolver uses the existing bounded local UDS client. It requests only
+The resolver uses the bounded official stdio metadata reader described in the
+[runtime repair DD](2026-10-23-codex-stop-stdio-metadata-dd.md). It requests
 `thread/read {threadId, includeTurns:false}`, validates the response id,
 nonempty native name and source, and excludes native subagent sources.
-The whole metadata lookup has an 800 ms deadline, including initialization.
-The owned socket closes on success, timeout and failure. Missing names produce
+The whole metadata lookup has an 800 ms budget, including initialization and
+owned-child cleanup. Both shared-daemon and `--no-daemon` modes use the reader.
+The owned child's stdin closes on success, timeout and failure. Missing names produce
 an actionable stderr diagnostic instructing `/rename <session-name>`; protocol,
-version and connection failures identify the local App Server dependency.
+version and process failures identify the installed Codex/home checks.
 
 The hook writes one atomic 0600 session reply event under the shared state
 directory: `SessionReply.codex.<thread-id>.<timestamp>.json`. The body contains

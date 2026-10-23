@@ -65,6 +65,10 @@ records verified protocols, completed repairs, and remaining questions. Check
 current code and Git before resuming an item. Runtime session ids, local pane
 numbers, machine paths, and conversation handoffs stay out of shared docs.
 
+The [Stop runtime repair DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)
+and its execution records cover named replies in shared-daemon and
+`--no-daemon` modes, the stdio metadata reader, and the question/triage regressions.
+
 The current deployment terminal is WezTerm. Development acceptance and its
 fixture boundaries are recorded in the
 [WezTerm execution record](superpowers/specs/2026-10-22-codex-wezterm-acceptance.md).

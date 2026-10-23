@@ -24,7 +24,13 @@
     "hookExitCode": 0,
     "diagnostic": "connect ENOENT <fixture-home>/app-server-control/app-server-control.sock",
     "result": "Fixture timed out waiting for delivery after the named native Stop.",
-    "sourceRecord": "trusted-current-embedded-1792719792265/results.json"
+    "sourceRecords": [
+      "trusted-current-embedded-1792719792265/results.json",
+      "trusted-current-embedded-1792719792265/hooks.jsonl",
+      "trusted-current-embedded-1792719792265/hook-exits.jsonl",
+      "trusted-current-embedded-1792719792265/panes.json",
+      "trusted-current-embedded-1792719792265/hook-trust-review.json"
+    ]
   },
   "historicalControl": {
     "mode": "--no-daemon",
@@ -164,5 +170,5 @@
     "Metadata subprocess: codex app-server --listen stdio:// with private CODEX_HOME; initialize, initialized, thread/read with includeTurns:false; end stdin and await child close.",
     "Stop hook: built multi-cc-im hook-receiver-codex with native Stop stdin; record queue/watcher/bridge delivery."
   ],
-  "researchArtifactRoot": "/private/tmp/mcim-app-server-evidence-k52uscbe"
+  "researchArtifactDirectory": "mcim-app-server-evidence-k52uscbe"
 }

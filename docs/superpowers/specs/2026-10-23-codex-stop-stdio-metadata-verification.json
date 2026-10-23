@@ -1,0 +1,246 @@
+{
+  "baseline": "7d2794d6e1f9cf8add6568a9556b5b136749d03f",
+  "implementation": "ef5cd040f3b2aa1c4d17605229151e4766087e17",
+  "nativeVersion": "0.163.0",
+  "bundleSha256": "aa5894fa03feb5e97c40f9fd9ef4c42e6fd401186b3604387150a002fff3c31f",
+  "fixtureDriverSha256": "db6468544c6d5c60d11a3f43d20485534c6c40875eba040186f287c20a92f351",
+  "validationBoundary": "Actual native TUIs and built CLI; localhost model, disposable PTYs, normally trusted hooks and recording IM. Maintainer owns deployed WezTerm/Feishu acceptance.",
+  "nativeTui": [
+    {
+      "mode": "default shared daemon",
+      "nativeStopCount": 9,
+      "hookExitCodes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "missingNameDiagnostics": 2,
+      "normalHookTrust": true,
+      "rows": [
+        {
+          "condition": "one TUI; no name; no observer",
+          "nativeStopText": "Native fixture reply 1",
+          "delivery": null
+        },
+        {
+          "condition": "one TUI; renamed frontend; no observer",
+          "nativeStopText": "Native fixture reply 3",
+          "delivery": {
+            "text": "Native fixture reply 3",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "one TUI; frontend; observer attached",
+          "nativeStopText": "Native fixture reply 4",
+          "delivery": {
+            "text": "Native fixture reply 4",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "one TUI; frontend; observer detached",
+          "nativeStopText": "Native fixture reply 5",
+          "delivery": {
+            "text": "Native fixture reply 5",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "two ordinary TUIs; second unnamed; no observer",
+          "nativeStopText": "Native fixture reply 6",
+          "delivery": null
+        },
+        {
+          "condition": "two ordinary TUIs; second backend; no observer",
+          "nativeStopText": "Native fixture reply 8",
+          "delivery": {
+            "text": "Native fixture reply 8",
+            "source": "backend"
+          }
+        },
+        {
+          "condition": "two TUIs; first frontend; observer attached",
+          "nativeStopText": "Native fixture reply 9",
+          "delivery": {
+            "text": "Native fixture reply 9",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "two TUIs; second backend; observer attached",
+          "nativeStopText": "Native fixture reply 10",
+          "delivery": {
+            "text": "Native fixture reply 10",
+            "source": "backend"
+          }
+        },
+        {
+          "condition": "first session after subsequent rename",
+          "nativeStopText": "Native fixture reply 11",
+          "delivery": {
+            "text": "Native fixture reply 11",
+            "source": "renamed-frontend"
+          }
+        }
+      ],
+      "rawResultsSha256": "82bea844fb39e794bdd7a1ece5f40ff3607ce0f2a408b22fd602a0ff6689bf9a",
+      "fixtureDirectory": "stdio-fixed-default-1792724402164"
+    },
+    {
+      "mode": "--no-daemon",
+      "nativeStopCount": 9,
+      "hookExitCodes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "missingNameDiagnostics": 2,
+      "normalHookTrust": true,
+      "rows": [
+        {
+          "condition": "one TUI; no name; no observer",
+          "nativeStopText": "Native fixture reply 1",
+          "delivery": null
+        },
+        {
+          "condition": "one TUI; renamed frontend; no observer",
+          "nativeStopText": "Native fixture reply 3",
+          "delivery": {
+            "text": "Native fixture reply 3",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "one ordinary TUI; frontend; repeat without observer",
+          "nativeStopText": "Native fixture reply 4",
+          "delivery": {
+            "text": "Native fixture reply 4",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "one ordinary TUI; frontend; second repeat without observer",
+          "nativeStopText": "Native fixture reply 5",
+          "delivery": {
+            "text": "Native fixture reply 5",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "two ordinary TUIs; second unnamed; no observer",
+          "nativeStopText": "Native fixture reply 6",
+          "delivery": null
+        },
+        {
+          "condition": "two ordinary TUIs; second backend; no observer",
+          "nativeStopText": "Native fixture reply 8",
+          "delivery": {
+            "text": "Native fixture reply 8",
+            "source": "backend"
+          }
+        },
+        {
+          "condition": "two ordinary TUIs; first frontend; no observer",
+          "nativeStopText": "Native fixture reply 9",
+          "delivery": {
+            "text": "Native fixture reply 9",
+            "source": "frontend"
+          }
+        },
+        {
+          "condition": "two ordinary TUIs; second backend; no observer",
+          "nativeStopText": "Native fixture reply 10",
+          "delivery": {
+            "text": "Native fixture reply 10",
+            "source": "backend"
+          }
+        },
+        {
+          "condition": "first session after subsequent rename",
+          "nativeStopText": "Native fixture reply 11",
+          "delivery": {
+            "text": "Native fixture reply 11",
+            "source": "renamed-frontend"
+          }
+        }
+      ],
+      "rawResultsSha256": "ebfe7f65c4c35f8cf4ce046f317de5c55070f4b96cb6a579fecb518422ab37e4",
+      "fixtureDirectory": "stdio-fixed-embedded-1792724404625"
+    }
+  ],
+  "checks": [
+    {
+      "command": "pnpm typecheck",
+      "result": "passed",
+      "log": "typecheck.log"
+    },
+    {
+      "command": "CHOKIDAR_USEPOLLING=1 pnpm test",
+      "result": "75 files / 1394 tests passed",
+      "log": "full-tests.log"
+    },
+    {
+      "command": "pnpm --filter multi-cc-im build",
+      "result": "passed",
+      "log": "build.log"
+    },
+    {
+      "command": "./bin/multi-cc-im --version",
+      "result": "0.2.3"
+    },
+    {
+      "command": "node <clean-production-directory>/dist/cli.js --version",
+      "result": "0.2.3"
+    },
+    {
+      "command": "CHOKIDAR_USEPOLLING=1 pnpm exec tsx scripts/codex-question-smoke.mts",
+      "result": "passed",
+      "log": "native-question.log"
+    },
+    {
+      "command": "pnpm exec tsx <isolated-native-exec-fixture>",
+      "result": "task-branch routeViaCodex returned expected target/intent through real codex exec; shared socket absent",
+      "log": "native-triage.log"
+    }
+  ],
+  "watcherBaseline": {
+    "baseline": "7d2794d",
+    "command": "pnpm exec vitest run packages/cli-cc/src/session-replies.test.ts",
+    "result": "12 tests passed; 6 unhandled watcher EMFILE errors",
+    "log": "baseline-watcher.log",
+    "comparison": "Same six errors occurred in the task branch native-watcher run. Polling full suite passes."
+  },
+  "reviews": {
+    "design": {
+      "commit": "107334a",
+      "establishedFindings": 0,
+      "evidence": "Independent raw record/hash checks and clean worktree."
+    },
+    "implementation": {
+      "commit": "ef5cd04",
+      "establishedFindings": 0,
+      "independentlyRunTests": 79,
+      "evidence": "53 resolver/process tests and 26 UDS question/identity tests passed; clean worktree."
+    },
+    "visualScope": "Backend metadata transport and diagnostic logs; native TUI interaction acceptance recorded above."
+  },
+  "cleanup": {
+    "record": "process-cleanup.json",
+    "recordedPidsChecked": 67,
+    "presentPids": 0
+  },
+  "logDirectory": "mcim-codex-stop-stdio-validation"
+}
