@@ -90,8 +90,9 @@ these owned fixture processes were stopped.
 No extra runtime dependency is being selected/added in this DD. If D is
 accepted, dependency placement must make ws a declared production dependency
 where used; relying on root devDependencies or transitive hoisting is invalid.
-The supported Codex protocol version must be checked and generated schemas
-validated before activation. A transport error must defer to the existing TUI,
+The [2026-10-25 decision](2026-10-25-codex-runtime-errors-dd.md) supersedes
+version admission: validate actual native responses and report failures with
+their observed runtime context. A transport error must defer to the existing TUI,
 without restarting or starting a user thread.
 
 ## 4. Recommendation and concrete implementation boundary
@@ -150,8 +151,11 @@ native model input. A separate real-server/product-bridge/fake-IM smoke covers
 IM-first, terminal-first, late replies, restart replay, default-mode and multiple
 questions. Neither fixture sends real IM or calls an external model provider.
 
-The current supported protocol is pinned to 0.163.0 and the selected single
-Codex home. The native APIs remain private local socket operations; the existing
+The selected single Codex home remains required. The
+[2026-10-25 repair](2026-10-25-codex-runtime-errors-dd.md) removes version admission:
+actual protocol failures report their operation, observed version and original
+reason. The 0.163.0 measurements above remain historical evidence.
+The native APIs remain private local socket operations; the existing
 enabled owner IM workflow carries question content. Secret questions remain
 terminal-only. Live WezTerm acceptance verifies prompt submission, native title
 identity and a question through the product bridge/test IM back to native model

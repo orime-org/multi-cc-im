@@ -192,10 +192,15 @@ Product code does not parse the probe's terminal control stream.
 The separate product bridge smoke checks IM-first, terminal-first, late answers,
 restart pending replay, default-mode requests and multi-question interpretation.
 Unit regressions cover collisions, duplicate displayed threads, missing/changed
-identity, no revival, unsupported versions, subagents, malformed/secret questions,
+identity, no revival, subagents, malformed/secret questions,
 native disconnects, pagination, RPC timeout, owner/chat/IM mode and sensitive
 input gates. Global Claude settings compare unchanged. Title activation backs
 up the existing Codex config and adds only the explicitly approved field.
+
+The [2026-10-25 repair](2026-10-25-codex-runtime-errors-dd.md) replaces the
+original unsupported-version rejection tests with successful arbitrary-version
+and missing-version cases. Actual protocol failures retain operation, observed
+runtime version and native reason; identity and source restrictions remain.
 
 The iTerm2 helper contract passes. The deployment terminal is WezTerm; a live
 WezTerm/Codex TUI acceptance now verifies native title identity, prompt submission,

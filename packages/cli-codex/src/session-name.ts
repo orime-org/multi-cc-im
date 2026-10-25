@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { codexHome } from './local-client.js';
 import { readCodexThreadMetadata } from './stdio-metadata.js';
+import { codexRuntimeError } from './app-server-protocol.js';
 
 const SessionSource = z.union([
   z.enum(['cli', 'vscode', 'exec', 'appServer', 'unknown']),
@@ -27,19 +28,22 @@ const ThreadMetadata = z.object({ thread: z.object({
 export async function resolveCodexSessionName(threadId: string, opts: {
   home?: string; timeoutMs?: number; executable?: string; onError(err: unknown): void;
 }): Promise<string | undefined> {
+  let version = 'unknown';
   try {
     if (!z.string().uuid().safeParse(threadId).success) throw new Error('Invalid Codex thread id; expected the native Stop session UUID.');
     const timeoutMs = Math.min(z.number().finite().positive().parse(opts.timeoutMs ?? 800), 800);
-    const { thread } = ThreadMetadata.parse(await readCodexThreadMetadata({
+    const metadata = await readCodexThreadMetadata({
       home: opts.home ?? codexHome(), threadId, timeoutMs, executable: opts.executable, onError: opts.onError,
-    }));
+    });
+    version = metadata.version;
+    const { thread } = ThreadMetadata.parse(metadata.result);
     if (thread.id !== threadId) throw new Error('Codex App Server returned a different thread id.');
     if (typeof thread.source === 'object' && 'subAgent' in thread.source) return undefined;
     if (!thread.name?.trim()) throw new Error('Codex session has no name; run /rename <session-name> in the terminal and retry.');
     return thread.name;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    opts.onError(new Error(`Codex App Server session name lookup failed: ${detail} Check the selected Codex home and run codex --version and codex app-server --help in the terminal (verified: 0.163.0).`, { cause: err }));
+    const failure = codexRuntimeError('thread/read (Stop session name)', version, err);
+    opts.onError(new Error(`Codex Stop reply was not forwarded: ${failure.message}`, { cause: failure }));
     return undefined;
   }
 }

@@ -35,3 +35,11 @@ it('requires each injected diagnostic in order', () => {
 it('rejects a cleanup warning for a clean zero exit', () => {
   expect(() => expectMetadataDiagnostics([warning('(code=0, signal=null)')])).toThrow();
 });
+
+it('validates contextual cleanup diagnostics without hiding their original errors', () => {
+  const cause = warning('(code=null, signal=SIGTERM)');
+  const contextual = new Error(`Codex App Server metadata reader cleanup failed (version: 0.164.0): ${cause.message} Check codex app-server --help`, { cause });
+  expect(() => expectMetadataDiagnostics([contextual])).not.toThrow();
+  expect(() => expectMetadataDiagnostics([new Error(contextual.message)])).toThrow();
+  expect(() => expectMetadataDiagnostics([new Error(contextual.message, { cause: new Error('Unexpected IO error') })])).toThrow();
+});

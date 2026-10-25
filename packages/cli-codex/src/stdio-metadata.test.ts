@@ -53,9 +53,9 @@ createInterface({input:process.stdin}).on('line',line=>{
 });`);
   const errors: unknown[] = [];
   const selectedHome = home;
-  return { errors, read: () => readCodexThreadMetadata({ home: selectedHome,
+  return { errors, read: async () => (await readCodexThreadMetadata({ home: selectedHome,
     threadId: '019a15e0-329d-7343-9e8c-2d694c948237', executable: process.execPath,
-    timeoutMs: 800, onError: err => errors.push(err) }) };
+    timeoutMs: 800, onError: err => errors.push(err) })).result };
 }
 
 it.each(['stdin', 'stdout', 'stderr', 'child'] as const)('reports closing %s errors and preserves metadata', async target => {
@@ -82,6 +82,6 @@ it('reports a forwarded stdout error once', async () => {
 it('reports closing errors and preserves the selected request failure', async () => {
   injection.target = 'stdin';
   const peer = await fixture(true);
-  await expect(peer.read()).rejects.toThrow('rejected the metadata request');
-  expect(peer.errors.map(String)).toEqual(['Error: Late fixture IO failure 0']);
+  await expect(peer.read()).rejects.toThrow('RPC -32603: Fixture rejection');
+  expectMetadataDiagnostics(peer.errors, ['Error: Late fixture IO failure 0']);
 });

@@ -16,7 +16,9 @@ const params = { threadId: '019a15e0-329d-7343-9e8c-2d694c948237', turnId: 'turn
     options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }] }] };
 let dir: string, server: Server, wss: WebSocketServer;
 let peers: WebSocket[], methods: string[], responses: unknown[], seen: CLIQuestionRequest[], closed: string[];
-let status: string, source: unknown, pending: boolean, version: string;
+let status: string, source: unknown, pending: boolean, userAgent: unknown;
+let rejectedMethod: string | undefined;
+let resultOverrides: Map<string, unknown>;
 let loaded: Set<string>;
 let panes: { paneId: PaneId; title: string; cwd: string; terminalTitle?: string }[];
 let requestIds: Map<string, number>;
@@ -44,8 +46,9 @@ beforeEach(async () => {
   dir = await mkdtemp(join(await realpath('/tmp'), 'mq-'));
   await mkdir(join(dir, 'app-server-control'));
   peers = []; methods = []; responses = []; seen = []; closed = []; errors.length = 0;
-  status = 'active'; source = 'cli'; pending = true; version = '0.163.0';
+  status = 'active'; source = 'cli'; pending = true; userAgent = 'codex_cli_rs/0.163.0'; rejectedMethod = undefined;
   pages = undefined; stallMethod = undefined;
+  resultOverrides = new Map();
   loaded = new Set(); panes = [{ paneId, title: 'work', cwd: '/tmp' }]; requestIds = new Map();
   server = createServer(); wss = new WebSocketServer({ server });
   wss.on('connection', ws => {
@@ -58,15 +61,18 @@ beforeEach(async () => {
       methods.push(msg.method);
       if (msg.method === stallMethod) return;
       if (msg.id === undefined) return;
+      if (msg.method === rejectedMethod) {
+        ws.send(JSON.stringify({ id: msg.id, error: { code: -32601, message: 'Fixture method unavailable' } })); return;
+      }
       let result: unknown = {};
-      if (msg.method === 'initialize') result = { codexHome: dir, userAgent: `codex_cli_rs/${version}`, platformFamily: 'unix', platformOs: 'macos' };
+      if (msg.method === 'initialize') result = { codexHome: dir, userAgent, platformFamily: 'unix', platformOs: 'macos' };
       if (msg.method === 'thread/loaded/list') result = pages?.get(msg.params?.cursor ?? '') ?? { data: [...loaded], nextCursor: null };
       if (threadId && (msg.method === 'thread/read' || msg.method === 'thread/resume')) result = { thread: { id: threadId, source, status: { type: status } } };
       if (msg.method === 'thread/resume' && pending && threadId) {
         if (!requestIds.has(threadId)) requestIds.set(threadId, 901 + requestIds.size);
         ws.send(JSON.stringify({ id: requestIds.get(threadId), method: 'item/tool/requestUserInput', params: { ...params, threadId: threadId } }));
       }
-      ws.send(JSON.stringify({ id: msg.id, result }));
+      ws.send(JSON.stringify({ id: msg.id, result: resultOverrides.has(msg.method) ? resultOverrides.get(msg.method) : result }));
     });
   });
   await new Promise<void>(resolve => server.listen(join(dir, 'app-server-control/app-server-control.sock'), resolve));
@@ -144,12 +150,55 @@ describe('native Codex question client', () => {
     expect(responses).toEqual([]);
   });
 
-  it('rejects subagents and unsupported server versions without answering', async () => {
+  it('rejects subagents without answering', async () => {
     source = { subAgent: { thread_spawn: { parent_thread_id: 'parent', depth: 1 } } };
     await register(); await client.start(handler); await delay(80);
     expect(seen).toEqual([]); expect(methods).not.toContain('thread/resume');
-    await client.stop(); version = '0.1.0'; await client.start(handler); await delay(80);
-    expect(errors.length).toBeGreaterThan(0); expect(seen).toEqual([]);
+  });
+
+  it.each(['codex_cli_rs/0.164.0', 'client/0.1.0', 'client/future-build', 'unfamiliar', undefined, 42])('forwards and answers with runtime metadata %j', async value => {
+    userAgent = value;
+    await register(); await client.start(handler); await until(() => seen.length === 1);
+    expect(await client.answer(seen[0]!.reference, { choice: ['Two'] })).toBe('submitted');
+    await until(() => responses.length === 1);
+    expect(errors).toEqual([]);
+  });
+
+  it.each(['initialize', 'thread/loaded/list', 'thread/read', 'thread/resume'])('reports actual %s rejection with runtime context', async method => {
+    userAgent = 'client/0.164.0'; rejectedMethod = method;
+    await register(); await client.start(handler); await until(() => errors.length > 0);
+    const message = errors.map(String).join('\n');
+    expect(message).toContain(method);
+    expect(message).toContain(`version: ${method === 'initialize' ? 'unknown' : '0.164.0'}`);
+    expect(message).toContain('RPC -32601: Fixture method unavailable');
+    expect(message).toContain('codex app-server --help');
+    expect(seen).toEqual([]);
+  });
+
+  it.each(['thread/loaded/list', 'thread/read', 'thread/resume'])('retains the runtime when %s returns an invalid result', async method => {
+    userAgent = 'client/0.164.0'; resultOverrides.set(method, { broken: true });
+    await register(); await client.start(handler); await until(() => errors.length > 0);
+    const message = errors.map(String).join('\n');
+    expect(message).toContain(method);
+    expect(message).toContain('version: 0.164.0');
+    expect(message).toContain('codex app-server --help');
+    expect(seen).toEqual([]);
+  });
+
+  it('retains the observed runtime when initialization reports a different home', async () => {
+    resultOverrides.set('initialize', { codexHome: join(dir, 'other'), userAgent: 'client/0.164.0', platformFamily: 'unix', platformOs: 'macos' });
+    await client.start(handler); await until(() => errors.length > 0);
+    expect(errors.map(String).join('\n')).toContain('version: 0.164.0');
+    expect(methods).not.toContain('thread/loaded/list');
+  });
+
+  it('reports the actual connection failure with unknown runtime before initialize', async () => {
+    const peer = connectCodexLocal({ home: join(dir, 'absent'), onError: err => errors.push(err) });
+    try {
+      await expect(peer.ready).rejects.toThrow(/version: unknown/);
+      expect(errors.map(String).join('\n')).toContain('ENOENT');
+      expect(errors.map(String).join('\n')).toContain('codex app-server --help');
+    } finally { peer.close(); }
   });
 
   it('validates completeness, exact question ids, option bounds and single selection', async () => {

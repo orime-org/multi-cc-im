@@ -218,8 +218,13 @@ put `thread-name` first in `/terminal-title` to support its unique-prefix match.
 Question/permission pane identity uses `thread-id` in `/terminal-title`. The
 installer preserves saved title items and appends only the official identity item
 (with backup); new TUIs read that selection. Missing/ambiguous ids pause native
-question/permission forwarding and leave the TUI available. Native requests are currently
-pinned to 0.163.0 and a single shared `CODEX_HOME`; arbitrary home scans are forbidden.
+question/permission forwarding and leave the TUI available. Native requests use
+a single shared `CODEX_HOME`; arbitrary home scans are forbidden. No version
+allowlist or range gates initialization or requests. Actual failures retain the
+operation, observed server version (`unknown` when unavailable), native RPC
+code/message or transport/schema error, and terminal recovery steps. Stop name
+lookup failures explicitly identify the unsent reply. See the
+[runtime diagnostic repair](superpowers/specs/2026-10-25-codex-runtime-errors-dd.md).
 
 ## 快速跑通
 

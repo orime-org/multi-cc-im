@@ -106,9 +106,11 @@ working directory is that home. Spawn diagnostics identify an inaccessible
 home or unavailable executable. The process receives exactly `initialize`,
 `initialized` and `thread/read {threadId,includeTurns:false}`.
 
-Initialization checks the reported native home, Unix platform and verified
-0.163.0 version. Extract that existing pure check into an internal shared
-helper used by the UDS client and the stdio reader. The UDS client's wire
+Initialization checks the reported native home and Unix platform using an
+internal shared helper for UDS and stdio. The
+[2026-10-25 repair](2026-10-25-codex-runtime-errors-dd.md) supersedes the original
+0.163.0 version gate: versions are diagnostic metadata only. Actual failures
+retain operation, observed version and native reason. The UDS client's wire
 behavior remains governed by its existing tests and native question smoke.
 
 The reader validates newline-delimited response envelopes, RPC identity and
@@ -176,7 +178,7 @@ record below.
 | 1 | Production, user-level, promised replies | A named root in default shared-daemon mode completes Stop; exact source name and text reach the existing IM destination. | Actual TUI/native Stop through the built hook, shared watcher, bridge and recording IM |
 | 2 | Production, user-level, promised replies | A named root under `--no-daemon` completes Stop with no shared control socket; the same reply contract holds. | Baseline-red and fixed-bundle native TUI smoke under normal hook trust |
 | 3 | Production, user-level, promised replies | Two named sessions and a later rename preserve the corresponding full native names under each runtime mode. | Native double-session/rename smoke; exact source/text assertions |
-| 4 | Production, user-level, promised replies | Invalid identity/source, unsupported version, missing name or unavailable/broken native reader produces an actionable diagnostic and preserves the existing decision contract. | Existing resolver cases migrated to a child-process fixture; entry/gate tests |
+| 4 | Production, user-level, promised replies | Invalid identity/source, missing name or unavailable/broken native reader produces an actionable diagnostic and preserves the existing decision contract. Versions do not gate successful requests; actual failures report the observed version. | Existing resolver cases migrated to a child-process fixture; entry/gate tests; runtime diagnostic regression tests |
 | 5 | Production, internal subprocess lifecycle | Every success, failure and timeout completes bounded cleanup of only the reader's owned process. Valid data survives a later shutdown failure. | Real fixture children, stdin/EOF/exit/timeout tests, recorded PID checks |
 | 6 | Existing production capabilities | Gate ordering, session event schema/order, Claude Stop, incoming routing, Codex question/permission transport and selected-backend triage retain their contracts. | Related tests, existing dual-TUI question/permission and selected-backend routing checks |
 | 7 | Documentation and delivery | The operating guides describe both runtime modes and the query failure recovery; product bundle loads in a clean production directory. | README pair, architecture, conventions, dev guide, relevant DD; typecheck/test/build/bin and production bundle smoke; CI |
