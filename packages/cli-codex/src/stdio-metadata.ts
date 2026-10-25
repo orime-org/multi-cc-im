@@ -2,19 +2,19 @@ import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { CodexEnvelope, codexInitializeParams, validateCodexInitialization } from './app-server-protocol.js';
+import { CodexEnvelope, codexInitializeParams, codexRuntimeError, getCodexVersion, parseCodexRpcError, validateCodexInitialization } from './app-server-protocol.js';
 
 /**
  * Read native stored thread metadata using one owned stdio App Server process.
  * @param opts Selected home, UUID, total budget and diagnostics. Executable injection
  * runs fixture processes through an installed runtime without new-executable startup overhead.
- * @returns The native thread/read result after owned subprocess cleanup.
+ * @returns Native result and observed runtime version after subprocess cleanup.
  * @throws Spawn, protocol, initialization, premature-exit or deadline failures.
  * @example const metadata = await readCodexThreadMetadata({ home, threadId, timeoutMs: 800, onError });
  */
 export async function readCodexThreadMetadata(opts: {
   home: string; threadId: string; timeoutMs: number; executable?: string; onError(err: unknown): void;
-}): Promise<unknown> {
+}): Promise<{ result: unknown; version: string }> {
   const started = performance.now();
   const home = resolve(opts.home);
   const child = spawn(opts.executable ?? 'codex', ['app-server', '--listen', 'stdio://'], {
@@ -23,7 +23,8 @@ export async function readCodexThreadMetadata(opts: {
   const lines = createInterface({ input: child.stdout });
   // A stdout error also reaches readline, so diagnostics retain error identity.
   const diagnostics = new Set<unknown>();
-  return new Promise<unknown>((accept, reject) => {
+  let version = 'unknown';
+  return new Promise<{ result: unknown; version: string }>((accept, reject) => {
     let state: 'initializing' | 'reading' | 'closing' | 'finished' = 'initializing';
     let outcome: { value: unknown } | { error: unknown } | undefined;
     let terminateTimer: NodeJS.Timeout | undefined, killTimer: NodeJS.Timeout | undefined;
@@ -33,7 +34,8 @@ export async function readCodexThreadMetadata(opts: {
 
     function close(selected: NonNullable<typeof outcome>): void {
       if (state === 'closing' || state === 'finished') return;
-      outcome = selected; state = 'closing'; clearTimeout(operationTimer);
+      outcome = 'error' in selected ? { error: codexRuntimeError(state === 'initializing' ? 'initialize' : 'thread/read', version, selected.error) } : selected;
+      state = 'closing'; clearTimeout(operationTimer);
       child.stdin.end();
       const remaining = Math.max(0, opts.timeoutMs - (performance.now() - started));
       terminateTimer = setTimeout(() => child.kill('SIGTERM'), Math.min(10, remaining / 4));
@@ -57,8 +59,9 @@ export async function readCodexThreadMetadata(opts: {
         if (message.method) return;
         const expected = state === 'initializing' ? 1 : 2;
         if (message.id !== expected) throw new Error('Unexpected Codex App Server metadata response identity');
-        if (message.error !== undefined) throw new Error('Codex App Server rejected the metadata request');
+        if (message.error !== undefined) throw parseCodexRpcError(message.error);
         if (state === 'initializing') {
+          version = getCodexVersion(message.result);
           validateCodexInitialization(message.result, home);
           state = 'reading';
           send({ method: 'initialized' });
@@ -79,15 +82,15 @@ export async function readCodexThreadMetadata(opts: {
       clearTimeout(operationTimer); clearTimeout(terminateTimer); clearTimeout(killTimer);
       state = 'finished'; lines.close();
       child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-      if (!outcome) reject(new Error(`Codex App Server metadata reader exited before its response (code=${code}, signal=${signal})`));
+      if (!outcome) reject(codexRuntimeError('metadata reader', version, new Error(`Codex App Server metadata reader exited before its response (code=${code}, signal=${signal})`)));
       else if ('error' in outcome) reject(outcome.error);
       else {
         if (code !== 0 || signal !== null) diagnostics.add(new Error(`Codex App Server metadata reader cleanup required intervention (code=${code}, signal=${signal}); metadata was received.`));
-        accept(outcome.value);
+        accept({ result: outcome.value, version });
       }
     });
     send({ id: 1, method: 'initialize', params: codexInitializeParams });
   }).finally(() => {
-    for (const diagnostic of diagnostics) opts.onError(diagnostic);
+    for (const diagnostic of diagnostics) opts.onError(codexRuntimeError('metadata reader cleanup', version, diagnostic));
   });
 }

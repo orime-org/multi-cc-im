@@ -8,7 +8,7 @@ import { expectMetadataDiagnostics } from './__tests__/stdio-diagnostics.js';
 
 const threadId = '019a15e0-329d-7343-9e8c-2d694c948237';
 let home: string, methods: string[], errors: unknown[], readParams: unknown[];
-let metadata: unknown, version: string, serverHome: string;
+let metadata: unknown, version: unknown, serverHome: string;
 let initializationDelay: number, readDelay: number, rejectRead: boolean, disconnectRead: boolean;
 let fault: string;
 
@@ -35,7 +35,7 @@ reader.on('line', line => {
       console.log(JSON.stringify({ id: msg.id, error: { code: -32603 } })); return;
     }
     if (msg.method === 'initialize') console.log(JSON.stringify({ id: msg.id, result: {
-      codexHome: config.serverHome, userAgent: 'codex_cli_rs/' + config.version, platformFamily: 'unix', platformOs: 'macos',
+      codexHome: config.serverHome, userAgent: config.version === null ? undefined : typeof config.version === 'string' ? 'codex_cli_rs/' + config.version : config.version, platformFamily: 'unix', platformOs: 'macos',
     } }));
     if (msg.method === 'thread/read') {
       if (config.disconnectRead) { process.exit(1); return; }
@@ -159,12 +159,36 @@ describe('native Codex session name', () => {
     expect(diagnostics()).toMatch(/Codex.*App Server/);
   });
 
-  it.each(['version', 'home'])('preserves the native %s guard', async kind => {
-    if (kind === 'version') version = '0.1.0';
-    else serverHome = join(home, 'other');
+  it.each(['0.164.0', '0.1.0', 'future-build', '', null, 42])('reads the Stop name with version metadata %j', async value => {
+    version = value;
+    expect(await lookup()).toBe('Release review 会话');
+    expect(methods).toContain('thread/read');
+    expectMetadataDiagnostics(errors);
+  });
+
+  it('preserves the native home guard with the observed version', async () => {
+    version = '0.164.0'; serverHome = join(home, 'other');
     expect(await lookup()).toBeUndefined();
-    expect(diagnostics()).toMatch(/version or home/);
+    expect(diagnostics()).toContain('home');
+    expect(diagnostics()).toContain('version: 0.164.0');
     expect(methods).not.toContain('thread/read');
+  });
+
+  it('reports actual RPC failure and runtime details for an unsent Stop reply', async () => {
+    version = '0.164.0'; rejectRead = true;
+    expect(await lookup()).toBeUndefined();
+    expect(diagnostics()).toContain('Stop reply was not forwarded');
+    expect(diagnostics()).toContain('thread/read');
+    expect(diagnostics()).toContain('version: 0.164.0');
+    expect(diagnostics()).toContain('RPC -32603: Fixture failure');
+    expect(diagnostics()).toContain('codex app-server --help');
+  });
+
+  it('retains runtime context when the successful response has invalid metadata', async () => {
+    version = '0.164.0'; metadata = { thread: { id: threadId, name: 42, source: 'cli' } };
+    expect(await lookup()).toBeUndefined();
+    expect(diagnostics()).toContain('thread/read');
+    expect(diagnostics()).toContain('version: 0.164.0');
   });
 
   it.each(['rejection', 'disconnect'])('diagnoses native request %s', async kind => {

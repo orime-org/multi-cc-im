@@ -9,6 +9,14 @@ import { expect } from 'vitest';
  * @example expectMetadataDiagnostics(errors, ['Error: Injected IO failure']);
  */
 export function expectMetadataDiagnostics(errors: unknown[], expected: string[] = []): void {
+  errors = errors.map(error => {
+    if (!(error instanceof Error) || !error.message.startsWith('Codex App Server metadata reader cleanup failed (version: ')) return error;
+    expect(error.message).toMatch(/^Codex App Server metadata reader cleanup failed \(version: [^\s)]+\): /);
+    expect(error.message).toContain('codex app-server --help');
+    expect(error.cause).toBeInstanceOf(Error);
+    expect(error.message).toContain((error.cause as Error).message);
+    return error.cause;
+  });
   const cleanup = errors.filter(error => String(error).startsWith('Error: Codex App Server metadata reader cleanup required intervention'));
   expect(cleanup.length).toBeLessThanOrEqual(1);
   for (const error of cleanup) {

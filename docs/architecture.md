@@ -94,7 +94,9 @@ IMWork／IMOrigin／daemon 存活后，通过本机 `thread/read` 读取完整 `
 `initialize`／`initialized`／`thread/read {includeTurns:false}` 后关闭 stdin。
 共享后台及 `--no-daemon` 均使用此路径。800ms 总预算包含初始化、读取和自有进程清理；
 清理超时只向该子进程发信号，已收到的有效元数据继续交付。UDS 与 stdio 共用
-原生 home、Unix 平台及 0.163.0 版本校验。
+原生 home 与 Unix 平台校验。版本仅用于实际失败的诊断，不参与启动或请求准入；
+缺失或陌生的版本信息不阻止成功请求。错误保留失败操作、观察到的版本（无法取得时为
+`unknown`）、原始 RPC code/message 或 IO／schema 原因，并给出本机检查步骤。
 `thread-name` 是 `/rename` 设置的会话名，`project-name` 是目录标签。
 Stop 写 0600 原子事件 `SessionReply.codex.<thread-id>.<timestamp>.json`，正文携带
 `cli`、`sessionId`、`sessionName`、`termId`、`last_assistant_message`。
@@ -108,7 +110,8 @@ Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最
 启用 Codex 时，即使同时启用 Claude，也只创建一个既有状态文件 watcher，并附加一个
 本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它只附加唯一关联、
 已加载的根线程；`thread/read` 检查后 `thread/resume`，不创建线程、不启动回合、不覆写配置。
-验证版本为 0.163.0；只读取一个配置的 `CODEX_HOME`，不扫描 transcript 或其他 home。
+只读取一个配置的 `CODEX_HOME`，不扫描 transcript 或其他 home。Stop 名称读取失败
+明确提示回信未转发；原生问题失败写入现有 `[Codex questions]` 日志，终端仍可处理。
 
 `item/tool/requestUserInput` → 原始 thread/turn/item/request/question IDs → IMWork/owner/chat
 门控 → 带稳定问题编号的 IM 提问 → `/answer` 或引用机器人消息 → 选定后端解释／校验
