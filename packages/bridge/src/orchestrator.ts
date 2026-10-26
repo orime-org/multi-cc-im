@@ -339,7 +339,7 @@ export function createOrchestrator(
   const nativeQuestions = createNativeQuestionBridge({
     stateDir: opts.stateDir, terminalId: activeTerminalId,
     questions: opts.cliAdapter.questions, imAdapter: opts.imAdapter,
-    listPanes: () => opts.termAdapter.listPanes(), interpret: aiAskUserQuestionRouter,
+    interpret: aiAskUserQuestionRouter,
     onError: err => onError(err, { phase: 'nativeQuestions' }),
   });
 

@@ -4,14 +4,14 @@ import { createCodexQuestionClient, type CodexQuestionClientOpts } from './quest
 
 /** Shared hook watcher plus optional native Codex question transport. */
 export interface CreateCodexCliAdapterOpts extends CreateCcCliAdapterOpts {
-  /** Active terminal identity/liveness and separate nonfatal transport diagnostics. */
+  /** Native session-name discovery and separate nonfatal transport diagnostics. */
   nativeQuestions?: CodexQuestionClientOpts;
 }
 
 /**
  * Create one shared hook watcher and a native local question client when enabled.
  * The watcher dispatches pane hook events and native session-name replies.
- * @param opts State watcher and optional title-derived thread discovery dependencies.
+ * @param opts State watcher and optional native session-name discovery dependencies.
  * @returns CLI adapter; native questions never enter permission hook responses.
  */
 export function createCodexCliAdapter(opts: CreateCodexCliAdapterOpts): CLIAdapter {

@@ -184,7 +184,7 @@ export interface CLIQuestion {
   isSecret?: boolean;
 }
 
-/** Correlated native request, scoped to its uniquely identified native terminal and pane. */
+/** Correlated native request labeled with the native session's current name. */
 export interface CLIQuestionRequest {
   reference: string;
   threadId: string;
@@ -192,13 +192,15 @@ export interface CLIQuestionRequest {
   itemId: string;
   requestId: string | number;
   termId: TerminalId;
-  paneId: PaneId;
+  sessionName: string;
   questions: readonly CLIQuestion[];
   isBlocking: boolean;
 }
 
 /** Native transport checks identity, liveness and completeness again before submission. */
 export interface CLIQuestions {
+  /** Refresh native names and pending bindings before reading answerability. */
+  refresh(): Promise<void>;
   /** Current native requests, including terminal-only sensitive inputs; disconnected requests are excluded. */
   listPending(): readonly CLIQuestionRequest[];
   /** Submit actual user answers. `submitted` awaits native resolved confirmation. */
