@@ -82,6 +82,21 @@ describe('native question IM bridge', () => {
     expect(answer).toHaveBeenCalledWith(q.reference, { choice: ['Two'] });
   });
 
+  it.each([{ target: 'work', submits: true }, { target: 'another-session', submits: false }])('validates the interpretation prompt name during rename: %j', async ({ target, submits }) => {
+    const request = { ...q }; pending = [request];
+    await bridge.start();
+    interpret.mockImplementation(async () => {
+      request.sessionName = 'renamed';
+      return { target, reason: null, answers: [{ questionIndex: 0, kind: 'option', optionIndex: 2 }] };
+    });
+    await bridge.handleInbound(message(`/answer ${q.reference} choose the second`));
+    expect(interpret).toHaveBeenCalledWith(expect.objectContaining({ pendings: [expect.objectContaining({ tabName: 'work' })] }));
+    expect(answer).toHaveBeenCalledTimes(Number(submits));
+    if (submits) expect(answer).toHaveBeenCalledWith(q.reference, { choice: ['Two'] });
+    pending = []; await bridge.onQuestionClosed(q.reference, 'resolved');
+    expect(tags.at(-1)).toBe('renamed');
+  });
+
   it('stops interpretation when native refresh removes a no-longer-answerable name', async () => {
     await bridge.start();
     refresh.mockImplementation(async () => { pending = []; });

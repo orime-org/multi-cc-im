@@ -47,6 +47,7 @@ const exited = new Promise<void>(resolve => native.once('exit', () => resolve())
 const stateDir = join(root, 'state');
 const owner: IMReplyContext = { imType: 'lark', openId: 'fixture-owner', chatId: 'fixture-chat' };
 let sessionName = 'fixture';
+let renameDuringInterpretation = false;
 const sent: string[] = [];
 const sourceTags: (string | undefined)[] = [];
 const errors: string[] = [];
@@ -82,8 +83,18 @@ async function startBridge(): Promise<void> {
     termAdapter: { name: 'wezterm', listPanes, async start() {}, async stop() {},
       async sendText() { terminalInputs++; }, async sendKeystroke() { terminalInputs++; } },
     state: { getCurrent: () => null, setCurrent() {} }, aiRouter: null,
-    aiAskUserQuestionRouter: async () => ({ target: sessionName, reason: null,
-      answers: questions.map((_, i) => ({ questionIndex: i, kind: 'option' as const, optionIndex: 2 })) }),
+    aiAskUserQuestionRouter: async () => {
+      const promptName = sessionName;
+      if (renameDuringInterpretation) {
+        renameDuringInterpretation = false;
+        const request = cliAdapter.questions!.listPending()[0]; assert(request);
+        sessionName = 'fixture-renamed-during-answer';
+        await rpc('thread/name/set', { threadId: request.threadId, name: sessionName });
+        await cliAdapter.questions!.refresh();
+      }
+      return { target: promptName, reason: null,
+        answers: questions.map((_, i) => ({ questionIndex: i, kind: 'option' as const, optionIndex: 2 })) };
+    },
     onError: err => errors.push(String(err)),
   });
   await orchestrator.start();
@@ -143,12 +154,14 @@ try {
   console.log('PASS: daemon restart rediscovers the renamed native session and pending nonblocking question with the same reference.');
   questions = [questions[0]!, { ...questions[0]!, id: 'another', header: 'Another' }];
   const fourth = await begin(threadId);
+  renameDuringInterpretation = true;
   await imAnswer(fourth.reference, 'Use the second option for both'); await completed(fourth.turnId);
   const last = JSON.stringify(modelInputs[7]);
   assert(last.includes('another') && last.includes('Two'));
+  assert.equal(renameDuringInterpretation, false);
   assert.equal(terminalInputs, 0);
   assert.equal(terminalQueries, 0);
-  console.log('PASS: multiple questions use the interpreter and reach the original native ids.');
+  console.log('PASS: multiple answers reach the original native request after renaming during interpretation.');
   console.log('PASS: native discovery, delivery, answers and restart used zero terminal queries.');
 } finally {
   await orchestrator?.stop(); ws?.terminate();

@@ -191,10 +191,11 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
         if (!(await eligible(entry, msg.replyCtx))) { await respond('The current IM mode, owner, chat, or Codex session does not allow this answer. Check /start and /rename in the original Codex session.'); return true; }
         let answers = extractAnswers(entry.request, body);
         if (!answers && !/^\/?\d+$/.test(body) && opts.interpret) {
-          const result = await opts.interpret({ userMsg: body, pendings: [{ tabName: entry.request.sessionName,
+          const promptName = entry.request.sessionName;
+          const result = await opts.interpret({ userMsg: body, pendings: [{ tabName: promptName,
             questions: entry.request.questions.map(q => ({ question: q.question, header: q.header, multiSelect: false,
               options: (q.options ?? []).map(o => ({ ...o })) })) }] });
-          answers = result?.target === entry.request.sessionName ? extractAnswers(entry.request, body, result) : null;
+          answers = result?.target === promptName ? extractAnswers(entry.request, body, result) : null;
         }
         if (!answers) { await respond('无法完整确认回答。请按题号说明每题的选项编号或文字回答；问题仍在等待。'); return true; }
         if (!(await eligible(entry, msg.replyCtx)) || entry.state !== 'pending') { await respond('问题或连接状态已改变，本次回答未发送；请查看当前 Codex 问题。'); return true; }
