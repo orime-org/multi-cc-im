@@ -1,84 +1,79 @@
-# Native question terminal-query investigation
+# Native question query eligibility and diagnostics
 
-## Goal and current status
+## Scope and acceptance
 
-Preserve Codex native question forwarding and answer delivery, remove unnecessary
-terminal-query waits, and investigate required-query latency with actionable
-failure reporting. The maintainer approved the simplified flow for the confirmed
-local query-eligibility defects on 2026-10-26.
+This delivery fixes confirmed query-order and diagnostic defects in
+multi-cc-im. The maintainer approved the simplified flow for these local
+repairs: acceptance criteria, failing regressions, minimal changes, and required
+verification. Deployment and real Feishu account acceptance belong to the
+maintainer.
 
-The task remains in progress. Required production-GUI RPC delay is reproduced;
-its internal cause and repair remain open. The earlier DD document contains an
-unapproved design proposal. Its observation callback and lifecycle changes have
-not been implemented.
-
-## Confirmed product defects and repairs
-
-| Path | Confirmed cause | Current repair |
-| --- | --- | --- |
-| Bridge delivery | Pane lookup preceded mode, owner and deliverable-request checks. Startup and repeated scans therefore waited for terminal IO with an empty queue. | Resolve owner/mode, select initial delivery or disconnected replay, then query panes. Keep the existing startup lifecycle. |
-| Closure notices | The notice consumed owner/mode but also required a pane lookup. | Read owner/mode for the original notification context. |
-| Native discovery | Pane lookup ran concurrently with loaded-thread enumeration, including empty results. | Enumerate loaded threads first; empty results still reconcile bindings and pending questions. |
-| Failure reporting | Pane failures exposed only the low-level error; Codex diagnostics keyed and printed only the outer message. | Add pane capability/recovery context with the original cause; use the existing cause formatter for diagnostic identity and output. |
-
-**Internal implementation basis:** `native-questions.ts` already owns IMWork,
-owner and displayed-request state. `question-client.ts` already reconciles loaded
-thread identity and owns a per-client refresh promise. The shared
-`formatErrorWithCause` already formats orchestrator diagnostics. These changes
-use those existing responsibilities and interfaces.
-
-Actual answers retain fresh pane checks before interpretation and submission.
-Native request IDs, original owner/chat checks, secret input handling and the
-native client's final validation remain exercised by the existing regressions.
-Discovery continues periodic fresh title matching when loaded threads exist.
-Its observation lifecycle is independent of IMWork; suppressing that discovery
-while IM mode is disabled remains an open item in the approved idle-query scope.
-
-## Required-query observations
-
-The deployment uses WezTerm `20240203-110809-5046fc22`. Probes selected the live
-bridge's socket; a separate stale socket inherited by the development host was
-not used for these measurements. Only protocol names, counts, timestamps and
-process ownership were saved; terminal contents were excluded.
-
-| Experiment | Result | Supported conclusion |
-| --- | --- | --- |
-| Same GUI, concurrent `list` and `list-clients`, 12-second deadlines | Both timed out; their connections received 1,399 and 1,400 render-change responses respectively. Both owned CLI processes exited. | Connection traffic continued while two different target RPC responses were absent. |
-| Single `list`, four-second deadline, payload-free codec logging | `encode_async ListPanes size=3` appeared once; 480 render-change responses arrived; no list response arrived. Owned CLI exited. | The target request completed its client-side write before the response wait. |
-| Same-connection Unix socket queue observation | At approximately one second, the server's receive queue still held all three request bytes; the paired client had sent three bytes and received 62,895 bytes. The query subsequently completed. | WezTerm had delayed reading this request while sending data on the same connection. |
-| Owned headless mux, idle/output, primary-agent repeat | Twelve successful queries, approximately 7–17ms. | The same installed binary can complete native listing under this isolated workload. |
-| Owned GUI, 29 panes, one foreground-process scan | Queries completed in 7–15ms. Only one complete scan was observed. | Continuous callback contention was not established by this fixture. |
-| Owned GUI, 29 panes, bounded low-volume output | Six queries completed in 12–101ms; helpers produced 250,848 bytes over about 12 seconds. Queries during output occurred near its beginning. | This fixture did not reproduce the production delay. |
-
-The exact release's
-[dispatcher](https://github.com/wezterm/wezterm/blob/5046fc225992db6ba2ef8812743fadfdfe4b184a/wezterm-mux-server-impl/src/dispatch.rs#L47)
-subscribes each connection to mux notifications, queues notifications and writes,
-and arbitrates them with incoming reads. The pinned
-[futures implementation](https://github.com/smol-rs/futures-lite/blob/v1.13.0/src/future.rs#L478)
-prefers the first ready branch. The socket queues establish delayed server-side
-reads; continuous internal queue occupancy has not been observed directly.
-GUI samples also contain render work
-and Lua process-info calls; they do not establish a unique cause.
-
-The release's
-[codec](https://github.com/wezterm/wezterm/blob/5046fc225992db6ba2ef8812743fadfdfe4b184a/codec/src/lib.rs#L351)
-logs the encoded type/size after its write completes. This supplies the
-client-side phase evidence above. It does not prove the server read the request.
-The upstream [same-release report](https://github.com/wezterm/wezterm/issues/7692)
-describes similar control-plane hangs; it supplies context, not local causality.
-
-## Verification records
-
-| Check | Execution evidence |
+| Scenario | Required behavior |
 | --- | --- |
-| Bridge regression red | Nine new cases failed because terminal IO occurred before delivery eligibility. |
-| Discovery regression red | Two cases failed: empty loaded set queried panes; unloaded reconciliation depended on terminal IO. |
-| Diagnostic regression red | Three cases failed: missing recovery context and suppression of distinct nested causes. |
-| Affected suites | 112 tests passed across bridge questions, Codex question client, WezTerm adapter and application startup. |
-| Product timing fixture | With an 80ms terminal dependency, empty IM-off and IM-on startup completed at the fixture's 0ms resolution with zero queries; one pending request queried once and delivered once. |
-| Native Codex smoke | Isolated real App Server plus localhost model/recording IM passed question delivery, native answers, terminal-first resolution, restart replay and multiple questions. |
-| Project checks | Workspace typecheck, 1,464 tests across 78 files, CLI build and bundled `--version` (`0.2.3`) passed after the final code change. |
-| Coverage | All 1,464 tests passed under coverage; statements/lines 88.21%, branches 84.21%, functions 89.65%. |
+| No pending question, questions for another terminal, IM mode off, missing owner, or owner for another IM adapter | Bridge delivery skips pane IO. |
+| Question already displayed | Repeated delivery scans skip pane IO; disconnected replay still verifies the current pane and original owner. |
+| Question closes | Notify the original owner when the current mode/owner permits it, independently of pane lookup availability. |
+| No loaded Codex threads | Discovery skips pane IO and still removes existing bindings and closes their pending questions. |
+| New delivery or an actual answer | Use fresh pane checks; answers validate identity before interpretation and again before submission. |
+| Pane lookup fails | Report affected capabilities, the original terminal as the answer entry, socket/CLI checks, and the original nested error. Distinct causes remain visible even with an identical outer message. |
 
-Logs and owned-process records are retained in the developer's temporary evidence
-directory. Deployment remains owned by the maintainer.
+## Confirmed causes and implementation
+
+| Path | Confirmed cause | Repair |
+| --- | --- | --- |
+| Bridge delivery | Pane lookup preceded mode, owner and deliverable-request checks. Startup and repeated scans waited for terminal IO even with an empty queue. | Read mode/owner, select initial delivery or disconnected replay, then query panes. |
+| Closure notices | A notice needed owner/mode but also waited for pane lookup. | Read owner/mode for the original notification context. |
+| Native discovery | Pane lookup ran concurrently with loaded-thread enumeration, including empty results. | Enumerate loaded threads first; reconcile an empty result without pane IO. |
+| Failure reporting | Pane failures exposed only a low-level error; Codex diagnostics keyed and printed only the outer message. | Add capability/recovery context with the original cause and reuse the shared cause formatter for diagnostic identity and output. |
+
+The repair reuses existing responsibilities: `native-questions.ts` owns mode,
+owner and displayed-request state; `question-client.ts` owns loaded-thread
+reconciliation; `formatErrorWithCause` already formats orchestrator diagnostics.
+There are no new dependencies, public interfaces or persisted state.
+
+The existing native-question delivery/answer regressions cover original request
+IDs, owner/chat checks, secret input handling, terminal-first resolution, late
+replies and disconnected replay. Discovery continues periodic fresh title
+matching when loaded threads exist, including when IM mode is off. This delivery
+does not change that discovery lifecycle.
+
+## Terminal dependency boundary
+
+Queries against the deployed WezTerm release were observed to exceed their
+deadlines while render notifications continued arriving. In a continuously
+drained diagnostic probe, the three request bytes remained in the server receive
+queue at four samples over five seconds; the seven-second query timed out.
+This establishes a delayed server-side request read in that experiment. It does
+not uniquely identify the terminal's internal scheduling cause.
+
+Required pane queries can still time out. The bridge reports that failure with
+recovery instructions and retries discovery through its existing polling loop.
+Its message asks the user to continue in the original Codex terminal and inspect
+`WEZTERM_UNIX_SOCKET` in the shell that launched the bridge, then run the
+configured WezTerm executable with `cli --no-auto-start list --format json`.
+The message preserves the low-level timeout, connection or JSON error as a cause.
+
+The changes are confined to multi-cc-im. The maintainer explicitly excluded
+WezTerm source changes and custom-terminal maintenance from this task.
+
+## Verification
+
+| Check | Evidence |
+| --- | --- |
+| Bridge regression red | Nine added cases failed before the query-order repair because terminal IO happened before delivery eligibility. |
+| Discovery regression red | Two added cases failed: empty loaded set queried panes; unloaded reconciliation depended on terminal IO. |
+| Diagnostic regression red | Three added cases failed: missing recovery context and suppression of distinct nested causes. |
+| Affected suites | 112 tests passed across bridge questions, Codex question client, WezTerm adapter and application startup. |
+| Timing fixture | An 80ms terminal dependency received zero queries during empty IM-off and IM-on bridge startup. One pending request queried and delivered once. This measures the delivery component, not discovery with loaded threads. |
+| Native Codex smoke | An isolated real App Server with a localhost model and recording IM passed delivery/native answers, terminal-first resolution/late reply, restart replay, and multiple questions. The terminal API is a fixture. |
+| Project checks | Workspace typecheck, 1,464 tests across 78 files, CLI build and bundled `--version` (`0.2.3`) passed. |
+| Coverage | Statements/lines 88.21%, branches 84.21%, functions 89.65%. |
+
+The standalone delivery branch repeated the frozen-lockfile installation,
+workspace typecheck, all 1,464 tests across 78 files, CLI build, bundled version
+check (`0.2.3`), and the four-path native Codex smoke successfully before PR
+submission. Coverage above records the earlier run of the same production code;
+the PR's CI also enforces the repository coverage thresholds.
+
+Regression logs and diagnostic observations are retained outside Git in the
+developer's temporary evidence directory.

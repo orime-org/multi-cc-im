@@ -18,7 +18,7 @@
 
 ### 修订记录
 
-- 2026-10-26 原生问题查询顺序修复（任务分支）：转发在 IMWork、owner 和实际投递条件满足后查询窗格；结束通知读取 owner；发现模块在 loaded 线程为空时执行绑定清理。WezTerm 查询错误说明受影响能力、原终端回答和 socket 检查步骤；诊断去重及日志保留完整 cause。现场必要 RPC 已复现请求写出后持续收渲染推送而无目标响应，具体内部机制仍待查证。见 [执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md)。
+- 2026-10-26 原生问题查询顺序与诊断修复：转发在 IMWork、owner 和实际投递条件满足后查询窗格；结束通知读取 owner；发现模块在 loaded 线程为空时跳过窗格查询并执行绑定清理。WezTerm 查询错误说明受影响能力、原终端回答和 socket 检查步骤；诊断去重及日志保留完整 cause。此次交付处理 bridge 查询顺序和故障信息；必要的终端 RPC 仍可能超时。见 [执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md)。
 
 - 2026-10-25 Codex 运行错误诊断修复：按用户确认删除 UDS／stdio 共用的 0.163.0 版本准入判断；保留 home、平台和线程身份校验。版本仅用于实际失败的诊断，缺失版本信息不阻断成功请求。RPC 错误保留 method、观察到的版本、code/message 和检查步骤；Stop 名称失败明确提示回信未转发。实际 0.164.0 已通过隔离初始化、三条原生 Stop 回信（双会话及改名）和原生问题往返；真实部署由维护者执行。见 [运行错误 DD](superpowers/specs/2026-10-25-codex-runtime-errors-dd.md)。
 
@@ -139,7 +139,7 @@
 
 | 维度 | 状态 | 详情 |
 |---|---|---|
-| 原生问题查询延迟 | ⚠️ 任务分支验证中 | 空转查询顺序和故障提示已修；现场必要 WezTerm RPC 不回包已复现，内部机制待查证。见 [执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md) |
+| 原生问题查询顺序与诊断 | ✓ 实施／隔离验收 | 空队列、不满足投递条件及空 loaded 列表跳过窗格查询；结束通知读取 owner。查询失败提示能力状态与检查步骤并保留原始原因；必要终端 RPC 超时仍作为依赖错误报告。见 [执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md) |
 | Codex 原生提问与线程身份 | ✓ 实施／隔离验收 | 问题和权限使用官方 thread-id + 当前 loaded IDs 唯一匹配；Stop 通过本机 stdio 查询原生会话名，共享后台与 --no-daemon 双模式通过实际 TUI 回信及改名验证。版本不参与请求准入，实际错误保留操作、观察版本和原始原因；0.164.0 双会话／改名 Stop 与问题往返通过。本机 native request 回答支持两端抢答／重连／重启，auto 不代答问题。真实飞书账号验收由维护者执行。见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)、[回信 DD](superpowers/specs/2026-10-22-codex-session-name-replies-dd.md)、[跨运行模式 DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md) 和 [运行错误 DD](superpowers/specs/2026-10-25-codex-runtime-errors-dd.md) |
 | Codex 分诊后端与隔离 | ✓ | 三条解释 callback 统一遵循向导选择；Codex executor 在临时 cwd 关闭 hooks，实际 Codex + 本地假 provider 已验证。原生问题为独立的本机通道，见上行。见 [DD §13](superpowers/specs/2026-05-22-codex-cli-adapter-dd.md#13-2026-10-22-路由后端与原定隔离语义修复) |
 | Codex 审批协议与 hook 配置保留 | ✓ | 三条审批输出路径符合 0.163.0 原生结构；主会话可省略 agent 字段；安装保留状态和第三方字段、备份原文、重复安装不写入。真实 IM 账号验证尚未执行，路由/提问范围另行推进。见 [审计](superpowers/specs/2026-10-22-codex-integration-audit.md) |

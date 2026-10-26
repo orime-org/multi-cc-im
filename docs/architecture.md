@@ -120,7 +120,7 @@ Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最
 线程时执行。已加载线程的周期性发现继续使用当前终端标题。
 WezTerm 窗格查询失败保留原始错误作为 cause，提示受影响的发现和路由能力、
 原终端回答入口及 socket 检查命令。Codex 日志去重和输出共用 `formatErrorWithCause`。
-必要 RPC 不回包的现场证据与待核实机制见
+查询顺序、失败诊断与验收边界见
 [查询延迟执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md)。
 
 `item/tool/requestUserInput` → 原始 thread/turn/item/request/question IDs → IMWork/owner/chat
