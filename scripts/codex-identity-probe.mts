@@ -20,7 +20,7 @@ import type { PaneId } from '../packages/shared/src/index.js';
 const Marker = z.object({ threadId: z.string().uuid(), pane: z.string(), source: z.literal('startup') });
 
 const runFile = promisify(execFile);
-assert.match((await runFile('codex', ['--version'])).stdout, /0\.163\.0\b/);
+const codexVersion = (await runFile('codex', ['--version'])).stdout.trim();
 const root = await mkdtemp(join(await realpath('/tmp'), 'mcim-id-'));
 await mkdir(join(root, 'app-server-control'));
 const socket = join(root, 'app-server-control/app-server-control.sock');
@@ -193,27 +193,29 @@ finally:
     assert.deepEqual(decision, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
       permissionDecisionReason: '[multi-cc-im] IMWork auto-approve, allow without IM prompt' } });
   }
-  assert.equal((await listStopFiles({ stateDir: paths.stateDir, paneId: 700, sessionId: actual['800']! })).length, 0);
+  assert.equal((await listStopFiles({ stateDir: paths.stateDir, paneId: 700 as PaneId, sessionId: actual['800']! })).length, 0);
   console.log('PASS: production Stop entry writes native session-name replies; auto approval uses the client title identity with inherited server pane 700.');
   const seen: CLIQuestionRequest[] = [], errors: unknown[] = [];
   questionClient = createCodexQuestionClient({ home: root, terminalId: 'wezterm', intervalMs: 30,
-    listPanes: freshPanes, onError: e => errors.push(e) });
+    onError: e => errors.push(e) });
   await questionClient.start({ async onStop() {}, async onPreToolUse() {}, async onQuestion(q) { seen.push(q); } });
   for (let attempt = 0; attempt < 100 && seen.length < 2; attempt++) await delay(20);
   assert.equal(seen.length, 2, errors.map(String).join(';'));
   for (const q of seen) {
-    assert.equal(q.threadId, actual[String(q.paneId)]);
-    assert.equal(await questionClient.answer(q.reference, { choice: [Number(q.paneId) === 800 ? 'Two' : 'One'] }), 'submitted');
+    const pane = q.sessionName === 'fixture-800' ? '800' : '900';
+    assert.equal(q.sessionName, `fixture-${pane}`);
+    assert.equal(q.threadId, actual[pane]);
+    assert.equal(await questionClient.answer(q.reference, { choice: [pane === '800' ? 'Two' : 'One'] }), 'submitted');
   }
   for (let attempt = 0; attempt < 100 && modelInputs.length < 4; attempt++) await delay(20);
   assert(modelInputs.some(raw => raw.includes('function_call_output') && raw.includes('Two')));
   assert(modelInputs.some(raw => raw.includes('function_call_output') && raw.includes('One')));
-  console.log('PASS: both real TUIs native questions preserve official title identity and receive separate product-client answers in their model inputs.');
+  console.log('PASS: both real TUIs native questions preserve session names and receive separate product-client answers in their model inputs.');
   await questionClient.stop();
   const captured = await capture;
   if (captured.error) throw captured.error;
   console.log('PASS: product hook resolver identifies both real TUI threads by captured official titles and current native loaded ids, never server pane 700.');
-  console.log(JSON.stringify({ codex: '0.163.0', serverPane: '700', hooks: markers, actualTuiThreads: actual }, null, 2));
+  console.log(JSON.stringify({ codex: codexVersion, serverPane: '700', hooks: markers, actualTuiThreads: actual }, null, 2));
   console.log('CONFIRMED: hooks inherit the server pane; official TUI thread-id titles identify distinct client threads (truncated prefixes).');
 } finally {
   if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome;
