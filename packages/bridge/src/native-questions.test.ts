@@ -2,7 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { writeIMOriginFile, writeIMWorkFile, deleteIMWorkFile } from '@multi-cc-im/cli-cc';
+import { writeIMOriginFile, writeIMWorkFile, deleteIMWorkFile, deleteIMOriginFile } from '@multi-cc-im/cli-cc';
 import type { CLIQuestionRequest, IMReplyContext, IncomingMessage, PaneId } from '@multi-cc-im/shared';
 import { createNativeQuestionBridge } from './native-questions.js';
 
@@ -14,23 +14,66 @@ let stateDir: string, pending: CLIQuestionRequest[], sent: string[], errors: unk
 let bridge: ReturnType<typeof createNativeQuestionBridge>;
 const answer = vi.fn();
 const interpret = vi.fn();
+const listPanes = vi.fn();
 function message(text: string, replyCtx = owner): IncomingMessage {
   return { msgId: 'm1', from: 'owner', text, replyCtx, attachments: [], timestamp: Date.now() };
 }
 beforeEach(async () => {
   stateDir = await mkdtemp(join(tmpdir(), 'mqb-')); pending = [q]; sent = []; errors = [];
   answer.mockReset().mockResolvedValue('submitted'); interpret.mockReset();
+  listPanes.mockReset().mockResolvedValue([{ paneId: q.paneId, title: 'work', cwd: '/tmp' }]);
   await writeIMOriginFile(stateDir, owner); await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
   bridge = createNativeQuestionBridge({ stateDir, terminalId: 'wezterm',
     questions: { listPending: () => pending, answer },
     imAdapter: { name: 'lark', async start() {}, async stop() {}, async send(content) { sent.push(content); } },
-    listPanes: async () => [{ paneId: q.paneId, title: 'work', cwd: '/tmp' }],
+    listPanes,
     interpret, onError: err => errors.push(err),
   });
 });
 afterEach(async () => { await bridge.stop(); await rm(stateDir, { recursive: true, force: true }); });
 
 describe('native question IM bridge', () => {
+  it.each(['empty', 'other-terminal', 'im-off', 'no-owner', 'wrong-adapter'])('skips terminal IO for %s delivery', async scenario => {
+    if (scenario === 'empty') pending = [];
+    if (scenario === 'other-terminal') pending = [{ ...q, termId: 'iterm2' }];
+    if (scenario === 'im-off') await deleteIMWorkFile(stateDir, 'wezterm');
+    if (scenario === 'no-owner') await deleteIMOriginFile(stateDir);
+    if (scenario === 'wrong-adapter') await writeIMOriginFile(stateDir, { imType: 'telegram', chatId: 1, messageId: 1 });
+    listPanes.mockRejectedValue(new Error('Fixture terminal unavailable'));
+    await bridge.start(); await bridge.flush();
+    expect(listPanes).not.toHaveBeenCalled();
+    expect(sent).toEqual([]); expect(errors).toEqual([]);
+  });
+
+  it('queries once for delivery and skips already displayed requests', async () => {
+    await bridge.start();
+    expect(listPanes).toHaveBeenCalledTimes(1); expect(sent).toHaveLength(1);
+    listPanes.mockRejectedValue(new Error('Fixture terminal unavailable'));
+    await bridge.flush();
+    expect(listPanes).toHaveBeenCalledTimes(1); expect(sent).toHaveLength(1); expect(errors).toEqual([]);
+  });
+
+  it.each(['resolved', 'disconnected', 'replaced'] as const)('delivers %s notification without terminal IO', async reason => {
+    await bridge.start(); pending = []; listPanes.mockClear();
+    listPanes.mockRejectedValue(new Error('Fixture terminal unavailable'));
+    await bridge.onQuestionClosed(q.reference, reason);
+    expect(sent).toHaveLength(2); expect(listPanes).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+  });
+
+  it('uses a fresh terminal snapshot for disconnected replay and native submission', async () => {
+    await bridge.start(); pending = []; await bridge.onQuestionClosed(q.reference, 'disconnected');
+    listPanes.mockClear(); pending = [q]; await bridge.flush();
+    expect(listPanes).toHaveBeenCalledTimes(1); expect(sent[2]).toContain('已重新连接');
+    listPanes.mockResolvedValue([]);
+    await bridge.handleInbound(message(`/answer ${q.reference} 1`));
+    expect(answer).not.toHaveBeenCalled(); expect(sent.at(-1)).toContain('不允许回答');
+  });
+
+  it('rechecks pending after terminal lookup completes', async () => {
+    listPanes.mockImplementation(async () => { pending = []; return [{ paneId: q.paneId, title: 'work', cwd: '/tmp' }]; });
+    await bridge.start(); expect(sent).toEqual([]); expect(listPanes).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards in auto mode, requires actual user answer, maps option label to native id', async () => {
     await bridge.start();
     expect(sent[0]).toContain('/answer ' + q.reference);

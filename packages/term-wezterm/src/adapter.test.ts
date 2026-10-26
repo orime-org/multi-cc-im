@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { PaneId } from '@multi-cc-im/shared';
-import { isListPanes } from '@multi-cc-im/shared';
+import { formatErrorWithCause, isListPanes } from '@multi-cc-im/shared';
 
 const mockRunWezTermCli = vi.hoisted(() => vi.fn());
 vi.mock('./cli.js', () => ({ runWezTermCli: mockRunWezTermCli }));
@@ -128,6 +128,20 @@ describe('createWezTermAdapter — error propagation', () => {
 });
 
 describe('createWezTermAdapter — ListPanes capability', () => {
+  it.each(['timeout', 'invalid-json'])('reports %s with pane lookup state, original cause and recovery', async scenario => {
+    if (scenario === 'timeout') mockRunWezTermCli.mockRejectedValueOnce(new Error('Fixture query timed out after 10000ms'));
+    else mockRunWezTermCli.mockResolvedValueOnce('invalid fixture JSON');
+    const result = makeAdapter().listPanes();
+    await expect(result).rejects.toThrow('WezTerm pane lookup is unavailable');
+    await expect(result).rejects.toThrow('Continue in the original terminal');
+    await expect(result).rejects.toThrow('WEZTERM_UNIX_SOCKET');
+    await expect(result).rejects.toThrow('cli --no-auto-start list --format json');
+    await expect(result).rejects.toMatchObject({ cause: expect.any(Error) });
+    await expect(result.catch(formatErrorWithCause)).resolves.toContain(scenario === 'timeout' ? 'timed out after 10000ms' : 'failed to parse JSON');
+    mockRunWezTermCli.mockResolvedValueOnce('[]');
+    expect(await makeAdapter().listPanes()).toEqual([]);
+  });
+
   it('isListPanes() guard returns true for the wezterm adapter', () => {
     const adapter = createWezTermAdapter({
       wezterm: { path: '/wt' },

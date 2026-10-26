@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { CLIHandler, CLIQuestionRequest, CLIQuestions, PaneId, TermPaneInfo, TerminalId } from '@multi-cc-im/shared';
+import { formatErrorWithCause } from '@multi-cc-im/shared';
 import { codexHome, connectCodexLocal, listLoadedCodexThreads, type CodexLocalClient } from './local-client.js';
 import { matchCodexThreads } from './thread-identity.js';
 import { codexRuntimeError } from './app-server-protocol.js';
@@ -59,7 +60,7 @@ export function createCodexQuestionClient(opts: CodexQuestionClientOpts): CodexQ
   let lastDiagnostic: string | undefined;
 
   function diagnostic(err: unknown): void {
-    const text = err instanceof Error ? err.message : String(err);
+    const text = formatErrorWithCause(err);
     if (text !== lastDiagnostic) { lastDiagnostic = text; opts.onError(err); }
   }
   function report(task: Promise<void> | undefined): void {
@@ -111,7 +112,8 @@ export function createCodexQuestionClient(opts: CodexQuestionClientOpts): CodexQ
     const peer = client ??= connectCodexLocal({ home, timeoutMs: opts.rpcTimeoutMs, onEvent: receive,
       onError: diagnostic, onDisconnect: disconnected });
     await peer.ready;
-    const [panes, loaded] = await Promise.all([opts.listPanes(), listLoadedCodexThreads(peer)]);
+    const loaded = await listLoadedCodexThreads(peer);
+    const panes = loaded.length ? await opts.listPanes() : [];
     if (!running || peer !== client) return;
     const selected = matchCodexThreads(panes, loaded);
     for (const [threadId, binding] of bindings) {

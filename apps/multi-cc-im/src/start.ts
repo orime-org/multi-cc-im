@@ -727,7 +727,7 @@ export async function runStartCommand(
     nativeQuestions: enabledCLIs.includes('codex') ? {
       terminalId: termId,
       listPanes: () => termAdapter.listPanes(),
-      onError: (err: unknown) => log(`[Codex questions] ${err instanceof Error ? err.message : String(err)}`),
+      onError: (err: unknown) => log(`[Codex questions] ${formatErrorWithCause(err)}`),
     } : undefined,
   };
   const cliAdapter = opts.buildCliAdapter

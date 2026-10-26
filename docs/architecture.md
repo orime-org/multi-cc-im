@@ -113,6 +113,16 @@ Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最
 只读取一个配置的 `CODEX_HOME`，不扫描 transcript 或其他 home。Stop 名称读取失败
 明确提示回信未转发；原生问题失败写入现有 `[Codex questions]` 日志，终端仍可处理。
 
+原生问题转发先读取 IMWork 和 owner，再筛选首次投递或断线重放的待答请求，
+通过后读取当前窗格。已显示问题的轮询复核、空队列和结束通知使用所需的上下文；
+结束通知读取原 owner，实际回答在解释前和提交前核对当前窗格。
+发现模块先读取 loaded 线程列表；列表为空时仍清理既有绑定，窗格查询在存在 loaded
+线程时执行。已加载线程的周期性发现继续使用当前终端标题。
+WezTerm 窗格查询失败保留原始错误作为 cause，提示受影响的发现和路由能力、
+原终端回答入口及 socket 检查命令。Codex 日志去重和输出共用 `formatErrorWithCause`。
+必要 RPC 不回包的现场证据与待核实机制见
+[查询延迟执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md)。
+
 `item/tool/requestUserInput` → 原始 thread/turn/item/request/question IDs → IMWork/owner/chat
 门控 → 带稳定问题编号的 IM 提问 → `/answer` 或引用机器人消息 → 选定后端解释／校验
 → 重新核对身份及原生待答状态 → native RPC response `answers[questionId].answers`。
