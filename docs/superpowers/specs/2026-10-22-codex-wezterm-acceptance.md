@@ -3,8 +3,10 @@
 This record covers the historical baseline listed below. Subsequent
 [session-name reply acceptance](2026-10-22-codex-session-name-replies-dd.md#implementation-review-record)
 adds actual native Stop hooks through the bundled CLI, shared watcher and
-recording IM. Question/permission identity continues using the terminal path
-verified here.
+recording IM. The later
+[session-name question acceptance](2026-10-26-codex-question-session-name-execution.md)
+verifies native question names and answers with an unavailable terminal API.
+Permission-hook identity uses the terminal path verified here.
 
 ## Scope and environment
 

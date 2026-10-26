@@ -13,7 +13,7 @@ The user's naming contract is authoritative: use the session name to identify
 the user-facing Agent; report duplicate names for the user to resolve. Native
 thread/request IDs remain transport fields for the corresponding Codex RPCs.
 
-## Current implementation and verified cause
+## Baseline implementation and verified cause
 
 | Fact | Evidence at main `40e7f5f` |
 | --- | --- |
@@ -42,8 +42,8 @@ a localhost fake model and two cooperating socket clients. It named a loaded
 thread, read that exact name from the observer, subscribed, received a question,
 responded with the original RPC request ID, and verified the chosen answer in
 the model's next input. Terminal queries were zero. The owned server exited and
-the disposable home was removed. This proves protocol feasibility; product
-integration remains to be implemented and tested.
+the disposable home was removed. At design preparation this established
+protocol feasibility. Product integration acceptance is recorded below.
 
 The raw probe and result are retained outside Git under the local temporary
 `mcim-native-name-probe` evidence directory. No real IM/model account was used.
@@ -64,7 +64,7 @@ metadata read, question reference, answer interpreter and response writer.
 There is no library selection. Current runtime dependencies remain `ws` 8.20.0
 (MIT) and `zod` 3.x (MIT), with existing workspace packages.
 
-## Proposed change
+## Accepted implementation
 
 | Surface | Final behavior |
 | --- | --- |
@@ -104,8 +104,8 @@ is authoritative for whether a request is still pending.
 | resolved/replaced | No active request to submit | Remain closed | Existing ended-question response | Remain closed | Remain closed | Fresh native pending delivery follows existing reference handling |
 
 The table describes retained lifecycle behavior with the metadata source
-changed. Implementers must verify native replay and rename ordering in tests;
-this draft does not treat the protocol probe as lifecycle acceptance.
+changed. Native replay and rename ordering are verified by the tests and
+product probes in the [execution record](2026-10-26-codex-question-session-name-execution.md).
 
 ## Acceptance and verification
 
@@ -129,7 +129,7 @@ real Feishu account acceptance remain owned by the maintainer.
 This changes the shared question interface and request lifecycle identity source;
 it follows the design and independent review flow before implementation.
 The accompanying [flow demo](2026-10-26-codex-question-session-name-flow.html)
-shows the proposed backend path and its naming-error branch.
+shows the accepted backend path and its naming-error branch.
 
 ## Design review correction
 
@@ -144,3 +144,13 @@ The corrected interface and immediate-reply regression above specify how the
 Bridge obtains the current name before interpretation. The protocol experiment
 continues to be feasibility evidence; integration tests remain the acceptance
 for the implementation.
+
+## Implementation status
+
+The accepted interface and name-driven flow are implemented. Before calling
+the answer interpreter, the Bridge captures its input name and validates the
+returned target against that captured value. Native metadata refresh continues
+to update subsequent source labels and revalidate the original request.
+The [execution record](2026-10-26-codex-question-session-name-execution.md)
+records red/green tests, real protocol acceptance, independent review and the
+user-approved visual-review exemption.

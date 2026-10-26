@@ -227,8 +227,10 @@ user-approved official-title identity. The plan observer remains observational.
 The following records the implementation and acceptance at PR #249. The later
 approved [session-name reply repair](2026-10-22-codex-session-name-replies-dd.md)
 sets Stop source labels through native `thread/read` metadata and the session
-reply queue. Native question and permission pane association uses the title
-identity described here.
+reply queue. The later approved
+[session-name question repair](2026-10-26-codex-question-session-name-dd.md)
+uses native names for questions. Permission-hook pane association uses the
+title identity described here.
 
 The user selected official thread-id auto-discovery, accepting the visible item
 and pausing on missing/ambiguous identity. Raw terminal titles are now exposed

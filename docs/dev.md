@@ -120,8 +120,9 @@ acceptance are separate reproducible checks below; real IM accounts are not used
 pnpm exec tsx scripts/codex-identity-probe.mts
 ```
 
-This optional research fixture requires installed Codex 0.163.0, Python 3 and
-Unix PTYs. It uses one temporary Codex home, a localhost fake Responses server,
+This optional research fixture requires an installed Codex binary, Python 3 and
+Unix PTYs. The current session-name acceptance ran with Codex 0.164.0; the
+fixture records the observed version. It uses one temporary Codex home, a localhost fake Responses server,
 an owned App Server, and two owned TUI clients with distinct terminal markers.
 It verifies that hooks inherit the server's pane while the official `thread-id`
 titles identify different client threads. Trust bypass applies only to the
@@ -131,8 +132,9 @@ daemon, global configuration or real IM/model account is used.
 The probe also runs the production hook entry for replies and auto approvals
 with two actual TUI thread ids and a terminal-API fixture containing their
 captured titles, despite the shared server's wrong inherited pane. Both real
-TUIs ask native questions; the product client reads fresh captured titles and
-loaded ids, answers separately, and checks their local fake-model inputs.
+TUIs ask native questions; the product question client reads their native
+session names and loaded IDs, verifies each name against its TUI thread,
+answers separately, and checks their local fake-model inputs.
 Only fixture PTYs inspect control sequences; production uses structured APIs.
 The terminal API fixture is preflighted before the sub-second hook checks.
 
@@ -184,11 +186,13 @@ pnpm exec vitest run packages/term-iterm2/src/helper-contract.test.ts
 ```
 
 The first command uses a real native App Server and product adapter/orchestrator
-with a fake local model/IM/terminal snapshot. It verifies IM-first, terminal-first,
-late answers, native replay after bridge restart, default-mode questions and
-multiple questions; no answer becomes a terminal prompt. Its terminal titles
-are controlled fixtures, so use the two-TUI identity probe as separate provenance
-evidence. Both scripts clean up only processes/files they created.
+with a localhost fake model, recording IM and unavailable terminal API fixture.
+It verifies native source names, IM-first and terminal-first answers, late
+answers, native replay after bridge restart, default-mode questions, multiple
+questions and a rename during answer interpretation. It asserts zero terminal
+queries and zero terminal input. The two-TUI probe separately verifies native
+question names against real TUI threads and captured permission-hook titles.
+Both scripts clean up their owned processes/files.
 
 The second runs the actual Python helper against an isolated iTerm2 API contract
 where `autoName` and `terminalWindowName` differ. This protects the raw-title field.
@@ -215,10 +219,14 @@ Lookup errors identify the home/executable checks in hook stderr; verify
 For incoming `#name` routing, `/list` shows the current cleaned terminal title;
 put `thread-name` first in `/terminal-title` to support its unique-prefix match.
 `project-name` displays the project directory and is independent of the native name.
-Question/permission pane identity uses `thread-id` in `/terminal-title`. The
-installer preserves saved title items and appends only the official identity item
-(with backup); new TUIs read that selection. Missing/ambiguous ids pause native
-question/permission forwarding and leave the TUI available. Native requests use
+Native questions read the current `thread.name` through the local socket.
+Missing/duplicate names pause that name and report `/rename` guidance; unique
+renames keep the original request reference. The interpreter validates its
+response against the name used in its input, and submission refreshes the native
+request again. Permission-hook pane identity uses `thread-id` in
+`/terminal-title`; the installer preserves saved title items and appends that
+identity item with backup. New TUIs read that selection. Missing/ambiguous title
+IDs pause permission forwarding. Native requests use
 a single shared `CODEX_HOME`; arbitrary home scans are forbidden. No version
 allowlist or range gates initialization or requests. Actual failures retain the
 operation, observed server version (`unknown` when unavailable), native RPC

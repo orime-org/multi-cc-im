@@ -75,7 +75,8 @@ Codex 三条路径共享一次性 executor：每调用独立临时 cwd、0600 �
 
 ### Codex 原生线程身份与问题通道
 
-原生问题和权限事件使用官方标题身份来源，见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
+权限事件使用官方标题身份来源，见 [身份 DD](superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
+原生问题使用下文的会话名与原生请求通道，见 [会话名提问 DD](superpowers/specs/2026-10-26-codex-question-session-name-dd.md)。
 终端 `PaneInfo.terminalTitle` 保存结构化 API 的原始标题：WezTerm 使用 pane `title`，
 iTerm2 helper 使用 `session.terminalWindowName`，友好显示名继续使用既有清理路径。
 0.163.0 的 `thread-id` 实际为 UUID 前缀加 `...`；`matchCodexThreads` 只接受验证过的
@@ -108,24 +109,31 @@ Bridge 的 `forwardReply` 使用会话名作为飞书 `sourceTag`，并读取最
 与 [跨运行模式元数据查询 DD](superpowers/specs/2026-10-23-codex-stop-stdio-metadata-dd.md)。
 
 启用 Codex 时，即使同时启用 Claude，也只创建一个既有状态文件 watcher，并附加一个
-本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它只附加唯一关联、
-已加载的根线程；`thread/read` 检查后 `thread/resume`，不创建线程、不启动回合、不覆写配置。
+本机 UDS WebSocket question client（直接声明 `ws` 生产依赖）。它通过
+`thread/loaded/list` 枚举已加载线程，`thread/read` 校验响应 ID、source、active／idle 状态
+和非空会话名，再用 `thread/resume` 订阅名称唯一的根线程。
 只读取一个配置的 `CODEX_HOME`，不扫描 transcript 或其他 home。Stop 名称读取失败
 明确提示回信未转发；原生问题失败写入现有 `[Codex questions]` 日志，终端仍可处理。
 
-原生问题转发先读取 IMWork 和 owner，再筛选首次投递或断线重放的待答请求，
-通过后读取当前窗格。已显示问题的轮询复核、空队列和结束通知使用所需的上下文；
-结束通知读取原 owner，实际回答在解释前和提交前核对当前窗格。
-发现模块先读取 loaded 线程列表；列表为空时仍清理既有绑定，窗格查询在存在 loaded
-线程时执行。已加载线程的周期性发现继续使用当前终端标题。
-WezTerm 窗格查询失败保留原始错误作为 cause，提示受影响的发现和路由能力、
-原终端回答入口及 socket 检查命令。Codex 日志去重和输出共用 `formatErrorWithCause`。
-查询顺序、失败诊断与验收边界见
-[查询延迟执行记录](superpowers/specs/2026-10-26-native-question-query-latency-execution.md)。
+原生问题发现、投递和回答通过原生接口完成，问题记录携带 `sessionName` 与原始
+thread／turn／item／request／question IDs。缺名或重名的线程暂停问题转发，并提示用户
+通过 `/rename` 处理；名称唯一的其他线程继续订阅。唯一改名更新绑定与待答记录的来源名，
+原问题编号继续关联同一请求。空 loaded 列表同样执行绑定与待答清理。
+
+Bridge 先读取 IMWork 和 owner，筛选所选终端模式下首次投递或断线重放的请求，
+使用 `request.sessionName` 标注来源。回答通过 owner／chat 检查后等待
+`CLIQuestions.refresh()`，再取得当前请求和名称供解释器使用；解释结果的目标与本次
+解释输入的名称核对。提交前再次刷新并核对原请求状态。解释期间发生唯一改名时，
+回答仍关联原请求，后续通知使用刷新后的名称。
+
+WezTerm 窗格查询失败保留原始错误作为 cause，提示受影响的按窗格路由和权限来源定位、
+原终端操作入口及 socket 检查命令。Codex 日志去重和输出共用 `formatErrorWithCause`。
+本次实现与验收边界见
+[会话名提问执行记录](superpowers/specs/2026-10-26-codex-question-session-name-execution.md)。
 
 `item/tool/requestUserInput` → 原始 thread/turn/item/request/question IDs → IMWork/owner/chat
 门控 → 带稳定问题编号的 IM 提问 → `/answer` 或引用机器人消息 → 选定后端解释／校验
-→ 重新核对身份及原生待答状态 → native RPC response `answers[questionId].answers`。
+→ 刷新会话名及原生待答状态 → native RPC response `answers[questionId].answers`。
 原生 `serverRequest/resolved`／turn completion／thread closure 清理待答；断连丢弃提交能力，
 重连根据原生 pending replay 恢复。终端与 IM 先到的回答生效；过期回答被消费并提示，
 不会走普通 prompt 路由。auto 模式不代答问题；secret 只发送终端处理提示。
