@@ -72,9 +72,10 @@ There is no library selection. Current runtime dependencies remain `ws` 8.20.0
 | Codex question discovery | Read the current loaded root threads through the existing connection. Validate each returned thread ID, source and active/idle status and collect its nonempty native name. Subscribe to uniquely named eligible threads. |
 | Missing or duplicate name | Report the current name problem with `/rename` guidance. Affected questions remain available in Codex; the user resolves names. Other uniquely named threads remain eligible. |
 | Question binding | Bind the native thread to its current session name; retain the existing per-connection lifecycle and pending request references. |
+| Awaitable question refresh | Expose `refresh(): Promise<void>` on `CLIQuestions`, delegating to the client's existing serialized `refresh()` operation. Its settlement makes the refreshed or unavailable binding state visible through `listPending()`. |
 | Rename | Refresh native metadata before delivery and submission. A unique current name becomes the source label for subsequent messages; the original pending question reference continues identifying the same request. |
 | Bridge delivery | Check existing IMWork, owner, adapter and pending-request gates. Use `request.sessionName` as the source tag. |
-| Answer submission | Check the original owner/chat, current native named binding and pending request before interpretation and submission; write the original native response. |
+| Answer submission | After the owner/chat gate, await `questions.refresh()` before interpreting an answer, then read the current request and its name from `listPending()`. Reuse the native client's existing refresh before final submission and write the original native response. |
 | Secrets, completion and disconnect | Preserve existing terminal-answer guidance for secrets, completion/late-reply handling, disconnected state and native replay. |
 | Application wiring | Remove the pane-list dependency from the native question client and bridge question options. |
 | Existing shared paths | Claude hooks, ordinary name routing, Codex Stop replies and permission hooks keep their current implementations. The terminal title installer is outside this narrowed repair. |
@@ -112,6 +113,7 @@ this draft does not treat the protocol probe as lifecycle acceptance.
 | --- | --- | --- |
 | Native question works without terminal listing | User-level, within promised question forwarding | With a named loaded thread, discovery, delivery, interpretation and answer submission complete while the terminal API is unavailable; question code performs zero pane queries. |
 | Name is the visible source | User-level, within naming contract | Native `/rename` name appears in question and follow-up labels; a unique rename refreshes subsequent labels. |
+| Immediate reply after a naming change | Test code for the naming contract | After the last periodic poll, rename or duplicate a name and immediately reply. The interpreter receives the current unique name, or the naming error prevents interpretation/submission. |
 | Naming errors | User-level, within naming contract | Missing/duplicate names report `/rename` guidance; valid uniquely named sessions remain answerable. |
 | Answer correctness | User-level, within question contract | Original native request/question IDs receive the user's answer; owner/chat, secret input, terminal-first answer, late reply, reconnect and restart replay regressions pass. |
 | Ordinary messages | Regression of user-level promises | Existing Codex Stop/name replies and ordinary IM name routing pass; Claude ordinary messages, Stop, approvals and AskUserQuestion pass. |
@@ -128,3 +130,17 @@ This changes the shared question interface and request lifecycle identity source
 it follows the design and independent review flow before implementation.
 The accompanying [flow demo](2026-10-26-codex-question-session-name-flow.html)
 shows the proposed backend path and its naming-error branch.
+
+## Design review correction
+
+The independent review of `da1d481` retained one interface omission: the draft
+required current native metadata before answer interpretation while
+`CLIQuestions` exposed only synchronous `listPending()` and final `answer()`.
+The existing client refresh was private, and final answer validation happened
+after interpretation. Source inspection confirmed this design interface omission.
+
+The user accepted exposing the existing awaitable refresh on 2026-10-26.
+The corrected interface and immediate-reply regression above specify how the
+Bridge obtains the current name before interpretation. The protocol experiment
+continues to be feasibility evidence; integration tests remain the acceptance
+for the implementation.

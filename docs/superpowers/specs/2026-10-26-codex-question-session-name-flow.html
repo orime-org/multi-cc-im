@@ -6,7 +6,7 @@
 <section><strong>Subscribe to uniquely named eligible sessions</strong><p>Native IDs identify the corresponding protocol subscription.</p></section><div class="arrow">↓</div>
 <section><strong>Receive a native Agent question</strong><p>Keep its original request, turn, item and question IDs; carry the session name.</p></section><div class="arrow">↓</div>
 <section><strong>Deliver to Feishu with the session name</strong><p>Existing IM mode and owner/chat gates apply.</p></section><div class="arrow">↓</div>
-<section><strong>Receive the user's correlated answer</strong><p>Refresh the native name and pending status; validate the original owner and answer.</p></section><div class="arrow">↓</div>
+<section><strong>Receive the user's correlated answer</strong><p>Validate the original owner, await questions.refresh(), then read the current native name and pending request before interpretation.</p></section><div class="arrow">↓</div>
 <section><strong>Respond to the original native request</strong><p>Native resolution confirms completion. Existing terminal-first and late-answer behavior applies.</p></section>
 <section class="error"><strong>Name missing or duplicated during metadata checks</strong><p>Report the naming problem and /rename guidance. The affected request remains handled by Codex.</p><small>A later metadata refresh rechecks the current names and native pending state.</small></section>
 <footer>Regression acceptance covers ordinary Codex messages and Claude messages, Stop replies, approvals and AskUserQuestion.</footer></html>
