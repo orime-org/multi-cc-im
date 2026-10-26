@@ -2,9 +2,11 @@
 
 Current scope: the later user-approved
 [session-name reply decision](2026-10-22-codex-session-name-replies-dd.md)
-sets Stop source labels from native metadata. This identity DD governs native
-question and permission pane association. Its original Stop entry acceptance
-records the earlier title-based implementation.
+sets Stop source labels from native metadata. The accepted
+[session-name question decision](2026-10-26-codex-question-session-name-dd.md)
+sets question source labels and bindings from current native names. This
+identity DD governs permission-hook pane association; its question and Stop
+acceptance records describe the earlier title-based implementation.
 
 Date: 2026-10-22. Status: user accepted candidate E (official title identity) on 2026-10-22;
 the earlier hook-pane implementation remains withdrawn. The user-approved local App Server

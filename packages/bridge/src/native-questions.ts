@@ -1,4 +1,4 @@
-import type { CLIQuestionRequest, CLIQuestions, IMAdapter, IMReplyContext, IncomingMessage, TermPaneInfo, TerminalId } from '@multi-cc-im/shared';
+import type { CLIQuestionRequest, CLIQuestions, IMAdapter, IMReplyContext, IncomingMessage, TerminalId } from '@multi-cc-im/shared';
 import { readIMOriginFile, readIMWorkFile } from '@multi-cc-im/cli-cc';
 import type { AIAskUserQuestionResult, AskUserQuestionViaAIOpts } from './ai-router.js';
 
@@ -8,7 +8,6 @@ export interface NativeQuestionBridgeOpts {
   terminalId: TerminalId;
   questions?: CLIQuestions;
   imAdapter: IMAdapter;
-  listPanes(): Promise<readonly TermPaneInfo[]>;
   interpret?: (opts: AskUserQuestionViaAIOpts) => Promise<AIAskUserQuestionResult | null>;
   onError(err: unknown): void;
 }
@@ -30,7 +29,6 @@ export interface NativeQuestionBridge {
 interface DisplayedQuestion {
   request: CLIQuestionRequest;
   owner: IMReplyContext;
-  tabName: string;
   state: 'pending' | 'submitted' | 'resolved' | 'disconnected' | 'replaced' | 'terminalOnly';
   busy: boolean;
   delivery?: Promise<void>;
@@ -92,10 +90,6 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
     const [work, owner] = await Promise.all([readIMWorkFile(opts.stateDir, opts.terminalId), readIMOriginFile(opts.stateDir)]);
     return work && validOrigin(owner, opts.imAdapter.name) ? owner : null;
   }
-  async function gates(): Promise<{ owner: IMReplyContext; panes: readonly TermPaneInfo[] } | null> {
-    const owner = await deliveryOwner();
-    return owner ? { owner, panes: await opts.listPanes() } : null;
-  }
   function current(ref: string): CLIQuestionRequest | undefined {
     return opts.questions?.listPending().find(q => q.reference === ref && q.termId === opts.terminalId);
   }
@@ -108,24 +102,22 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
         (previous.state === 'disconnected' && ownerKey(previous.owner) === ownerKey(owner)));
     });
     if (!requests.length) return;
-    const allowed = { owner, panes: await opts.listPanes() };
     if (!active) return;
     for (const request of requests) {
       const terminalOnly = request.questions.some(q => q.isSecret);
-      const pane = allowed.panes.find(p => p.paneId === request.paneId);
-      if (!pane || !current(request.reference)) continue;
+      if (!current(request.reference)) continue;
       for (const [ref, old] of displayed) {
-        if (old.state === 'disconnected' && old.request.paneId === request.paneId && ref !== request.reference) displayed.delete(ref);
+        if (old.state === 'disconnected' && old.request.threadId === request.threadId && ref !== request.reference) displayed.delete(ref);
       }
       const previous = displayed.get(request.reference);
       if (previous) {
-        if (previous.state === 'disconnected' && ownerKey(previous.owner) === ownerKey(allowed.owner)) {
+        if (previous.state === 'disconnected' && ownerKey(previous.owner) === ownerKey(owner)) {
           previous.request = request; previous.state = terminalOnly ? 'terminalOnly' : 'pending';
-          await opts.imAdapter.send(terminalOnly ? 'Codex 已重新连接，敏感输入仍请在终端回答。' : 'Codex 已重新连接，该问题仍可使用原编号回答。', previous.owner, { sourceTag: previous.tabName });
+          await opts.imAdapter.send(terminalOnly ? 'Codex 已重新连接，敏感输入仍请在终端回答。' : 'Codex 已重新连接，该问题仍可使用原编号回答。', previous.owner, { sourceTag: previous.request.sessionName });
         }
         continue;
       }
-      const entry: DisplayedQuestion = { request, owner: allowed.owner, tabName: pane.title || 'Codex', state: terminalOnly ? 'terminalOnly' : 'pending', busy: false };
+      const entry: DisplayedQuestion = { request, owner, state: terminalOnly ? 'terminalOnly' : 'pending', busy: false };
       displayed.set(request.reference, entry);
       const body = terminalOnly ? `Codex 正在请求敏感输入，请在对应终端回答。请勿通过 IM 发送敏感内容。\n问题编号：${request.reference}` : [`Codex ${request.isBlocking ? '正在等待回答' : '提出了一个问题（任务可继续运行）'}：`,
         ...request.questions.flatMap((q, i) => [`${i + 1}. ${q.header}: ${q.question}`,
@@ -133,7 +125,7 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
         `回复 /answer ${request.reference} <选项编号或文字回答>`,
         '也可直接回复本条消息。多题请逐题说明；仍可在 Codex 终端回答，先到的回答生效。',
       ].join('\n');
-      entry.delivery = opts.imAdapter.send(body, entry.owner, { sourceTag: entry.tabName });
+      entry.delivery = opts.imAdapter.send(body, entry.owner, { sourceTag: entry.request.sessionName });
       try { await entry.delivery; }
       catch (err) { if (displayed.get(request.reference) === entry) displayed.delete(request.reference); opts.onError(err); }
     }
@@ -147,9 +139,13 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
     if (active) { timer = setTimeout(() => { void tick(); }, 2000); timer.unref(); }
   }
   async function eligible(entry: DisplayedQuestion, ctx: IMReplyContext): Promise<boolean> {
-    const allowed = await gates();
-    return !!allowed && ownerKey(ctx) === ownerKey(entry.owner) && ownerKey(allowed.owner) === ownerKey(entry.owner) &&
-      allowed.panes.some(p => p.paneId === entry.request.paneId) && !!current(entry.request.reference);
+    const owner = await deliveryOwner();
+    if (!owner || ownerKey(ctx) !== ownerKey(entry.owner) || ownerKey(owner) !== ownerKey(entry.owner)) return false;
+    await opts.questions!.refresh();
+    const request = current(entry.request.reference);
+    if (!request || !active) return false;
+    entry.request = request;
+    return true;
   }
 
   return {
@@ -165,9 +161,9 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
         const owner = await deliveryOwner();
         if (!owner || ownerKey(owner) !== ownerKey(entry.owner)) return;
         const text = reason === 'disconnected' ? 'Codex 本机连接已断开，手机回答暂停。可在终端继续；重连核对问题后恢复。' :
-          reason === 'replaced' ? 'Codex 会话、终端或线程标题已变化，手机回答已暂停。请在 /terminal-title 保留 thread-id，并确认一个线程只显示在一个窗格中；仍可在终端回答。' :
+          reason === 'replaced' ? 'Codex session or name changed; phone answers are paused. Check /rename and keep session names unique. You can answer in the original terminal.' :
           '该 Codex 问题已结束（已回答或被取消）。迟到回复不会作为新任务发送。';
-        await opts.imAdapter.send(text, entry.owner, { sourceTag: entry.tabName });
+        await opts.imAdapter.send(text, entry.owner, { sourceTag: entry.request.sessionName });
       } catch (err) { opts.onError(err); }
       finally { if (reason !== 'disconnected' && displayed.get(reference) === entry) displayed.delete(reference); }
     },
@@ -192,13 +188,14 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
       if (entry.busy) { await respond('正在处理这道问题的回答，请等待 Codex 确认。'); return true; }
       entry.busy = true;
       try {
-        if (!(await eligible(entry, msg.replyCtx))) { await respond('当前 IM 模式、用户、聊天或终端状态不允许回答该问题。请检查 /start 和对应 Codex 终端。'); return true; }
+        if (!(await eligible(entry, msg.replyCtx))) { await respond('The current IM mode, owner, chat, or Codex session does not allow this answer. Check /start and /rename in the original Codex session.'); return true; }
         let answers = extractAnswers(entry.request, body);
         if (!answers && !/^\/?\d+$/.test(body) && opts.interpret) {
-          const result = await opts.interpret({ userMsg: body, pendings: [{ tabName: entry.tabName,
+          const promptName = entry.request.sessionName;
+          const result = await opts.interpret({ userMsg: body, pendings: [{ tabName: promptName,
             questions: entry.request.questions.map(q => ({ question: q.question, header: q.header, multiSelect: false,
               options: (q.options ?? []).map(o => ({ ...o })) })) }] });
-          answers = result?.target === entry.tabName ? extractAnswers(entry.request, body, result) : null;
+          answers = result?.target === promptName ? extractAnswers(entry.request, body, result) : null;
         }
         if (!answers) { await respond('无法完整确认回答。请按题号说明每题的选项编号或文字回答；问题仍在等待。'); return true; }
         if (!(await eligible(entry, msg.replyCtx)) || entry.state !== 'pending') { await respond('问题或连接状态已改变，本次回答未发送；请查看当前 Codex 问题。'); return true; }

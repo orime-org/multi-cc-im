@@ -1,5 +1,10 @@
 # Native question query eligibility and diagnostics
 
+This records the PR #254 baseline. The subsequent user-approved
+[session-name question repair](2026-10-26-codex-question-session-name-execution.md)
+replaces the question pane prerequisite with current native names and request
+responses. The query-order measurements below describe that earlier delivery.
+
 ## Scope and acceptance
 
 This delivery fixes confirmed query-order and diagnostic defects in

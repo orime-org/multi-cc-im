@@ -1,8 +1,9 @@
 # DD: Codex question forwarding without owning the TUI
 
-Date: 2026-10-22. Status: local App Server transport and official title identity
-accepted by the user; implemented in this change. The disproven hook-pane
-registration is withdrawn. The selected source and verification evidence live in
+Date: 2026-10-22. Status: local App Server transport accepted and implemented.
+Current question naming follows the user-approved
+[session-name decision](2026-10-26-codex-question-session-name-dd.md).
+Permission-hook identity follows the
 [thread identity DD](2026-10-22-codex-thread-identity-dd.md).
 The existing CLI/router backend and plan viewer remain separate capabilities.
 
@@ -101,7 +102,7 @@ Recommend D, based on its verified native consumer contract (E1/E2), reliable
 multi-client lifecycle (E3/E5), and existing local transport (E7). It restores
 the mobile-answer capability while keeping the TUI as an equal client.
 
-Implemented product flow (identity source revised by the accepted identity DD):
+Historical PR #249 flow (current question naming is specified in section 6):
 
 1. Use official TUI `thread-id` prefixes and structured raw terminal titles,
    strictly and uniquely matched against current native loaded ids. Use the same
@@ -144,8 +145,8 @@ registration premise: both hooks inherited the shared server's pane, despite two
 distinct client panes. The unsafe registration implementation was withdrawn.
 
 The user subsequently selected official `thread-id` title discovery explicitly,
-including its visible title item and pausing on ambiguity. The production hook
-origin and question client now share that matcher. The actual two-TUI probe
+including its visible title item and pausing on ambiguity. At that implementation baseline, the production hook
+origin and question client shared that matcher. The actual two-TUI probe
 checks correct hook entry routing and separate product-client answers in each
 native model input. A separate real-server/product-bridge/fake-IM smoke covers
 IM-first, terminal-first, late replies, restart replay, default-mode and multiple
@@ -163,3 +164,19 @@ input. The actual iTerm2 Python helper has a separate raw-title API contract
 fixture. Real Lark account acceptance belongs to the maintainer's GitHub
 deployment. See the [WezTerm execution record](2026-10-22-codex-wezterm-acceptance.md)
 and developer instructions for verification.
+
+## 6. Current question identity: native session name
+
+The user-approved [2026-10-26 decision](2026-10-26-codex-question-session-name-dd.md)
+uses current `thread.name` metadata to bind loaded root threads and label native
+questions. `CLIQuestionRequest.sessionName` supplies the source name; the
+original thread/turn/item/request/question IDs correlate the native answer.
+Discovery, delivery and answering use this local native connection. Missing or
+duplicate names produce `/rename` guidance. A unique rename retains the pending
+reference; the interpreter checks against its input name and final submission
+refreshes the original request again.
+
+The [execution record](2026-10-26-codex-question-session-name-execution.md) covers
+the unavailable-terminal product smoke, actual two-TUI names, rename races,
+restart replay and Claude/ordinary-message regressions. Permission-hook title
+identity continues under its existing decision.

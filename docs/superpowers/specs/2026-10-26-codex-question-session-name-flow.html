@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex native question name flow</title>
+<style>body{font:17px/1.6 system-ui;background:#0f172a;color:#e2e8f0;max-width:760px;margin:40px auto;padding:0 24px}h1{font-size:27px}section{padding:18px 22px;border:1px solid #38bdf8;border-radius:8px;background:#102739;margin:0}p{margin:5px 0}.arrow{text-align:center;color:#94a3b8;font-size:25px;margin:12px}.error{border-color:#fbbf24;background:#302914;margin:28px 0}small{color:#cbd5e1}footer{margin-top:30px;color:#cbd5e1}</style>
+<h1>Codex native question name flow</h1><p>Design draft. User-visible routing follows the native /rename session name.</p>
+<section><strong>Read loaded Codex root sessions</strong><p>Existing local App Server connection supplies thread metadata and current names.</p></section><div class="arrow">↓</div>
+<section><strong>Subscribe to uniquely named eligible sessions</strong><p>Native IDs identify the corresponding protocol subscription.</p></section><div class="arrow">↓</div>
+<section><strong>Receive a native Agent question</strong><p>Keep its original request, turn, item and question IDs; carry the session name.</p></section><div class="arrow">↓</div>
+<section><strong>Deliver to Feishu with the session name</strong><p>Existing IM mode and owner/chat gates apply.</p></section><div class="arrow">↓</div>
+<section><strong>Receive the user's correlated answer</strong><p>Validate the original owner, await questions.refresh(), then read the current native name and pending request before interpretation.</p></section><div class="arrow">↓</div>
+<section><strong>Respond to the original native request</strong><p>Native resolution confirms completion. Existing terminal-first and late-answer behavior applies.</p></section>
+<section class="error"><strong>Name missing or duplicated during metadata checks</strong><p>Report the naming problem and /rename guidance. The affected request remains handled by Codex.</p><small>A later metadata refresh rechecks the current names and native pending state.</small></section>
+<footer>Regression acceptance covers ordinary Codex messages and Claude messages, Stop replies, approvals and AskUserQuestion.</footer></html>

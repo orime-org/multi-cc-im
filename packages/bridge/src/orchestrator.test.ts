@@ -3787,16 +3787,17 @@ describe('native question capability wiring', () => {
     const im = makeMockIM();
     const cli = makeMockCLI();
     const term = makeMockTerm([FRONTEND_INFO]);
+    term.listPanes = vi.fn(async () => { throw new Error('Fixture terminal API unavailable'); });
     const question = {
       reference: 'codex-0123456789abcdef01234567', threadId: 'native-thread', turnId: 'native-turn', itemId: 'native-item', requestId: 1,
-      termId: 'wezterm' as const, paneId: FRONTEND_PANE, isBlocking: true,
+      termId: 'wezterm' as const, sessionName: 'codex-agent', isBlocking: true,
       questions: [{ id: 'pick', header: 'Pick', question: 'Which?', options: [{ label: 'One', description: 'First' }] }],
     };
     const answer = vi.fn(async () => 'submitted' as const);
     await writeIMOriginFile(testStateDir, { imType: 'lark', openId: 'owner', chatId: 'chat' });
     const orchestrator = createOrchestrator({
       stateDir: testStateDir, imAdapter: { ...im, name: 'lark' }, termAdapter: term,
-      cliAdapter: { ...cli, questions: { listPending: () => [question], answer } },
+      cliAdapter: { ...cli, questions: { async refresh() {}, listPending: () => [question], answer } },
       state: memState(), aiRouter: null, aiAskUserQuestionRouter: null,
     });
     try {
@@ -3807,8 +3808,49 @@ describe('native question capability wiring', () => {
         replyCtx: { imType: 'lark', openId: 'owner', chatId: 'chat' } });
       expect(answer).toHaveBeenCalledWith(question.reference, { pick: ['One'] });
       expect(term.sendTextCalls).toEqual([]);
+      expect(term.listPanes).not.toHaveBeenCalled();
+      expect(im.sent.find(s => s.content.includes(question.reference))?.sourceTag).toBe('codex-agent');
       await cli.handler?.onQuestionClosed?.(question.reference, 'resolved');
       expect(im.sent.some(s => s.content.includes('该 Codex 问题已结束'))).toBe(true);
     } finally { await orchestrator.stop(); }
   });
+
+  it('keeps Claude messages, Stop, approvals and question answers on their existing paths while a Codex question is pending', async () => {
+    const im = makeMockIM();
+    const cli = makeMockCLI();
+    const term = makeMockTerm([FRONTEND_INFO]);
+    const replyCtx: IMReplyContext = { imType: 'lark', openId: 'owner', chatId: 'chat' };
+    const question = { reference: 'codex-0123456789abcdef01234567', threadId: 'native-thread', turnId: 'native-turn', itemId: 'native-item', requestId: 1,
+      termId: 'wezterm' as const, sessionName: 'codex-agent', isBlocking: true,
+      questions: [{ id: 'pick', header: 'Pick', question: 'Which?', options: null }] };
+    const nativeAnswer = vi.fn(async () => 'submitted' as const);
+    const orch = createOrchestrator({ stateDir: testStateDir, imAdapter: { ...im, name: 'lark' }, termAdapter: term,
+      cliAdapter: { ...cli, questions: { async refresh() {}, listPending: () => [question], answer: nativeAnswer } },
+      state: memState(), sendKeystrokeDelayMs: 0,
+      aiRouter: async () => ({ target: null, intent: null, reason: 'Fixture routing', permissionResponse: null }),
+      aiAskUserQuestionRouter: async () => ({ target: 'frontend', reason: null, answers: [{ questionIndex: 0, kind: 'option', optionIndex: 1 }] }),
+    });
+    try {
+      await orch.start(); await writeIMOriginFile(testStateDir, replyCtx);
+      await cli.handler?.onQuestion?.(question);
+      await im.handler!.onMessage(incoming('#frontend hello', replyCtx));
+      expect(term.sendTextCalls).toEqual([{ paneId: FRONTEND_PANE, content: 'hello' }]);
+      await cli.handler!.onStop(makeStop({ paneId: FRONTEND_PANE, message: 'Claude fixture reply' }));
+      expect(im.sent.find(s => s.content === 'Claude fixture reply')?.sourceTag).toBe('frontend');
+      const approval = { stateDir: testStateDir, paneId: FRONTEND_PANE, sessionId: SID_A, requestId: 'abc12345' };
+      await writePermissionRequestFile({ ...approval, toolName: 'Bash', toolInput: { command: 'pwd' }, createdAt: Date.now() });
+      await im.handler!.onMessage(incoming('#frontend /1', replyCtx));
+      expect(await readPermissionResponseFile(permissionResponsePath(approval))).toMatchObject({ requestId: approval.requestId, decision: 'allow' });
+      await unlink(permissionRequestPath(approval)); await unlink(permissionResponsePath(approval));
+      const auq = { ...approval, requestId: 'abc67890' };
+      const questions = [{ question: 'Pick a database', header: 'DB', multiSelect: false,
+        options: [{ label: 'Postgres', description: 'Relational' }, { label: 'MongoDB', description: 'Document' }] }];
+      await writePermissionRequestFile({ ...auq, toolName: 'AskUserQuestion', toolInput: { questions }, createdAt: Date.now() });
+      await im.handler!.onMessage(incoming('Use Postgres', replyCtx));
+      expect(await readPermissionResponseFile(permissionResponsePath(auq))).toMatchObject({ requestId: auq.requestId, decision: 'allow',
+        updatedInput: { questions, answers: { 'Pick a database': 'Postgres' } } });
+      expect(nativeAnswer).not.toHaveBeenCalled();
+    } finally { await orch.stop(); }
+  });
+
 });

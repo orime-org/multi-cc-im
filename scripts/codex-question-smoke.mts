@@ -10,7 +10,7 @@ import WebSocket from 'ws';
 import { createCodexCliAdapter } from '../packages/cli-codex/src/index.js';
 import { createOrchestrator } from '../packages/bridge/src/orchestrator.js';
 import { writeIMOriginFile, writeIMWorkFile } from '../packages/cli-cc/src/index.js';
-import type { IMHandler, IMReplyContext, PaneId } from '../packages/shared/src/index.js';
+import type { IMHandler, IMReplyContext } from '../packages/shared/src/index.js';
 
 const root = await mkdtemp(join(await realpath('/tmp'), 'mqs-'));
 const previousCodexHome = process.env['CODEX_HOME'];
@@ -46,12 +46,14 @@ let stderr = ''; native.stderr.on('data', chunk => { stderr += String(chunk); })
 const exited = new Promise<void>(resolve => native.once('exit', () => resolve()));
 const stateDir = join(root, 'state');
 const owner: IMReplyContext = { imType: 'lark', openId: 'fixture-owner', chatId: 'fixture-chat' };
-const paneId = 777 as PaneId;
-let displayedThread = '';
+let sessionName = 'fixture';
+let renameDuringInterpretation = false;
 const sent: string[] = [];
+const sourceTags: (string | undefined)[] = [];
 const errors: string[] = [];
 let imHandler: IMHandler | undefined;
 let terminalInputs = 0;
+let terminalQueries = 0;
 let ws: WebSocket | undefined;
 let orchestrator: ReturnType<typeof createOrchestrator> | undefined;
 const messages: Record<string, unknown>[] = [];
@@ -71,18 +73,28 @@ async function rpc(method: string, params: unknown): Promise<Record<string, unkn
 }
 async function startBridge(): Promise<void> {
   await writeIMOriginFile(stateDir, owner); await writeIMWorkFile(stateDir, 'wezterm', { auto: true });
-  const listPanes = async () => [{ paneId, title: 'fixture', cwd: root, terminalTitle: `fixture · ${displayedThread.slice(0, 29)}...` }];
+  const listPanes = async () => { terminalQueries++; throw new Error('Fixture terminal API unavailable'); };
   const cliAdapter = createCodexCliAdapter({ stateDir,
     onWatcherError: err => { errors.push(String(err)); },
-    nativeQuestions: { home: root, terminalId: 'wezterm', listPanes, intervalMs: 30, onError: err => errors.push(String(err)) },
+    nativeQuestions: { home: root, terminalId: 'wezterm', intervalMs: 30, onError: err => errors.push(String(err)) },
   });
   orchestrator = createOrchestrator({ stateDir, cliAdapter,
-    imAdapter: { name: 'lark', async start(h) { imHandler = h; }, async stop() {}, async send(body) { sent.push(body); } },
+    imAdapter: { name: 'lark', async start(h) { imHandler = h; }, async stop() {}, async send(body, _ctx, opts) { sent.push(body); sourceTags.push(opts?.sourceTag); } },
     termAdapter: { name: 'wezterm', listPanes, async start() {}, async stop() {},
       async sendText() { terminalInputs++; }, async sendKeystroke() { terminalInputs++; } },
     state: { getCurrent: () => null, setCurrent() {} }, aiRouter: null,
-    aiAskUserQuestionRouter: async () => ({ target: 'fixture', reason: null,
-      answers: questions.map((_, i) => ({ questionIndex: i, kind: 'option' as const, optionIndex: 2 })) }),
+    aiAskUserQuestionRouter: async () => {
+      const promptName = sessionName;
+      if (renameDuringInterpretation) {
+        renameDuringInterpretation = false;
+        const request = cliAdapter.questions!.listPending()[0]; assert(request);
+        sessionName = 'fixture-renamed-during-answer';
+        await rpc('thread/name/set', { threadId: request.threadId, name: sessionName });
+        await cliAdapter.questions!.refresh();
+      }
+      return { target: promptName, reason: null,
+        answers: questions.map((_, i) => ({ questionIndex: i, kind: 'option' as const, optionIndex: 2 })) };
+    },
     onError: err => errors.push(String(err)),
   });
   await orchestrator.start();
@@ -99,6 +111,7 @@ async function begin(threadId: string, mode: 'plan' | 'default' = 'plan'): Promi
   const request = await wait(() => messages.find(m => m['method'] === 'item/tool/requestUserInput' && (m['params'] as { turnId?: string })?.turnId === turnId), 'native question');
   const question = await wait(() => sent.slice(before).find(s => /\/answer codex-/.test(s)), 'forwarded question');
   const reference = /\/answer (codex-[a-f0-9]{24})/.exec(question)![1]!;
+  assert.equal(sourceTags[sent.indexOf(question)], sessionName);
   return { reference, turnId, requestId: request['id'] };
 }
 async function completed(turnId: string): Promise<void> {
@@ -119,7 +132,7 @@ try {
   const response = await rpc('thread/start', { cwd: root, model: 'fixture-model', approvalPolicy: 'never', sandbox: 'read-only' });
   const threadId = (response['thread'] as { id: string }).id;
   process.env['CODEX_HOME'] = root;
-  displayedThread = threadId;
+  await rpc('thread/name/set', { threadId, name: sessionName });
   await startBridge();
   const first = await begin(threadId);
   await imAnswer(first.reference, '2'); await completed(first.turnId);
@@ -130,20 +143,26 @@ try {
   await completed(second.turnId); await imAnswer(second.reference, '2');
   assert(!JSON.stringify(modelInputs[3]).includes('"answers":["Two"]'));
   console.log('PASS: terminal-first answer wins; late IM reply is consumed without terminal input.');
+  sessionName = 'fixture-renamed';
+  await rpc('thread/name/set', { threadId, name: sessionName });
   const third = await begin(threadId, 'default');
   await orchestrator!.stop();
   await startBridge();
   await wait(() => sent.filter(s => s.includes(`/answer ${third.reference}`)).length >= 2 || undefined, 'restart replay');
   await imAnswer(third.reference, '2'); await completed(third.turnId);
   assert(JSON.stringify(modelInputs[5]).includes('Two'));
-  console.log('PASS: daemon restart rediscovers title identity and pending nonblocking question with the same reference.');
+  console.log('PASS: daemon restart rediscovers the renamed native session and pending nonblocking question with the same reference.');
   questions = [questions[0]!, { ...questions[0]!, id: 'another', header: 'Another' }];
   const fourth = await begin(threadId);
+  renameDuringInterpretation = true;
   await imAnswer(fourth.reference, 'Use the second option for both'); await completed(fourth.turnId);
   const last = JSON.stringify(modelInputs[7]);
   assert(last.includes('another') && last.includes('Two'));
+  assert.equal(renameDuringInterpretation, false);
   assert.equal(terminalInputs, 0);
-  console.log('PASS: multiple questions use the interpreter and reach native ids; no answer is injected as a chat prompt.');
+  assert.equal(terminalQueries, 0);
+  console.log('PASS: multiple answers reach the original native request after renaming during interpretation.');
+  console.log('PASS: native discovery, delivery, answers and restart used zero terminal queries.');
 } finally {
   await orchestrator?.stop(); ws?.terminate();
   native.kill('SIGTERM');

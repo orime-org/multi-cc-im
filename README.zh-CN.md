@@ -177,8 +177,8 @@ Codex 的 Stop 回信通过本机 `codex app-server --listen stdio://` 子进程
 `[会话名]` 加回复正文。用 `/rename <name>` 设置该名称；`thread-name`
 表示会话名，`project-name` 表示项目目录名。飞书入站按 `/list` 展示的
 终端标题寻址；在 `/terminal-title` 中将 `thread-name` 放在首位，并保留
-`activity`，可用唯一前缀 `#<name>` 寻址。原生问题与权限事件的窗格定位
-使用 `thread-id`；安装器会在保存的标题配置中追加该项。
+`activity`，可用唯一前缀 `#<name>` 寻址。原生问题以 `/rename` 设置的
+会话名标注来源；权限事件的窗格定位使用 `thread-id`，安装器会在保存的标题配置中追加该项。
 
 向导 W2 选择 Codex 后，普通消息、权限回复和已有 Claude 提问的自然语言解释都使用
 Codex，无需额外安装 Claude 作为解释后端。每次路由在独立临时目录运行，使用
@@ -189,15 +189,20 @@ Codex 原生 `request_user_input` 通过本机 App Server 转发到 IM；回复
 手机和终端先到的回答生效。迟到回复不会变成新任务；断连时暂停回答，重连后核对原生待答请求。
 敏感输入只提示你去终端填写，不转发题目或把回复交给解释模型。
 
-原生问题和权限事件的窗格归属使用官方 `thread-id` 标题项；安装器保留已有标题顺序并追加该项，写前备份。
-已运行的 Codex 在 `/terminal-title` 中勾选 `thread-id` 即可；后续新会话读取保存的配置。
-只匹配当前已加载线程的唯一 ID，标题缺失、前缀歧义、同一线程出现在多个窗格时暂停问题和权限转发。
-Stop 回复通过原生会话名路径交付，权限 hook 与问题通道使用上述窗格身份来源。
+原生问题通过本机 App Server 读取当前已加载根线程的 `thread.name`，并按原始问题请求提交回答。
+用 `/rename <name>` 设置会话名；缺名或重名时，该名称的问题转发暂停，日志给出 `/rename` 处理提示。
+其他名称唯一的会话继续转发；改名后后续通知使用当前名称，已有问题编号继续关联原请求。
+问题发现、投递和回答通过原生接口完成，终端查询故障的影响范围见下方故障表。
+
+权限事件的窗格归属使用官方 `thread-id` 标题项；安装器保留已有标题顺序并追加该项，写前备份。
+已运行的 Codex 在 `/terminal-title` 中勾选 `thread-id`；后续新会话读取保存的配置。
+权限 hook 对当前已加载线程进行唯一 ID 匹配；标题缺失、前缀歧义、同一线程出现在多个窗格时暂停权限转发。
 Codex 版本不作为启动或请求的准入条件；仅实际失败时报告操作、观察到的版本、原始原因和检查步骤。
 初始化之前无法取得版本时显示 `unknown`。daemon 与所桥接会话须使用同一个
-`CODEX_HOME`（未设时为 `~/.codex`）。名称查询选择该 home 的本机 stdio 接口；
-原生问题和权限定位使用所选终端及该 home 的 Unix socket。
+`CODEX_HOME`（未设时为 `~/.codex`）。Stop 名称查询使用该 home 的本机 stdio 接口；
+原生问题使用该 home 的 Unix socket，权限定位同时读取所选终端。
 问题内容仅在启用 IM 模式后发送给既有 owner 聊天。另见
+[会话名提问 DD](docs/superpowers/specs/2026-10-26-codex-question-session-name-dd.md)、
 [提问通道 DD](docs/superpowers/specs/2026-10-22-codex-question-bridge-dd.md) 和
 [线程身份 DD](docs/superpowers/specs/2026-10-22-codex-thread-identity-dd.md)。
 
@@ -205,7 +210,7 @@ WezTerm 部署验收：W3 选择 `wezterm`；部署后在飞书执行 `/start` �
 核对终端与会话列表，再向 `#<标签页标题>` 发送消息，检查回复与原生提问的回答往返。
 开发侧隔离测试的环境与结果见 [WezTerm 验收记录](docs/superpowers/specs/2026-10-22-codex-wezterm-acceptance.md)。
 
-> **Codex hook**：在 `/hooks` 中审核／刷新 hook；在 `/terminal-title` 中启用线程 ID。
+> **Codex hook**：在 `/hooks` 中审核／刷新 hook；权限定位需在 `/terminal-title` 中启用线程 ID。原生问题通过 `/rename` 设置会话名。
 > 安装器不会替你授予 hook 信任或修改 Codex 自身的审批策略。
 >
 > Ctrl+C 停 daemon。一台机器只能一个 daemon。
@@ -223,8 +228,9 @@ WezTerm 部署验收：W3 选择 `wezterm`；部署后在飞书执行 `/start` �
 | start 报 `another daemon already running` | `cat ~/.multi-cc-im/state/daemon.pid` → kill 或 rm 文件 |
 | daemon 退出并报 `cannot watch the state directory ... EMFILE` / `ENOSPC` | 桥接已停止，回复和权限请求暂时不能转发到 IM；不会停止 Claude Code / Codex 会话或其他开发任务。`EMFILE` 可能是文件描述符或文件监听资源耗尽，不能仅凭错误码断定哪个进程占满。按提示里的 `Check:` 命令确认：macOS 查 fseventsd 日志，Linux 查 inotify 限制；`EMFILE` 同时检查打开文件数限制。由你决定关闭哪些不再需要的进程或调整已确认的可配置限制，然后运行 `multi-cc-im start`。创建监听、等待就绪及飞书连接期间出错也会给出同样提示并以状态码 1 退出 |
 | Codex Stop 回信缺失或会话名不可用 | 用 `/hooks` 确认 Stop 已启用并信任，运行 `/rename <name>` 设置会话名；核对 IM 模式和同一 `CODEX_HOME`。hook stderr 的 `Stop reply was not forwarded` 会说明失败操作、观察到的版本、原始原因和下一步；按提示在会话环境运行 `codex --version` 及 `codex app-server --help`。两种运行模式均支持名称回信；队列错误写入 daemon 日志。飞书 `/list` 可核对入站名称 |
-| Codex 原生问题／权限窗格身份无法识别 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME` 和本机 App Server 连接。hook 信任用 `/hooks` 审核；查看 daemon 控制台／`daemon.log` 中的实际操作、版本和错误原因，按检查步骤处理。身份未明确时在原终端继续处理 |
-| `WezTerm pane lookup is unavailable` 或 `wezterm cli timed out` | 当前窗格状态查询失败，原生问题发现和按窗格路由的校验受影响。先在原 Codex 终端回答；在启动 bridge 的 shell 核对 `WEZTERM_UNIX_SOCKET`，使用配置中的 WezTerm 可执行文件运行 `cli --no-auto-start list --format json`。日志保留原始超时、连接或 JSON 错误。问题发现会按现有轮询重试；核对命令也无响应时，需要继续检查该 WezTerm 实例的 RPC 响应状态 |
+| Codex 原生问题未转发或会话名不可用 | 在原会话运行 `/rename <name>`，给同时使用的会话设置不同名称；确认 IM 模式、owner 聊天、同一 `CODEX_HOME` 和本机 App Server 连接。查看 `[Codex questions]` 的缺名、重名或实际 RPC 错误，按提示处理；连接断开时可在原终端回答 |
+| Codex 权限窗格身份无法识别 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME` 和本机 App Server 连接。hook 信任用 `/hooks` 审核；查看 daemon 控制台／`daemon.log` 中的实际操作、版本和错误原因，按检查步骤处理。身份未明确时在原终端继续处理 |
+| `WezTerm pane lookup is unavailable` 或 `wezterm cli timed out` | 当前窗格状态查询失败，按窗格路由和权限来源定位受影响。可在原终端继续操作；在启动 bridge 的 shell 核对 `WEZTERM_UNIX_SOCKET`，使用配置中的 WezTerm 可执行文件运行 `cli --no-auto-start list --format json`。日志保留原始超时、连接或 JSON 错误。核对命令也无响应时，继续检查该 WezTerm 实例的 RPC 响应状态。Codex 原生问题通过独立的本机 App Server 通道处理 |
 | hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 
 ---

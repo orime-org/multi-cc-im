@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
@@ -20,13 +20,14 @@ let status: string, source: unknown, pending: boolean, userAgent: unknown;
 let rejectedMethod: string | undefined;
 let resultOverrides: Map<string, unknown>;
 let loaded: Set<string>;
+let names: Map<string, string | null | undefined>;
+let rejectedReadMessages: string[] | undefined;
 let panes: { paneId: PaneId; title: string; cwd: string; terminalTitle?: string }[];
 let requestIds: Map<string, number>;
 let pages: Map<string, { data: string[]; nextCursor: string | null }> | undefined;
 let stallMethod: string | undefined;
 let client: ReturnType<typeof createCodexQuestionClient>;
 const errors: unknown[] = [];
-const listPanes = vi.fn();
 
 async function until(predicate: () => boolean): Promise<void> {
   const end = Date.now() + 3000;
@@ -38,6 +39,7 @@ function emit(method: string, value: unknown, id?: number): void {
 async function register(threadId = '019a15e0-329d-7343-9e8c-2d694c948237', ended = false, _at = 100): Promise<void> {
   if (ended) { loaded.delete(threadId); return; }
   loaded.add(threadId);
+  if (!names.has(threadId)) names.set(threadId, threadId === params.threadId ? 'work' : 'other');
   panes[0]!.terminalTitle = `project · ${threadId.slice(0, 29)}... ⠋`;
 }
 const handler: CLIHandler = { async onStop() {}, async onPreToolUse() {},
@@ -48,10 +50,9 @@ beforeEach(async () => {
   await mkdir(join(dir, 'app-server-control'));
   peers = []; methods = []; responses = []; seen = []; closed = []; errors.length = 0;
   status = 'active'; source = 'cli'; pending = true; userAgent = 'codex_cli_rs/0.163.0'; rejectedMethod = undefined;
-  pages = undefined; stallMethod = undefined;
+  pages = undefined; stallMethod = undefined; rejectedReadMessages = undefined;
   resultOverrides = new Map();
-  loaded = new Set(); panes = [{ paneId, title: 'work', cwd: '/tmp' }]; requestIds = new Map();
-  listPanes.mockReset().mockImplementation(async () => panes);
+  loaded = new Set(); names = new Map(); panes = [{ paneId, title: 'work', cwd: '/tmp' }]; requestIds = new Map();
   server = createServer(); wss = new WebSocketServer({ server });
   wss.on('connection', ws => {
     peers.push(ws);
@@ -63,13 +64,16 @@ beforeEach(async () => {
       methods.push(msg.method);
       if (msg.method === stallMethod) return;
       if (msg.id === undefined) return;
+      if (msg.method === 'thread/read' && rejectedReadMessages?.length) {
+        ws.send(JSON.stringify({ id: msg.id, error: { code: -32603, message: rejectedReadMessages.shift() } })); return;
+      }
       if (msg.method === rejectedMethod) {
         ws.send(JSON.stringify({ id: msg.id, error: { code: -32601, message: 'Fixture method unavailable' } })); return;
       }
       let result: unknown = {};
       if (msg.method === 'initialize') result = { codexHome: dir, userAgent, platformFamily: 'unix', platformOs: 'macos' };
       if (msg.method === 'thread/loaded/list') result = pages?.get(msg.params?.cursor ?? '') ?? { data: [...loaded], nextCursor: null };
-      if (threadId && (msg.method === 'thread/read' || msg.method === 'thread/resume')) result = { thread: { id: threadId, source, status: { type: status } } };
+      if (threadId && (msg.method === 'thread/read' || msg.method === 'thread/resume')) result = { thread: { id: threadId, name: names.get(threadId), source, status: { type: status } } };
       if (msg.method === 'thread/resume' && pending && threadId) {
         if (!requestIds.has(threadId)) requestIds.set(threadId, 901 + requestIds.size);
         ws.send(JSON.stringify({ id: requestIds.get(threadId), method: 'item/tool/requestUserInput', params: { ...params, threadId: threadId } }));
@@ -79,7 +83,7 @@ beforeEach(async () => {
   });
   await new Promise<void>(resolve => server.listen(join(dir, 'app-server-control/app-server-control.sock'), resolve));
   client = createCodexQuestionClient({ home: dir, terminalId: 'wezterm', intervalMs: 20, rpcTimeoutMs: 200,
-    listPanes, onError: err => errors.push(err) });
+    onError: err => errors.push(err) });
 });
 afterEach(async () => {
   await client.stop();
@@ -90,44 +94,43 @@ afterEach(async () => {
 });
 
 describe('native Codex question client', () => {
-  it('skips terminal IO while no native thread is loaded and discovers a later thread', async () => {
+  it('discovers a later named thread after an initially empty loaded set', async () => {
     await client.start(handler);
     await until(() => methods.filter(method => method === 'thread/loaded/list').length >= 2);
-    expect(listPanes).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    expect(errors).toEqual([]);
     await register(); await until(() => seen.length === 1);
-    expect(listPanes).toHaveBeenCalled(); expect(seen[0]!.paneId).toBe(paneId);
+    expect(seen[0]).toMatchObject({ threadId: params.threadId, sessionName: 'work' });
   });
 
-  it('reconciles unloaded threads without requiring terminal IO', async () => {
+  it('reconciles unloaded threads through native metadata', async () => {
     await register(); await client.start(handler); await until(() => seen.length === 1);
     const ref = seen[0]!.reference;
     loaded.clear();
-    listPanes.mockRejectedValue(new Error('Fixture terminal unavailable'));
     await until(() => methods.includes('thread/unsubscribe'));
     expect(client.listPending()).toEqual([]); expect(closed).toContain(ref);
     expect(await client.answer(ref, { choice: ['One'] })).toBe('resolved');
-    expect(errors.map(String).join('\n')).not.toContain('Fixture terminal unavailable');
   });
 
-  it('reports distinct terminal causes when their outer diagnostic is identical', async () => {
+  it('reports distinct native metadata failures with the same RPC code', async () => {
     await register();
-    let calls = 0;
-    listPanes.mockImplementation(async () => {
-      throw new Error('Fixture pane lookup is unavailable', { cause: new Error(calls++ === 0 ? 'Fixture timeout' : 'Fixture connection refused') });
-    });
-    await client.start(handler); await until(() => errors.length === 2);
-    expect(errors).toHaveLength(2);
+    rejectedReadMessages = ['Fixture metadata timeout', 'Fixture metadata connection refused'];
+    await client.start(handler); await until(() => errors.length >= 2);
+    const diagnostics = errors.map(String).join('\n');
+    expect(diagnostics).toContain('Fixture metadata timeout');
+    expect(diagnostics).toContain('Fixture metadata connection refused');
   });
 
-  it('attaches only a uniquely title-associated loaded thread and sends the native response, never a prompt', async () => {
-    await register(); await client.start(handler); await until(() => seen.length === 1);
+  it('uses named native sessions without terminal configuration and answers the original request', async () => {
+    await register(); panes = [];
+    await client.start(handler); await until(() => seen.length === 1);
     const q = seen[0]!;
-    expect(q).toMatchObject({ ...params, requestId: 901, termId: 'wezterm', paneId });
+    expect(q).toMatchObject({ ...params, requestId: 901, termId: 'wezterm', sessionName: 'work' });
+    expect(q).not.toHaveProperty('paneId');
     expect(await client.answer(q.reference, { choice: ['Two'] })).toBe('submitted');
     await until(() => responses.length === 1);
     expect(responses).toEqual([{ id: 901, result: { answers: { choice: { answers: ['Two'] } } } }]);
     expect(methods.every(m => ['initialize', 'initialized', 'thread/loaded/list', 'thread/read', 'thread/resume'].includes(m))).toBe(true);
-    emit('serverRequest/resolved', { threadId: '019a15e0-329d-7343-9e8c-2d694c948237', requestId: 901 });
+    emit('serverRequest/resolved', { threadId: params.threadId, requestId: 901 });
     await until(() => closed.includes(q.reference));
     expect(await client.answer(q.reference, { choice: ['One'] })).toBe('resolved');
   });
@@ -137,48 +140,82 @@ describe('native Codex question client', () => {
     expect(seen).toEqual([]); expect(methods).not.toContain('thread/resume');
   });
 
-  it('does not attach when the title is missing or belongs to an unloaded thread', async () => {
-    await register(); panes[0]!.terminalTitle = undefined;
-    await client.start(handler); await delay(80);
-    expect(methods).not.toContain('thread/resume');
-    panes[0]!.terminalTitle = '019a15e2-329d-7343-9e8c-2d694c948237';
-    await delay(80); expect(methods).not.toContain('thread/resume');
+  it.each([undefined, null, '', '   '])('reports a missing native session name %j', async name => {
+    await register(); names.set(params.threadId, name);
+    await client.start(handler); await until(() => errors.length > 0);
+    expect(errors.map(String).join('\n')).toContain('/rename');
+    expect(seen).toEqual([]); expect(methods).not.toContain('thread/resume');
   });
 
-  it.each(['vscode', 'exec', 'appServer', 'unknown', { custom: 'fixture' }])('accepts title-associated root sessions with historical source %j', async historical => {
+  it('reports duplicate names while subscribing to another uniquely named session', async () => {
+    const duplicate = '019a15e1-329d-7343-9e8c-2d694c948237';
+    const unique = '019a15e2-329d-7343-9e8c-2d694c948237';
+    await register(); await register(duplicate); await register(unique);
+    names.set(duplicate, 'work'); names.set(unique, 'unique');
+    await client.start(handler); await until(() => seen.length === 1);
+    expect(seen[0]).toMatchObject({ threadId: unique, sessionName: 'unique' });
+    expect(errors.map(String).join('\n')).toMatch(/duplicate|ambiguous/i);
+    expect(errors.map(String).join('\n')).toContain('work');
+    expect(errors.map(String).join('\n')).toContain('/rename');
+  });
+
+  it.each(['vscode', 'exec', 'appServer', 'unknown', { custom: 'fixture' }])('accepts named root sessions with historical source %j', async historical => {
     source = historical; await register(); await client.start(handler); await until(() => seen.length === 1);
-    expect(seen[0]!.paneId).toBe(paneId);
+    expect(seen[0]).toMatchObject({ threadId: params.threadId, sessionName: 'work' });
   });
 
-  it('isolates simultaneous same-project sessions and native request ids', async () => {
-    panes.push({ paneId: 8 as PaneId, title: 'other', cwd: '/tmp' });
-    await register();
-    loaded.add('019a15e1-329d-7343-9e8c-2d694c948237'); panes[1]!.terminalTitle = '019a15e1-329d-7343-9e8c-2d694c948237';
+  it('isolates simultaneous named sessions and native request ids', async () => {
+    const other = '019a15e1-329d-7343-9e8c-2d694c948237';
+    await register(); await register(other);
     await client.start(handler); await until(() => seen.length === 2);
-    const [a, b] = seen;
-    expect(a!.reference).not.toBe(b!.reference);
-    await client.answer(a!.reference, { choice: ['One'] });
-    await client.answer(b!.reference, { choice: ['Two'] });
+    const a = seen.find(q => q.threadId === params.threadId)!;
+    const b = seen.find(q => q.threadId === other)!;
+    expect(a.reference).not.toBe(b.reference);
+    expect(a).toMatchObject({ sessionName: 'work' });
+    expect(b).toMatchObject({ sessionName: 'other' });
+    await client.answer(a.reference, { choice: ['One'] });
+    await client.answer(b.reference, { choice: ['Two'] });
     await until(() => responses.length === 2);
     expect(responses).toEqual(expect.arrayContaining([
-      { id: a!.requestId, result: { answers: { choice: { answers: ['One'] } } } },
-      { id: b!.requestId, result: { answers: { choice: { answers: ['Two'] } } } },
+      { id: a.requestId, result: { answers: { choice: { answers: ['One'] } } } },
+      { id: b.requestId, result: { answers: { choice: { answers: ['Two'] } } } },
     ]));
   });
 
-  it('invalidates a previous binding when the pane switches to an unknown native title', async () => {
+  it('refreshes a unique rename immediately while preserving its pending reference', async () => {
+    expect(typeof client.refresh).toBe('function');
     await register(); await client.start(handler); await until(() => seen.length === 1);
     const ref = seen[0]!.reference;
-    panes[0]!.terminalTitle = '019a15e2-329d-7343-9e8c-2d694c948237';
+    names.set(params.threadId, 'renamed-work');
+    await client.refresh();
+    expect(client.listPending()).toHaveLength(1);
+    expect(client.listPending()[0]).toMatchObject({ reference: ref, sessionName: 'renamed-work' });
+    expect(closed).not.toContain(ref);
+    expect(await client.answer(ref, { choice: ['One'] })).toBe('submitted');
+    await until(() => responses.length === 1);
+    expect(responses[0]).toEqual({ id: 901, result: { answers: { choice: { answers: ['One'] } } } });
+  });
+
+  it('refreshes a duplicate name immediately and removes current answerability', async () => {
+    expect(typeof client.refresh).toBe('function');
+    await register(); await client.start(handler); await until(() => seen.length === 1);
+    const ref = seen[0]!.reference;
+    const other = '019a15e1-329d-7343-9e8c-2d694c948237';
+    await register(other); names.set(other, 'work');
+    await client.refresh();
+    expect(client.listPending()).toEqual([]); expect(closed).toContain(ref);
+    expect(errors.map(String).join('\n')).toContain('/rename');
     expect(await client.answer(ref, { choice: ['One'] })).not.toBe('submitted');
     expect(responses).toEqual([]);
   });
 
-  it('removes answerability when the pane closes', async () => {
+  it('rechecks the native name before submission when it becomes unavailable', async () => {
     await register(); await client.start(handler); await until(() => seen.length === 1);
-    const ref = seen[0]!.reference; panes = [];
+    const ref = seen[0]!.reference;
+    names.set(params.threadId, null);
     expect(await client.answer(ref, { choice: ['One'] })).not.toBe('submitted');
     expect(responses).toEqual([]);
+    expect(errors.map(String).join('\n')).toContain('/rename');
   });
 
   it('rejects subagents without answering', async () => {
@@ -257,7 +294,7 @@ describe('native Codex question client', () => {
     expect(await client.answer(ref, { choice: ['One'] })).toBe('resolved');
   });
 
-  it('handles restart, native title replacement and old thread closure without delivering to the old request', async () => {
+  it('handles restart and native session replacement with the original pending reference', async () => {
     await register(); await client.start(handler); await until(() => seen.length === 1);
     const old = seen[0]!.reference;
     await client.stop(); await client.start(handler); await until(() => seen.length === 2);

@@ -115,8 +115,9 @@ Incoming name matching remains the existing terminal-title matcher. For a
 session named `frontend`, a terminal title beginning with `frontend` supports
 the existing unique-prefix `#frontend` route. The operation guide must state
 how `/rename`, `thread-name`, `project-name`, `activity` and `/list` relate.
-Native permission and question paths retain their existing pane identity
-requirements, as a separate capability from labeled Stop replies.
+Native permissions use their pane identity requirements. The later approved
+[session-name question decision](2026-10-26-codex-question-session-name-dd.md)
+specifies current native names for question forwarding and answering.
 
 ## Queue states and invariants
 

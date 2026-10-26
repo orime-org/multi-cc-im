@@ -133,6 +133,8 @@ describe('createWezTermAdapter — ListPanes capability', () => {
     else mockRunWezTermCli.mockResolvedValueOnce('invalid fixture JSON');
     const result = makeAdapter().listPanes();
     await expect(result).rejects.toThrow('WezTerm pane lookup is unavailable');
+    await expect(result).rejects.toThrow('pane routing and permission origin lookup cannot be verified');
+    await expect(result.catch(formatErrorWithCause)).resolves.not.toContain('native question discovery');
     await expect(result).rejects.toThrow('Continue in the original terminal');
     await expect(result).rejects.toThrow('WEZTERM_UNIX_SOCKET');
     await expect(result).rejects.toThrow('cli --no-auto-start list --format json');

@@ -726,7 +726,6 @@ export async function runStartCommand(
     }) satisfies NonNullable<CreateCcCliAdapterOpts['onHandlerError']>,
     nativeQuestions: enabledCLIs.includes('codex') ? {
       terminalId: termId,
-      listPanes: () => termAdapter.listPanes(),
       onError: (err: unknown) => log(`[Codex questions] ${formatErrorWithCause(err)}`),
     } : undefined,
   };
