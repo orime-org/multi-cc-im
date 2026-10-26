@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
@@ -26,6 +26,7 @@ let pages: Map<string, { data: string[]; nextCursor: string | null }> | undefine
 let stallMethod: string | undefined;
 let client: ReturnType<typeof createCodexQuestionClient>;
 const errors: unknown[] = [];
+const listPanes = vi.fn();
 
 async function until(predicate: () => boolean): Promise<void> {
   const end = Date.now() + 3000;
@@ -50,6 +51,7 @@ beforeEach(async () => {
   pages = undefined; stallMethod = undefined;
   resultOverrides = new Map();
   loaded = new Set(); panes = [{ paneId, title: 'work', cwd: '/tmp' }]; requestIds = new Map();
+  listPanes.mockReset().mockImplementation(async () => panes);
   server = createServer(); wss = new WebSocketServer({ server });
   wss.on('connection', ws => {
     peers.push(ws);
@@ -77,7 +79,7 @@ beforeEach(async () => {
   });
   await new Promise<void>(resolve => server.listen(join(dir, 'app-server-control/app-server-control.sock'), resolve));
   client = createCodexQuestionClient({ home: dir, terminalId: 'wezterm', intervalMs: 20, rpcTimeoutMs: 200,
-    listPanes: async () => panes, onError: err => errors.push(err) });
+    listPanes, onError: err => errors.push(err) });
 });
 afterEach(async () => {
   await client.stop();
@@ -88,6 +90,35 @@ afterEach(async () => {
 });
 
 describe('native Codex question client', () => {
+  it('skips terminal IO while no native thread is loaded and discovers a later thread', async () => {
+    await client.start(handler);
+    await until(() => methods.filter(method => method === 'thread/loaded/list').length >= 2);
+    expect(listPanes).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    await register(); await until(() => seen.length === 1);
+    expect(listPanes).toHaveBeenCalled(); expect(seen[0]!.paneId).toBe(paneId);
+  });
+
+  it('reconciles unloaded threads without requiring terminal IO', async () => {
+    await register(); await client.start(handler); await until(() => seen.length === 1);
+    const ref = seen[0]!.reference;
+    loaded.clear();
+    listPanes.mockRejectedValue(new Error('Fixture terminal unavailable'));
+    await until(() => methods.includes('thread/unsubscribe'));
+    expect(client.listPending()).toEqual([]); expect(closed).toContain(ref);
+    expect(await client.answer(ref, { choice: ['One'] })).toBe('resolved');
+    expect(errors.map(String).join('\n')).not.toContain('Fixture terminal unavailable');
+  });
+
+  it('reports distinct terminal causes when their outer diagnostic is identical', async () => {
+    await register();
+    let calls = 0;
+    listPanes.mockImplementation(async () => {
+      throw new Error('Fixture pane lookup is unavailable', { cause: new Error(calls++ === 0 ? 'Fixture timeout' : 'Fixture connection refused') });
+    });
+    await client.start(handler); await until(() => errors.length === 2);
+    expect(errors).toHaveLength(2);
+  });
+
   it('attaches only a uniquely title-associated loaded thread and sends the native response, never a prompt', async () => {
     await register(); await client.start(handler); await until(() => seen.length === 1);
     const q = seen[0]!;

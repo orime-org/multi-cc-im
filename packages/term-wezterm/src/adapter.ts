@@ -84,7 +84,9 @@ export function createWezTermAdapter(
     },
 
     async listPanes(): Promise<readonly TermPaneInfo[]> {
-      const tabs = await listAllTabs({ wezterm, timeoutMs: opts.listTimeoutMs });
+      const tabs = await listAllTabs({ wezterm, timeoutMs: opts.listTimeoutMs }).catch((err: unknown) => {
+        throw new Error('WezTerm pane lookup is unavailable; native question discovery and pane routing cannot be verified. Continue in the original terminal. In the shell that started the bridge, check WEZTERM_UNIX_SOCKET and run the configured WezTerm executable with: cli --no-auto-start list --format json.', { cause: err });
+      });
       const result: TermPaneInfo[] = [];
       for (const tab of tabs.values()) {
         result.push({

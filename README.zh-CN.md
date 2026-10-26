@@ -224,6 +224,7 @@ WezTerm 部署验收：W3 选择 `wezterm`；部署后在飞书执行 `/start` �
 | daemon 退出并报 `cannot watch the state directory ... EMFILE` / `ENOSPC` | 桥接已停止，回复和权限请求暂时不能转发到 IM；不会停止 Claude Code / Codex 会话或其他开发任务。`EMFILE` 可能是文件描述符或文件监听资源耗尽，不能仅凭错误码断定哪个进程占满。按提示里的 `Check:` 命令确认：macOS 查 fseventsd 日志，Linux 查 inotify 限制；`EMFILE` 同时检查打开文件数限制。由你决定关闭哪些不再需要的进程或调整已确认的可配置限制，然后运行 `multi-cc-im start`。创建监听、等待就绪及飞书连接期间出错也会给出同样提示并以状态码 1 退出 |
 | Codex Stop 回信缺失或会话名不可用 | 用 `/hooks` 确认 Stop 已启用并信任，运行 `/rename <name>` 设置会话名；核对 IM 模式和同一 `CODEX_HOME`。hook stderr 的 `Stop reply was not forwarded` 会说明失败操作、观察到的版本、原始原因和下一步；按提示在会话环境运行 `codex --version` 及 `codex app-server --help`。两种运行模式均支持名称回信；队列错误写入 daemon 日志。飞书 `/list` 可核对入站名称 |
 | Codex 原生问题／权限窗格身份无法识别 | 在该 TUI 的 `/terminal-title` 勾选 `thread-id`，一个线程只保留一个窗格；确认所选终端、同一 `CODEX_HOME` 和本机 App Server 连接。hook 信任用 `/hooks` 审核；查看 daemon 控制台／`daemon.log` 中的实际操作、版本和错误原因，按检查步骤处理。身份未明确时在原终端继续处理 |
+| `WezTerm pane lookup is unavailable` 或 `wezterm cli timed out` | 当前窗格状态查询失败，原生问题发现和按窗格路由的校验受影响。先在原 Codex 终端回答；在启动 bridge 的 shell 核对 `WEZTERM_UNIX_SOCKET`，使用配置中的 WezTerm 可执行文件运行 `cli --no-auto-start list --format json`。日志保留原始超时、连接或 JSON 错误。问题发现会按现有轮询重试；核对命令也无响应时，需要继续检查该 WezTerm 实例的 RPC 响应状态 |
 | hook 注册抱怨现有 hook | 恢复 `~/.claude/settings.json.bak.<ts>` 备份 |
 
 ---

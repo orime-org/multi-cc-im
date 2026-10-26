@@ -87,19 +87,30 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
   let timer: NodeJS.Timeout | undefined;
   let flushing: Promise<void> | undefined;
 
-  async function gates(): Promise<{ owner: IMReplyContext; panes: readonly TermPaneInfo[] } | null> {
+  async function deliveryOwner(): Promise<IMReplyContext | null> {
     if (!active || !opts.questions) return null;
-    const [work, owner, panes] = await Promise.all([readIMWorkFile(opts.stateDir, opts.terminalId), readIMOriginFile(opts.stateDir), opts.listPanes()]);
-    return work && validOrigin(owner, opts.imAdapter.name) ? { owner, panes } : null;
+    const [work, owner] = await Promise.all([readIMWorkFile(opts.stateDir, opts.terminalId), readIMOriginFile(opts.stateDir)]);
+    return work && validOrigin(owner, opts.imAdapter.name) ? owner : null;
+  }
+  async function gates(): Promise<{ owner: IMReplyContext; panes: readonly TermPaneInfo[] } | null> {
+    const owner = await deliveryOwner();
+    return owner ? { owner, panes: await opts.listPanes() } : null;
   }
   function current(ref: string): CLIQuestionRequest | undefined {
     return opts.questions?.listPending().find(q => q.reference === ref && q.termId === opts.terminalId);
   }
   async function doFlush(): Promise<void> {
-    const allowed = await gates();
-    if (!allowed || !active) return;
-    for (const request of opts.questions?.listPending() ?? []) {
-      if (request.termId !== opts.terminalId) continue;
+    const owner = await deliveryOwner();
+    if (!owner) return;
+    const requests = (opts.questions?.listPending() ?? []).filter(request => {
+      const previous = displayed.get(request.reference);
+      return request.termId === opts.terminalId && (!previous ||
+        (previous.state === 'disconnected' && ownerKey(previous.owner) === ownerKey(owner)));
+    });
+    if (!requests.length) return;
+    const allowed = { owner, panes: await opts.listPanes() };
+    if (!active) return;
+    for (const request of requests) {
       const terminalOnly = request.questions.some(q => q.isSecret);
       const pane = allowed.panes.find(p => p.paneId === request.paneId);
       if (!pane || !current(request.reference)) continue;
@@ -151,8 +162,8 @@ export function createNativeQuestionBridge(opts: NativeQuestionBridgeOpts): Nati
       entry.state = reason;
       try {
         await entry.delivery;
-        const allowed = await gates();
-        if (!allowed || ownerKey(allowed.owner) !== ownerKey(entry.owner)) return;
+        const owner = await deliveryOwner();
+        if (!owner || ownerKey(owner) !== ownerKey(entry.owner)) return;
         const text = reason === 'disconnected' ? 'Codex 本机连接已断开，手机回答暂停。可在终端继续；重连核对问题后恢复。' :
           reason === 'replaced' ? 'Codex 会话、终端或线程标题已变化，手机回答已暂停。请在 /terminal-title 保留 thread-id，并确认一个线程只显示在一个窗格中；仍可在终端回答。' :
           '该 Codex 问题已结束（已回答或被取消）。迟到回复不会作为新任务发送。';
