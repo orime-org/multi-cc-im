@@ -63,17 +63,20 @@ On 2026-10-26 the user accepted the recommendation to use real protocol and
 message-content verification and exempt this terminal/Feishu interaction from
 the web-specific visual-adversary procedure.
 
-## Project checks before final delivery
+## Final verification
 
 | Check | Recorded result |
 | --- | --- |
-| Workspace typecheck | Passed after implementation and review fixes. |
-| Full unit suite | 1,475 tests across 78 files passed with test-only `CHOKIDAR_USEPOLLING=1`. |
-| Coverage before review fixes | 88.23% statements/lines, 84.29% branches and 89.82% functions. |
+| Main synchronization | Latest `origin/main` was `40e7f5f`; the task branch was already up to date before final checks. |
+| Workspace typecheck | `pnpm typecheck` passed. |
+| Full unit suite | `CHOKIDAR_USEPOLLING=1 pnpm test:coverage` passed 1,475 tests across 78 files. |
+| Final coverage | 88.23% statements/lines, 84.32% branches and 89.82% functions. |
 | CLI build and bundled load | `pnpm --filter multi-cc-im build` passed; `./bin/multi-cc-im --version` returned `0.2.3`. |
 | Standalone two-TUI script typecheck | Passed with strict TypeScript, bundler resolution and JSX enabled for the imported monitor code. |
+| Final product smokes | Native question, bundled native Stop and Claude hook/Bridge smokes passed after the final CLI build. |
+| Wording review and links | Independent review checked 14 documents and new comments/diagnostics with no retained finding; 24 added/changed Markdown relative links resolved. |
 
-Final delivery additionally synchronizes the latest main branch, verifies the
-complete branch diff and records final checks in the PR. The repository has
-no lint script. Documentation synchronization and independent wording review
-precede that final verification.
+The complete branch diff was checked against main. The repository has no lint
+script. Final logs and the original review returns are retained outside Git;
+the PR records the executed checks. Real Feishu deployment acceptance belongs
+to the maintainer.
